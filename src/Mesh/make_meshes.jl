@@ -12,6 +12,8 @@ function make_circle_mesh(size)
     p = Array(CSV.read("$(TEMP_DIR)/p.csv", DataFrame, header=false))
     t = Array(CSV.read("$(TEMP_DIR)/t.csv", DataFrame, header=false))
 
+    t .+= 1
+
     # @info "Removing mesh files"
     rm(TEMP_DIR, recursive=true)
     return p, t

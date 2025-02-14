@@ -4,16 +4,16 @@ module TwoDG
 
 export 
     unique_rows,
-    make_circle_mesh
+    make_circle_mesh, fixmesh
 
+include("Util/Util.jl")
 include("App/App.jl")
 include("Master/Master.jl")
 include("Mesh/Mesh.jl")
-include("Util/Util.jl")
 
-# using .App
-# using .Master
-# using .Mesh
+using .App
+using .Master
+using .Mesh
 using .Util
 
 end
