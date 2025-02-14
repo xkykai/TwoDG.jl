@@ -4,7 +4,7 @@ module TwoDG
 
 export 
     unique_rows,
-    make_circle_mesh, fixmesh
+    make_circle_mesh, fixmesh, mkt2f
 
 include("Util/Util.jl")
 include("App/App.jl")

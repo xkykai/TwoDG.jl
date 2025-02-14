@@ -91,7 +91,114 @@ Compute element connectivities from element indices.
 
 t2t, t2n = mkt2t(t)
 """
-function mkt2f(t)
+function mkt2f(t::Matrix{Int})
+    nt = size(t, 1)
 
+    all_faces = zeros(Int, nt * 3, 2)
+    for i in axes(t, 1)
+        all_faces[i, :] .= sort(t[i, 1:2])
+        all_faces[i + nt, :] .= sort(t[i, 2:3])
+        all_faces[i + 2nt, :] .= sort(t[i, [3, 1]])
+    end
+
+    face_lt_map = Dict()
+    for i in axes(t, 1)
+        face_lt_map[Tuple(t[i, 1:2])] = i
+        face_lt_map[Tuple(t[i, 2:3])] = i
+        face_lt_map[Tuple(t[i, [3, 1]])] = i
+    end
+
+    # unique_faces = unique_rows(all_faces)
+
+    row_counts = Dict()
+    for row in eachrow(all_faces)
+        row_counts[Tuple(row)] = get(row_counts, Tuple(row), 0) + 1
+    end
+
+    boundary_faces = [key for (key, val) in row_counts if val == 1]
+    nb = length(boundary_faces)
+
+    nf = (3*nt + nb) ÷ 2
+
+    f = zeros(Int, nf, 4)
+    f_ii = 1
+    f_ib = nf - nb + 1
+    f_it = f_ib
+    f_bn = -1
+    face_topology = Vector{Set{Int}}()
+    cclockwise_boundary_faces = Dict{Int, Tuple{Int, Int}}()
+    new_set = true
+    for key in keys(row_counts)
+        if row_counts[key] != 1
+            f[f_ii, 1:2] .= key
+            f[f_ii, 3] = face_lt_map[key]
+            f[f_ii, 4] = face_lt_map[reverse(key)]
+            f_ii += 1
+        else
+            cclock = haskey(face_lt_map, key)
+
+            for (i, set) in enumerate(face_topology)
+                if key[1] in set || key[2] in set
+                    push!(set, key...)
+                    new_set = false
+                    f_bn = -i
+                    break
+                end
+            end
+
+            if new_set
+                push!(face_topology, Set(key))
+                f_bn = -length(face_topology)
+            end
+
+            if cclock
+                cclockwise_boundary_faces[key[1]] = (key[2], f_ib)
+                f[f_ib, 1:3] = [key..., face_lt_map[key]]
+            else
+                cclockwise_boundary_faces[key[2]] = (key[1], f_ib)
+                f[f_ib, 1:3] = [reverse(key)..., face_lt_map[reverse(key)]]
+            end
+            new_set = true
+            f_ib += 1
+        end
+    end
+
+    while f_it < nf
+        if f[f_it, 4] == 0
+            starting_node = f[f_it, 1]
+            next_node, next_loc = cclockwise_boundary_faces[starting_node]
+            f[f_it, 4] = f_bn
+            while next_node != starting_node
+                next_node, next_loc = cclockwise_boundary_faces[next_node]
+                f[next_loc, 4] = f_bn
+            end
+            f_bn -= 1
+        end
+        f_it += 1
+    end
+
+    f_lookup = Dict(Set(f[i, 1:2]) => i for i in axes(f, 1))
+
+    t2f = zeros(Int, nt, 3)
+    for i in axes(t, 1), j in axes(t, 2)
+        if j == 1
+            look_index = 2:3
+        elseif j == 2
+            look_index = [3, 1]
+        else
+            look_index = 1:2
+        end
+
+        face = t[i, look_index]
+        triangle_loc = f_lookup[Set(t[i, look_index])]
+
+        if face[1] == f[triangle_loc, 1]
+            t2f[i, j] = triangle_loc
+        else
+            t2f[i, j] = -triangle_loc
+        end
+
+    end
+
+    return f, t2f
 end
-
