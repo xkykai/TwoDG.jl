@@ -96,21 +96,21 @@ function mkt2f(t::Matrix{Int})
 
     all_faces = zeros(Int, nt * 3, 2)
     for i in axes(t, 1)
-        all_faces[i, :] .= sort(t[i, 1:2])
-        all_faces[i + nt, :] .= sort(t[i, 2:3])
+        all_faces[i, :] .= sort(t[i, [1, 2]])
+        all_faces[i + nt, :] .= sort(t[i, [2, 3]])
         all_faces[i + 2nt, :] .= sort(t[i, [3, 1]])
     end
 
-    face_lt_map = Dict()
+    face_lt_map = Dict{Tuple{Int, Int}, Int}()
+    sizehint!(face_lt_map, 3*nt)
     for i in axes(t, 1)
         face_lt_map[Tuple(t[i, 1:2])] = i
         face_lt_map[Tuple(t[i, 2:3])] = i
         face_lt_map[Tuple(t[i, [3, 1]])] = i
     end
 
-    # unique_faces = unique_rows(all_faces)
-
-    row_counts = Dict()
+    row_counts = Dict{Tuple{Int, Int}, Int}()
+    sizehint!(row_counts, 3*nt)
     for row in eachrow(all_faces)
         row_counts[Tuple(row)] = get(row_counts, Tuple(row), 0) + 1
     end
@@ -126,7 +126,9 @@ function mkt2f(t::Matrix{Int})
     f_it = f_ib
     f_bn = -1
     face_topology = Vector{Set{Int}}()
+    sizehint!(face_topology, 1)
     cclockwise_boundary_faces = Dict{Int, Tuple{Int, Int}}()
+    sizehint!(cclockwise_boundary_faces, nb)
     new_set = true
     for key in keys(row_counts)
         if row_counts[key] != 1
@@ -182,11 +184,11 @@ function mkt2f(t::Matrix{Int})
     t2f = zeros(Int, nt, 3)
     for i in axes(t, 1), j in axes(t, 2)
         if j == 1
-            look_index = 2:3
+            look_index = [2, 3]
         elseif j == 2
             look_index = [3, 1]
         else
-            look_index = 1:2
+            look_index = [1, 2]
         end
 
         face = t[i, look_index]
