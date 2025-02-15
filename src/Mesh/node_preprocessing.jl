@@ -165,19 +165,19 @@ function mkt2f(t::Matrix{Int})
         end
     end
 
-    while f_it < nf
-        if f[f_it, 4] == 0
-            starting_node = f[f_it, 1]
-            next_node, next_loc = cclockwise_boundary_faces[starting_node]
-            f[f_it, 4] = f_bn
-            while next_node != starting_node
-                next_node, next_loc = cclockwise_boundary_faces[next_node]
-                f[next_loc, 4] = f_bn
-            end
-            f_bn -= 1
-        end
-        f_it += 1
-    end
+    # while f_it < nf
+    #     if f[f_it, 4] == 0
+    #         starting_node = f[f_it, 1]
+    #         next_node, next_loc = cclockwise_boundary_faces[starting_node]
+    #         f[f_it, 4] = f_bn
+    #         while next_node != starting_node
+    #             next_node, next_loc = cclockwise_boundary_faces[next_node]
+    #             f[next_loc, 4] = f_bn
+    #         end
+    #         f_bn -= 1
+    #     end
+    #     f_it += 1
+    # end
 
     f_lookup = Dict(Set(f[i, 1:2]) => i for i in axes(f, 1))
 
@@ -203,4 +203,35 @@ function mkt2f(t::Matrix{Int})
     end
 
     return f, t2f
+end
+
+""" 
+p:         Node positions (:,2)
+f:         Face Array (:,4)
+bndexpr:   Cell Array of boundary expressions. The 
+           number of elements in BNDEXPR determines 
+           the number of different boundaries
+
+Example: (Setting boundary types for a unit square mesh - 4 types)
+bndexpr = [lambda p: np.all(p[:,0]<1e-3, lambda p: np.all(p[:,0]>1-1e-3),
+          lambda p: np.all(p[:,1]<1e-3, lambda p: np.all(p[:,1]>1-1e-3)]
+f = setbndnbrs(p,f,bndexpr);
+
+Example: (Setting boundary types for the unit circle - 1 type)
+bndexpr = [lambda p: np.all(np.sqrt((p**2).sum(1))>1.0-1e-3)] 
+f = setbndnbrs(p,f,bndexpr);
+"""
+function setbndnbrs(p, f, bndexpr)
+    i_bnd = findfirst(x -> x == 0, f[:, 4])
+    midpoint = (p[f[i_bnd:end, 1], :] .+ p[f[i_bnd:end, 2], :]) ./ 2
+    if length(bndexpr) == 1
+        f[i_bnd:end, 4] .= -1
+    else
+        for j in 1:length(bndexpr)
+            is_boundary_j = bndexpr[j](midpoint)
+            f[i_bnd:end, 4][is_boundary_j] .= -j
+        end
+    end
+
+    return f
 end

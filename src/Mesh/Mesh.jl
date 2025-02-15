@@ -4,7 +4,7 @@ using TwoDG.Util
 
 # Write your package code here.
 
-export make_circle_mesh, fixmesh, mkt2f
+export make_circle_mesh, fixmesh, mkt2f, setbndnbrs
 
 include("make_meshes.jl")
 include("node_preprocessing.jl")
