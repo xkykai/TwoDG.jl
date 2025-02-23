@@ -228,8 +228,8 @@ function setbndnbrs(p, f, bndexpr)
         f[i_bnd:end, 4] .= -1
     else
         for j in 1:length(bndexpr)
-            is_boundary_j = bndexpr[j](midpoint)
-            f[i_bnd:end, 4][is_boundary_j] .= -j
+            is_boundary_j = vcat(falses(i_bnd - 1), bndexpr[j](midpoint))
+            f[is_boundary_j, 4] .= -j
         end
     end
 
