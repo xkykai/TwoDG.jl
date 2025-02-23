@@ -1,4 +1,4 @@
-using TwoDG.Util:unique_rows
+using TwoDG.Utils:unique_rows
 
 """
     simpvol(p::Matrix{T}, t::Matrix{Int}) where T<:Real
