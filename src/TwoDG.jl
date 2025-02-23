@@ -5,7 +5,8 @@ module TwoDG
 export 
     Mesh,
     unique_rows,
-    make_circle_mesh, fixmesh, mkt2f, setbndnbrs, createnodes,
+    make_circle_mesh, make_square_mesh,
+    fixmesh, mkt2f, setbndnbrs, createnodes,
     uniformlocalpnts,
     meshplot_curved
 

@@ -6,7 +6,8 @@ using TwoDG.Utils
 
 export
     Mesh,
-    make_circle_mesh, fixmesh, mkt2f, setbndnbrs, createnodes
+    make_circle_mesh, make_square_mesh,
+    fixmesh, mkt2f, setbndnbrs, createnodes
 
 include("make_meshes.jl")
 include("node_preprocessing.jl")
