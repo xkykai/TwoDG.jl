@@ -23,6 +23,10 @@ struct Mesh{P, T, F, TF, FC, TC, PO, PL, TL, DG}
                                                                                 typeof(fcurved), typeof(tcurved), typeof(porder),
                                                                                 typeof(plocal), typeof(tlocal), typeof(dgnodes)}(
                                                                                 p, t, f, t2f, fcurved, tcurved, porder, plocal, tlocal, dgnodes)
+
+    Mesh(p, t, porder, plocal, tlocal) = new{typeof(p), typeof(t), Nothing, Nothing, Nothing, Nothing, typeof(porder),
+                                             typeof(plocal), typeof(tlocal), Nothing}(p, t, nothing, nothing, nothing, nothing, porder, plocal, tlocal, nothing)
+
     
     Mesh(mesh::Mesh, dgnodes) = new{typeof(mesh.p), typeof(mesh.t), typeof(mesh.f), typeof(mesh.t2f), 
                                     typeof(mesh.fcurved), typeof(mesh.tcurved), typeof(mesh.porder),
@@ -155,12 +159,11 @@ function createnodes(mesh, fd=nothing)
         v₂ = mesh.p[vn₂, :]
         v₃ = mesh.p[vn₃, :]
 
-        iscurved_triangle = mesh.tcurved[it]
+        iscurved_triangle = mesh.tcurved !== nothing && mesh.tcurved[it]
         for ipl in axes(dgnodes, 1)
             λ = mesh.plocal[ipl, :]
             x = barycentric_to_cartesian(λ[2:3], v₁, v₂, v₃)
             dgnodes[ipl, :, it] .= x
-            # if fd !== nothing && iscurved_triangle && !isvertex(λ) && isedge(λ) && iscurvededge(λ, mesh, vn₁, vn₂, vn₃, it)
             if fd !== nothing && iscurved_triangle && !isvertex(λ) && isedge(λ) && iscurvedboundary(λ, mesh, vn₁, vn₂, vn₃, it)
                 fdn = get_boundary_number(mesh, it)
                 x = project_to_boundary(fd[fdn], x)
