@@ -37,11 +37,11 @@ end
 
 autodiff(f) = x -> ForwardDiff.derivative(f, x)
 
-function project_to_boundary(distance_function, x₀)
+function project_to_boundary(distance_function, x₀, s=0.1)
     grad = ForwardDiff.gradient(distance_function, x₀)
     grad_norm = grad / norm(grad)
     fd_linedirection(s) = distance_function(x₀ .+ s .* grad_norm)
-    s = newton_raphson(fd_linedirection, autodiff(fd_linedirection), 0.1)
+    s = newton_raphson(fd_linedirection, autodiff(fd_linedirection), s)
     return x₀ .+ s .* grad_norm
 end
 
@@ -81,16 +81,35 @@ function iscurvededge(λ, mesh, vn₁, vn₂, vn₃, it)
 
 end
 
+function iscurvedboundary(λ, mesh, vn₁, vn₂, vn₃, it)
+    Eₙ = edge_number(λ)
+    i_bnd = findfirst(x -> x < 0, mesh.f[:, 4])
+    all_curved_boundaries = mesh.f[i_bnd:end, :]
+    row_number = findfirst(x -> x == it, all_curved_boundaries[:, 3])
+
+    if row_number === nothing
+        return false
+    elseif Eₙ == 1
+        return (vn₁ == all_curved_boundaries[row_number, 1] && vn₂ == all_curved_boundaries[row_number, 2]) || (vn₁ == all_curved_boundaries[row_number, 2] && vn₂ == all_curved_boundaries[row_number, 1])
+    elseif Eₙ == 2
+        return (vn₂ == all_curved_boundaries[row_number, 1] && vn₃ == all_curved_boundaries[row_number, 2]) || (vn₂ == all_curved_boundaries[row_number, 2] && vn₃ == all_curved_boundaries[row_number, 1])
+    else
+        return (vn₃ == all_curved_boundaries[row_number, 1] && vn₁ == all_curved_boundaries[row_number, 2]) || (vn₃ == all_curved_boundaries[row_number, 2] && vn₁ == all_curved_boundaries[row_number, 1])
+    end
+end
+
 function get_boundary_number(mesh, it)
-    all_curved_faces = mesh.f[mesh.fcurved, :]
-    row_number = findfirst(x -> x == it, all_curved_faces[:, 3])
-    return -all_curved_faces[row_number, 4]
+    i_bnd = findfirst(x -> x < 0, mesh.f[:, 4])
+    all_curved_boundaries = mesh.f[i_bnd:end, :]
+    row_number = findfirst(x -> x == it, all_curved_boundaries[:, 3])
+    return -all_curved_boundaries[row_number, 4]
 end
 
 function project_vertex_to_boundary!(mesh::Mesh, distance_functions::Union{Nothing, Vector})
     if distance_functions !== nothing
-        n_curves = length(Set(mesh.f[mesh.fcurved, 4]))
-        all_curved_faces = mesh.f[mesh.fcurved, :]
+        i_bnd = findfirst(x -> x < 0, mesh.f[:, 4])
+        n_curves = length(Set(mesh.f[i_bnd:end, 4]))
+        all_curved_faces = mesh.f[i_bnd:end, :]
 
         for i in 1:n_curves
             fd = distance_functions[i]
@@ -103,7 +122,7 @@ function project_vertex_to_boundary!(mesh::Mesh, distance_functions::Union{Nothi
 
             for node in keys(unique_curved_nodes)
                 node_coords = mesh.p[node, :]
-                mesh.p[node, :] .= project_to_boundary(abs_fd, node_coords)
+                mesh.p[node, :] .= project_to_boundary(abs_fd, node_coords, 0.1)
             end
         end
     end
@@ -141,7 +160,8 @@ function createnodes(mesh, fd=nothing)
             λ = mesh.plocal[ipl, :]
             x = barycentric_to_cartesian(λ[2:3], v₁, v₂, v₃)
             dgnodes[ipl, :, it] .= x
-            if fd !== nothing && iscurved_triangle && !isvertex(λ) && isedge(λ) && iscurvededge(λ, mesh, vn₁, vn₂, vn₃, it)
+            # if fd !== nothing && iscurved_triangle && !isvertex(λ) && isedge(λ) && iscurvededge(λ, mesh, vn₁, vn₂, vn₃, it)
+            if fd !== nothing && iscurved_triangle && !isvertex(λ) && isedge(λ) && iscurvedboundary(λ, mesh, vn₁, vn₂, vn₃, it)
                 fdn = get_boundary_number(mesh, it)
                 x = project_to_boundary(fd[fdn], x)
                 dgnodes[ipl, :, it] .= x
