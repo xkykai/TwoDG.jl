@@ -20,7 +20,7 @@ function mkmesh_trefftz(m=15, n=30, porder=3, node_spacing_type=0, tparam=[0.1, 
     
     scatter(p[:, 1], p[:, 2])
     
-    plocal, tlocal = uniformlocalpnts(3)
+    plocal, tlocal = uniformlocalpnts(porder)
     
     mesh = TwoDG.Mesh(p, t, 3, plocal, tlocal)
     mesh = createnodes(mesh)
