@@ -12,14 +12,14 @@ koornwinder1d vandermonde matrix for legenedre polynomials in [0,1]
    fx:        vandermonde matrix for the derivative of the koornwinder
               polynomials w.r.t. x (npoints,npoly) 
 """
-function koornwinder1d(x::AbstractVector{T}, p::Integer) where T<:Real
+function koornwinder1d(x, p::Integer)
     # Transform x from [0,1] to [-1,1]
     x_transformed = 2x .- 1
     
     # Preallocate output arrays
     npoints = length(x)
-    f = Matrix{T}(undef, npoints, p + 1)
-    fx = Matrix{T}(undef, npoints, p + 1)
+    f = zeros(npoints, p + 1)
+    fx = zeros(npoints, p + 1)
     
     # Fill matrices
     for i in 0:p
@@ -76,16 +76,16 @@ koornwinder2d vandermonde matrix for koornwinder polynomials in
    fy:        vandermonde matrix for the derivative of the koornwinder
               polynomials w.r.t. y (npoints,npoly)
 """
-function koornwinder2d(x::Matrix{T}, p::Integer) where T<:Real
+function koornwinder2d(x, p::Integer)
     # Calculate number of polynomials
     npol = div((p + 1) * (p + 2), 2)
     npoints = size(x, 1)
     
     # Transform coordinates and preallocate matrices
     x_transformed = 2x .- 1
-    f = Matrix{T}(undef, npoints, npol)
-    fx = Matrix{T}(undef, npoints, npol)
-    fy = Matrix{T}(undef, npoints, npol)
+    f = zeros(npoints, npol)
+    fx = zeros(npoints, npol)
+    fy = zeros(npoints, npol)
     
     # Get pascal indices
     pq = pascalindex(npol)

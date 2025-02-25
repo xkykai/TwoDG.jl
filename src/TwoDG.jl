@@ -11,12 +11,13 @@ export
     uniformlocalpnts,
     meshplot_curved,
     gaussquad1d, gaussquad2d, newton_raphson,
-    koornwinder1d, koornwinder2d
+    koornwinder1d, koornwinder2d,
+    areacircle
 
 include("Utils/Utils.jl")
-include("App/App.jl")
 include("Meshes/Meshes.jl")
 include("Masters/Masters.jl")
+include("App/App.jl")
 
 using .App
 using .Masters
