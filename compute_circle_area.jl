@@ -1,5 +1,7 @@
 using TwoDG
 using CairoMakie
+using DataFrames
+using CSV
 
 sizs = [0.4, 0.2, 0.1]
 porders = [1, 2, 3]
@@ -37,4 +39,17 @@ axislegend(ax3, position=:lb)
 display(fig)
 save("./output/area_perimeter_difference.png", fig, px_per_unit=4)
 save("./output/area_perimeter_difference.pdf", fig)
+#%%
+df1 = DataFrame(area1s', :auto)
+rename!(df1, Symbol.(sizs))
+
+df2 = DataFrame(area2s', :auto)
+rename!(df2, Symbol.(sizs))
+
+df3 = DataFrame(perims', :auto)
+rename!(df3, Symbol.(sizs))
+#%%
+CSV.write("./output/area1.csv", df1)
+CSV.write("./output/area2.csv", df2)
+CSV.write("./output/perimeter.csv", df3)
 #%%
