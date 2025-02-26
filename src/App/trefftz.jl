@@ -1,4 +1,6 @@
 using Interpolations
+using TwoDG.Meshes: mkmesh_trefftz
+using TwoDG.Masters: Master, shape2d
 
 function trefftz_points(tparam=[0.1, 0.05, 1.98], np=120)
     # Extract parameters
@@ -47,9 +49,9 @@ function potential_trefftz(x, y; V=1.0, alpha=0.0, tparam=[0.1, 0.05, 1.98])
                   tparam[3] = k-t exponent (=< 2) (2:jukowski). (default=1.98)
     """
     # Extract parameters
-    x0 = Float64(tparam[1])
-    y0 = Float64(tparam[2])
-    n = Float64(tparam[3])
+    x0 = tparam[1]
+    y0 = tparam[2]
+    n = tparam[3]
     
     # First Rotate to ensure that a point stays at the trailing edge
     rot = atan(y0, 1+x0)
@@ -71,8 +73,33 @@ function potential_trefftz(x, y; V=1.0, alpha=0.0, tparam=[0.1, 0.05, 1.98])
     ii = argmin(real.(wd))
     
     # Create cubic splines for the camber line
-    sup = CubicSplineInterpolation(reverse(real.(wd[1:ii])), reverse(imag.(wd[1:ii])))
-    slo = CubicSplineInterpolation(real.(wd[ii:end]), imag.(wd[ii:end]))
+
+    # Convert to AbstractRange for the knots - this addresses the error
+    x_sup = reverse(real.(wd[1:ii]))
+    y_sup = reverse(imag.(wd[1:ii]))
+    x_slo = real.(wd[ii:end])
+    y_slo = imag.(wd[ii:end])
+
+    # Use the cubic_spline_interpolation function with proper syntax
+    sup = cubic_spline_interpolation(range(0, 1, length=length(x_sup)), y_sup, extrapolation_bc=Line())
+    slo = cubic_spline_interpolation(range(0, 1, length=length(x_slo)), y_slo, extrapolation_bc=Line())
+
+    # Create lookup functions that map from x to y for the camber line
+    function sup_func(x)
+        # Find normalized position
+        idx = (x - minimum(x_sup)) / (maximum(x_sup) - minimum(x_sup))
+        # Clamp to valid range
+        idx = clamp(idx, 0.0, 1.0)
+        return sup(idx)
+    end
+
+    function slo_func(x)
+        # Find normalized position
+        idx = (x - minimum(x_slo)) / (maximum(x_slo) - minimum(x_slo))
+        # Clamp to valid range
+        idx = clamp(idx, 0.0, 1.0)
+        return slo(idx)
+    end
     
     # K-T inverse mapping
     A = (z .- n) ./ (z .+ n)
@@ -83,7 +110,7 @@ function potential_trefftz(x, y; V=1.0, alpha=0.0, tparam=[0.1, 0.05, 1.98])
     zi = imag.(z)
     
     # Pre-compute the middle of camber line
-    midpts = [0.5 * (sup(zr[i]) + slo(zr[i])) for i in eachindex(zr) if zr[i] > xle && zr[i] <= n]
+    midpts = [0.5 * (sup_func(zr[i]) + slo_func(zr[i])) for i in eachindex(zr) if zr[i] > xle && zr[i] <= n]
     
     # Apply phase corrections
     for i in eachindex(z)
@@ -153,4 +180,40 @@ function potential_trefftz(x, y; V=1.0, alpha=0.0, tparam=[0.1, 0.05, 1.98])
     vely = imag.(dphi)
     
     return psi, velx, vely, Gamma
+end
+
+function trefftz(V∞, α, m=15, n=30, porder=3, node_spacing_type=0, tparam=[0.1, 0.05, 1.98])
+    # Generate mesh
+    mesh = mkmesh_trefftz(m, n, porder, node_spacing_type, tparam)
+    master = Master(mesh)
+    dgnodes = mesh.dgnodes
+    
+    # Calculate potential
+    ψ, vx_analytical, vy_analytical, Γ_analytical = potential_trefftz(mesh.dgnodes[:, 1, :], mesh.dgnodes[:, 2, :], V=V∞, alpha=α, tparam=tparam)
+
+    shapefunction_dgnodes = zeros(size(mesh.plocal, 1), 3, size(dgnodes, 1), size(dgnodes, 3))
+    for i in axes(dgnodes, 1)
+        shapefunction_dgnodes[:, :, i, :] .= shape2d(mesh.porder, mesh.plocal, dgnodes[i, :, :]')
+    end
+
+    shapefunction_local = shape2d(porder, master.plocal, master.plocal)
+
+    vx = zeros(size(ψ))
+    vy = zeros(size(ψ))
+    @info size(ψ)
+
+    for i in axes(dgnodes, 3)
+        element_coordinates = @view dgnodes[:, :, i]
+        for j in axes(master.plocal, 1)
+            J = shapefunction_local[:, 2:3, j]' * element_coordinates
+            invJ = inv(J)
+
+            v_components = [ψ[k, i] .* (invJ * shapefunction_local[k, 2:3, j]) for k in axes(master.plocal, 1)]
+
+            vx[j, i] = -sum([vel[2] for vel in v_components])
+            vy[j, i] = sum([vel[1] for vel in v_components])
+        end
+    end
+
+    return mesh, master,  ψ, vx, vy, vx_analytical, vy_analytical, Γ_analytical
 end

@@ -12,7 +12,7 @@ export
     meshplot, scaplot, meshplot_curved,
     gaussquad1d, gaussquad2d, newton_raphson,
     koornwinder1d, koornwinder2d,
-    areacircle, trefftz_points, potential_trefftz
+    areacircle, trefftz_points, potential_trefftz, trefftz
 
 include("Utils/Utils.jl")
 include("Meshes/Meshes.jl")
