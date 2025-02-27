@@ -95,6 +95,7 @@ function koornwinder2d(x::AbstractMatrix{<:Real}, p::Int)
     # Copy x to avoid modifying the original array
     xc = copy(x)
     # Adjust second coordinate (column 2 in Julia) to avoid singularities
+    # xc[:, 2] .= min.(0.99999999, xc[:, 2])
     xc[:, 2] .= min.(0.99999999, xc[:, 2])
     
     # Set up the evaluation coordinates e.
@@ -105,19 +106,18 @@ function koornwinder2d(x::AbstractMatrix{<:Real}, p::Int)
     
     # For points where the original x's second coordinate equals 1,
     # set e accordingly (Python: e[ii,0]=-1, e[ii,1]=1; Julia: columns 1 and 2).
-    idx = findall(x[:, 2] .== 1.0)
-    for i in idx
-        e[i, 1] = -1.0
-        e[i, 2] = 1.0
-    end
+    # comment this out in the Julia code, else it creates singularity!
+    # idx = findall(x[:, 2] .== 1.0)
+    # for i in idx
+    #     e[i, 1] = -1.0
+    #     e[i, 2] = 1.0
+    # end
     
     # Build the Vandermonde matrix for the Koornwinder polynomials
     for i in 1:npol
         p_order = pq[i, 1]  # corresponds to pq[ii,0] in Python
         q_order = pq[i, 2]  # corresponds to pq[ii,1] in Python
         # Obtain Jacobi polynomial coefficients for p and q parts.
-        # pp = Polynomial(jacobi(p_order, 0, 0))
-        # qp = Polynomial(jacobi(q_order, 2 * p_order + 1, 0))
         pp = poly_jacobi(p_order, 0, 0)
         qp = poly_jacobi(q_order, 2 * p_order + 1, 0)
         
@@ -154,17 +154,10 @@ function koornwinder2d(x::AbstractMatrix{<:Real}, p::Int)
         for j in 1:p_order
             qp = Polynomial(reverse(conv([-0.5, 0.5], reverse(qp.coeffs))))
         end
-        # @info "i = $i, qp = $qp"
-
-        # @info "i = $i, pp = $pp"
-        # @info "i = $i, qp = $qp"
         
         # Compute derivative polynomials.
         dpp = derivative(pp)
         dqp = derivative(qp)
-        
-        # @info "i = $i, dpp = $dpp"
-        # @info "i = $i, dqp = $dqp"
 
         # Evaluate polynomials and their derivatives.
         pval  = pp.(e[:, 1])
@@ -172,20 +165,9 @@ function koornwinder2d(x::AbstractMatrix{<:Real}, p::Int)
         dpval = dpp.(e[:, 1])
         dqval = dqp.(e[:, 2])
 
-        # @info "i = $i, pval = $(pval[1])"
-        # @info "i = $i, qp = $qp, e[:, 2] = $(e[:, 2])"
-        # @info "i = $i, qval = $(qval[1])"
-        # @info "i = $i, dpval = $(dpval[1])"
-        # @info "i = $i, dqval = $(dqval[1])"
         
         fc = sqrt((2.0 * p_order + 1.0) * 2.0 * (p_order + q_order + 1.0))
-        # @info "i = $i, fc = $fc"
-        # @info "i = $i, de1[:, 1] =  $(de1[:, 1])"
-        # @info "i = $i, de1[:, 2] =  $(de1[:, 2])"
         
-        # @info "i = $i, fc = $fc, dpval = $dpval, qval = $qval, de1[:, 2] = $(de1[:, 2]), pval = $pval, dqval = $dqval"
-        # @info "i = $i, fx[:, i] = $(fx[:, i])"
-        # @info "i = $i, fc = $fc, dpval = $dpval, qval = $qval, de1[:, 1] = $(de1[:, 1])"
         fx[:, i] .= fc .* dpval .* qval .* de1[:, 1]
         fy[:, i] .= fc .* (dpval .* qval .* de1[:, 2] .+ pval .* dqval)
     end
