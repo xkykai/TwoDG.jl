@@ -122,9 +122,10 @@ function koornwinder2d(x::AbstractMatrix{<:Real}, p::Int)
         qp = poly_jacobi(q_order, 2 * p_order + 1, 0)
         
         # Convolve qp with [-0.5, 0.5] p_order times.
-        # Note, np.convolve and DSP.conv does convolution in reverse order!!
+        # Note Polynomual convention is different between Python and Julia.
+        # In Python, the coefficients are in decreasing order, while in Julia, they are in increasing order.
         for j in 1:p_order
-            qp = Polynomial(conv([-0.5, 0.5], qp.coeffs, algorithm=:direct))
+            qp = Polynomial(reverse(conv([0.5, -0.5], reverse(qp.coeffs))))
         end
         
         # Evaluate the polynomials at the mapped coordinates.
@@ -151,7 +152,7 @@ function koornwinder2d(x::AbstractMatrix{<:Real}, p::Int)
         pp = poly_jacobi(p_order, 0, 0)
         qp = poly_jacobi(q_order, 2 * p_order + 1, 0)
         for j in 1:p_order
-            qp = Polynomial(conv([0.5, -0.5], qp.coeffs, algorithm=:direct))
+            qp = Polynomial(reverse(conv([-0.5, 0.5], reverse(qp.coeffs))))
         end
         # @info "i = $i, qp = $qp"
 
