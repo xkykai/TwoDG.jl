@@ -168,11 +168,8 @@ function shape2d(porder, plocal, pts)
     # Number of evaluation points
     npoints = size(pts, 1)
     
-    # Create Vandermonde matrix at node locations
-    V, Vξ, Vη = koornwinder2d(plocal, porder)
-    
     # Calculate coefficient matrix A
-    A = (V \ I)
+    A, _, _ = koornwinder2d(plocal[:, 2:3], porder)
     
     # Initialize output array for shape functions and derivatives
     nfs = zeros(np, 3, npoints)
@@ -180,9 +177,13 @@ function shape2d(porder, plocal, pts)
     # Evaluate at all points
     Λ, Λξ, Λη = koornwinder2d(pts, porder)
 
-    nfs[:, 1, :] = (Λ * A)'
-    nfs[:, 2, :] = (Λξ * A)'
-    nfs[:, 3, :] = (Λη * A)'
+    ϕ = Λ / A
+    ψξ = Λξ / A
+    ψη = Λη / A
+
+    nfs[:, 1, :] .= ϕ'
+    nfs[:, 2, :] .= ψξ'
+    nfs[:, 3, :] .= ψη'
     
     return nfs
 end
