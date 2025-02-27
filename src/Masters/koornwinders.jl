@@ -1,4 +1,6 @@
 using Jacobi
+using Polynomials
+using DSP
 
 """      
 koornwinder1d vandermonde matrix for legenedre polynomials in [0,1]
@@ -76,81 +78,118 @@ koornwinder2d vandermonde matrix for koornwinder polynomials in
    fy:        vandermonde matrix for the derivative of the koornwinder
               polynomials w.r.t. y (npoints,npoly)
 """
-function koornwinder2d(x, p::Integer)
-    # Calculate number of polynomials
-    npol = div((p + 1) * (p + 2), 2)
+function koornwinder2d(x::AbstractMatrix{<:Real}, p::Int)
+    # Transform coordinates from [0,1] to [-1,1]
+    x = 2 .* x .- 1.0
     npoints = size(x, 1)
+    npol = div((p + 1) * (p + 2), 2)
     
-    # Transform coordinates and preallocate matrices
-    x_transformed = 2x .- 1
-    f = zeros(npoints, npol)
-    fx = zeros(npoints, npol)
-    fy = zeros(npoints, npol)
+    # Preallocate matrices for function values and derivatives
+    f  = zeros(Float64, npoints, npol)
+    fx = zeros(Float64, npoints, npol)
+    fy = zeros(Float64, npoints, npol)
     
-    # Get pascal indices
+    # Get polynomial order pairs (assumed to be provided by pascalindex)
     pq = pascalindex(npol)
     
-    # Handle coordinate transformation
-    xc = copy(x_transformed)
-    xc[:, 2] = min.(0.99999999, xc[:, 2])  # Displace coordinate for singular node
+    # Copy x to avoid modifying the original array
+    xc = copy(x)
+    # Adjust second coordinate (column 2 in Julia) to avoid singularities
+    xc[:, 2] .= min.(0.99999999, xc[:, 2])
     
-    # Calculate transformed coordinates
-    e = similar(xc)
-    e[:, 1] = @. 2(1 + xc[:, 1]) / (1 - xc[:, 2]) - 1
-    e[:, 2] = xc[:, 2]
+    # Set up the evaluation coordinates e.
+    # In Python, e[:,0] corresponds to the first column; in Julia, we use column 1.
+    e = zeros(Float64, size(xc))
+    e[:, 1] .= 2 .* (1.0 .+ xc[:, 1]) ./ (1 .- xc[:, 2]) .- 1.0
+    e[:, 2] .= xc[:, 2]
     
-    # Correct values for singular points
-    singular_points = findall(x_transformed[:, 2] .≈ 1.0)
-    e[singular_points, 1] .= -1.0
-    e[singular_points, 2] .= 1.0
-    
-    # Calculate function values
-    for i in 1:npol
-        p_degree = pq[i, 1]
-        q_degree = pq[i, 2]
-        
-        # Calculate normalization factor
-        fc = sqrt((2.0 * p_degree + 1.0) * 2.0 * (p_degree + q_degree + 1.0))
-        
-        # Evaluate Jacobi polynomials directly
-        pval = jacobi.(e[:, 1], p_degree, 0, 0)
-        qval = jacobi.(e[:, 2], q_degree, 2p_degree + 1, 0)
-        
-        # Apply shift for q polynomial
-        qval .*= (-0.5)^p_degree
-        
-        # Store results
-        f[:, i] = fc .* pval .* qval
+    # For points where the original x's second coordinate equals 1,
+    # set e accordingly (Python: e[ii,0]=-1, e[ii,1]=1; Julia: columns 1 and 2).
+    idx = findall(x[:, 2] .== 1.0)
+    for i in idx
+        e[i, 1] = -1.0
+        e[i, 2] = 1.0
     end
     
-    # Calculate derivatives
-    de1 = similar(xc)
-    de1[:, 1] = @. 2.0 / (1 - xc[:, 2])
-    de1[:, 2] = @. 2(1 + xc[:, 1]) / (1 - xc[:, 2])^2
-    
+    # Build the Vandermonde matrix for the Koornwinder polynomials
     for i in 1:npol
-        p_degree = pq[i, 1]
-        q_degree = pq[i, 2]
+        p_order = pq[i, 1]  # corresponds to pq[ii,0] in Python
+        q_order = pq[i, 2]  # corresponds to pq[ii,1] in Python
+        # Obtain Jacobi polynomial coefficients for p and q parts.
+        # pp = Polynomial(jacobi(p_order, 0, 0))
+        # qp = Polynomial(jacobi(q_order, 2 * p_order + 1, 0))
+        pp = poly_jacobi(p_order, 0, 0)
+        qp = poly_jacobi(q_order, 2 * p_order + 1, 0)
         
-        # Calculate normalization factor
-        fc = sqrt((2.0 * p_degree + 1.0) * 2.0 * (p_degree + q_degree + 1.0))
+        # Convolve qp with [-0.5, 0.5] p_order times.
+        # Note, np.convolve and DSP.conv does convolution in reverse order!!
+        for j in 1:p_order
+            qp = Polynomial(conv([-0.5, 0.5], qp.coeffs, algorithm=:direct))
+        end
         
-        # Evaluate polynomials and their derivatives
-        pval = jacobi.(e[:, 1], p_degree, 0, 0)
-        qval = jacobi.(e[:, 2], q_degree, 2p_degree + 1, 0)
-        dpval = djacobi.(e[:, 1], p_degree, 0, 0)
-        dqval = djacobi.(e[:, 2], q_degree, 2p_degree + 1, 0)
+        # Evaluate the polynomials at the mapped coordinates.
+        pval = pp.(e[:, 1])
+        qval = qp.(e[:, 2])
         
-        # Apply shift for q polynomial
-        qval .*= (-0.5)^p_degree
-        dqval .*= (-0.5)^p_degree
+        # Compute the scaling factor
+        fc = sqrt((2.0 * p_order + 1.0) * 2.0 * (p_order + q_order + 1.0))
         
-        # Store derivatives
-        fx[:, i] = fc .* (dpval .* qval .* de1[:, 1])
-        fy[:, i] = fc .* (dpval .* qval .* de1[:, 2] .+ pval .* dqval)
+        f[:, i] .= fc .* pval .* qval
+    end
+
+    
+    # Compute the derivatives of the mapping from (x₁,x₂) to (e₁,e₂)
+    de1 = zeros(size(xc))
+    de1[:, 1] .= 2.0 ./ (1 .- xc[:, 2])
+    de1[:, 2] .= 2.0 .* (1.0 .+ xc[:, 1]) ./ ((1 .- xc[:, 2]).^2)
+    
+    # Build the Vandermonde matrices for the derivatives.
+    for i in 1:npol
+        p_order = pq[i, 1]
+        q_order = pq[i, 2]
+        
+        pp = poly_jacobi(p_order, 0, 0)
+        qp = poly_jacobi(q_order, 2 * p_order + 1, 0)
+        for j in 1:p_order
+            qp = Polynomial(conv([0.5, -0.5], qp.coeffs, algorithm=:direct))
+        end
+        # @info "i = $i, qp = $qp"
+
+        # @info "i = $i, pp = $pp"
+        # @info "i = $i, qp = $qp"
+        
+        # Compute derivative polynomials.
+        dpp = derivative(pp)
+        dqp = derivative(qp)
+        
+        # @info "i = $i, dpp = $dpp"
+        # @info "i = $i, dqp = $dqp"
+
+        # Evaluate polynomials and their derivatives.
+        pval  = pp.(e[:, 1])
+        qval  = qp.(e[:, 2])
+        dpval = dpp.(e[:, 1])
+        dqval = dqp.(e[:, 2])
+
+        # @info "i = $i, pval = $(pval[1])"
+        # @info "i = $i, qp = $qp, e[:, 2] = $(e[:, 2])"
+        # @info "i = $i, qval = $(qval[1])"
+        # @info "i = $i, dpval = $(dpval[1])"
+        # @info "i = $i, dqval = $(dqval[1])"
+        
+        fc = sqrt((2.0 * p_order + 1.0) * 2.0 * (p_order + q_order + 1.0))
+        # @info "i = $i, fc = $fc"
+        # @info "i = $i, de1[:, 1] =  $(de1[:, 1])"
+        # @info "i = $i, de1[:, 2] =  $(de1[:, 2])"
+        
+        # @info "i = $i, fc = $fc, dpval = $dpval, qval = $qval, de1[:, 2] = $(de1[:, 2]), pval = $pval, dqval = $dqval"
+        # @info "i = $i, fx[:, i] = $(fx[:, i])"
+        # @info "i = $i, fc = $fc, dpval = $dpval, qval = $qval, de1[:, 1] = $(de1[:, 1])"
+        fx[:, i] .= fc .* dpval .* qval .* de1[:, 1]
+        fy[:, i] .= fc .* (dpval .* qval .* de1[:, 2] .+ pval .* dqval)
     end
     
-    # Scale derivatives
+    # Adjust derivatives by a factor of 2.
     fx .*= 2.0
     fy .*= 2.0
     
