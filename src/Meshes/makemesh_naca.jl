@@ -4,14 +4,13 @@ using DataFrames
 using CairoMakie
 using LinearAlgebra
     
-function naca0012(x)
+function naca0012(x, t=10)
     """Generate y-coordinates for NACA0012 airfoil at given x-coordinates"""
-    t = 10
     y = 0.05 * t * (0.2969 * sqrt(x) - 0.1260 * x - 0.3516 * x^2 + 0.2843 * x^3 - 0.1015 * x^4)
     return y
 end
 
-function gmsh_naca(name="naca0012")
+function gmsh_naca(t=10, name="naca0012", display_gmsh=false)
     # Initialize Gmsh
     gmsh.initialize()
     gmsh.model.add(name)
@@ -23,6 +22,38 @@ function gmsh_naca(name="naca0012")
     mesh_size_le = 0.05  # Slightly increased mesh size at leading edge
     mesh_size_te = 0.05  # Slightly increased mesh size at trailing edge
     mesh_size_farfield = 0.2  # Increased mesh size at far-field
+
+    # Generate airfoil points
+    x = range(0, chord, length=n_points)
+    y_upper = naca0012.(x, t)
+    y_lower = -y_upper
+
+    # Add points
+    points = Int[]
+    # Upper surface (from trailing edge to leading edge)
+    for i in reverse(1:n_points)
+        point_tag = gmsh.model.geo.addPoint(x[i], y_upper[i], 0, mesh_size_airfoil)
+        push!(points, point_tag)
+    end
+
+    # Lower surface (from leading edge to trailing edge)
+    for i in 2:n_points
+        point_tag = gmsh.model.geo.addPoint(x[i], y_lower[i], 0, mesh_size_airfoil)
+        push!(points, point_tag)
+    end
+
+    # Create airfoil splines
+    airfoil_lines = Int[]
+
+    # Upper surface spline (from trailing edge to leading edge)
+    upper_line = gmsh.model.geo.addSpline(points[1:n_points])
+    push!(airfoil_lines, upper_line)
+
+    # Lower surface spline (from leading edge to trailing edge)
+    # We need to make sure this connects properly with the upper surface
+    lower_points = vcat([points[n_points]], points[n_points+1:end], [points[1]])
+    lower_line = gmsh.model.geo.addSpline(lower_points)
+    push!(airfoil_lines, lower_line)
 
     # Add mesh size fields for refinement
     # Leading edge point field
@@ -89,38 +120,6 @@ function gmsh_naca(name="naca0012")
     gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)  # Don't compute mesh size from points
     gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)  # Don't compute mesh size from curvature
 
-    # Generate airfoil points
-    x = range(0, chord, length=n_points)
-    y_upper = naca0012.(x)
-    y_lower = -y_upper
-
-    # Add points
-    points = Int[]
-    # Upper surface (from trailing edge to leading edge)
-    for i in reverse(1:n_points)
-        point_tag = gmsh.model.geo.addPoint(x[i], y_upper[i], 0, mesh_size_airfoil)
-        push!(points, point_tag)
-    end
-
-    # Lower surface (from leading edge to trailing edge)
-    for i in 2:n_points
-        point_tag = gmsh.model.geo.addPoint(x[i], y_lower[i], 0, mesh_size_airfoil)
-        push!(points, point_tag)
-    end
-
-    # Create airfoil splines
-    airfoil_lines = Int[]
-
-    # Upper surface spline (from trailing edge to leading edge)
-    upper_line = gmsh.model.geo.addSpline(points[1:n_points])
-    push!(airfoil_lines, upper_line)
-
-    # Lower surface spline (from leading edge to trailing edge)
-    # We need to make sure this connects properly with the upper surface
-    lower_points = vcat([points[n_points]], points[n_points+1:end], [points[1]])
-    lower_line = gmsh.model.geo.addSpline(lower_points)
-    push!(airfoil_lines, lower_line)
-
     # Create rectangular far-field boundary
     # Define rectangle dimensions
     x_min = -3  # Distance upstream of airfoil
@@ -165,9 +164,9 @@ function gmsh_naca(name="naca0012")
     gmsh.model.setPhysicalName(2, domain_tag, "FluidDomain")
 
     # # Optional: Show the mesh in the Gmsh GUI
-    # if !("-nopopup" in ARGS)
-    #     gmsh.fltk.run()
-    # end
+    if display_gmsh
+        gmsh.fltk.run()
+    end
 
     gmsh.finalize()
 end
@@ -201,8 +200,9 @@ function read_gmsh_mesh(filepath)
     # return nodeCoords, elementNodeTags
 end
 
-function mkmesh_naca(porder=2)
-    p, t = read_gmsh_mesh("naca0012.msh")
+function mkmesh_naca(t_naca = 10, porder=2, name="naca0012", display_gmsh=false)
+    gmsh_naca(t_naca, name, display_gmsh)
+    p, t = read_gmsh_mesh("$name.msh")
     p, t = fixmesh(p, t)
 
     f, t2f = mkt2f(t)
@@ -211,7 +211,7 @@ function mkmesh_naca(porder=2)
         xs, ys = p[:, 1], p[:, 2]
         outputs = falses(size(p, 1))
         for i in 1:size(p, 1)
-            outputs[i] = xs[i] >= 0 && ((ys[i] - naca0012(abs(xs[i]))) ^ 2 < 1e-4 || (ys[i] + naca0012(abs(xs[i]))) ^ 2 < 1e-4)
+            outputs[i] = xs[i] >= 0 && ((ys[i] - naca0012(abs(xs[i]), t_naca)) ^ 2 < 1e-4 || (ys[i] + naca0012(abs(xs[i]))) ^ 2 < 1e-4)
         end
         return outputs
     end
@@ -233,6 +233,26 @@ function mkmesh_naca(porder=2)
     plocal, tlocal = uniformlocalpnts(porder)
     
     mesh = TwoDG.Mesh(p, t, f, t2f, fcurved, tcurved, porder, plocal, tlocal)
+
+    fd_left(p) = abs(p[1] + 3)
+    fd_right(p) = abs(p[1] - 5)
+    fd_bottom(p) = abs(p[2] + 3)
+    fd_top(p) = abs(p[2] - 3)
+
+    # fd_airfoil(p) = min(abs(naca0012(p[1], t_naca) - p[2]), abs(-naca0012(p[1], t_naca) - p[2]))
+    function fd_airfoil(p)
+        if p[2] > 0
+            return (naca0012(abs(p[1]), t_naca) - p[2])^2
+        else
+            # @info "Lower"
+            # @info -naca0012(p[1], t_naca)
+            # @info p[2]
+            return (-naca0012(p[1], t_naca) - p[2])^2
+        end
+    end
+
+    fds = [fd_airfoil, fd_left, fd_right, fd_bottom, fd_top]
+
     mesh = createnodes(mesh)
 
     return mesh
