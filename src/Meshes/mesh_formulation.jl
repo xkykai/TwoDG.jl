@@ -26,7 +26,6 @@ struct Mesh{P, T, F, TF, FC, TC, PO, PL, TL, DG}
 
     Mesh(p, t, porder, plocal, tlocal) = new{typeof(p), typeof(t), Nothing, Nothing, Nothing, Nothing, typeof(porder),
                                              typeof(plocal), typeof(tlocal), Nothing}(p, t, nothing, nothing, nothing, nothing, porder, plocal, tlocal, nothing)
-
     
     Mesh(mesh::Mesh, dgnodes) = new{typeof(mesh.p), typeof(mesh.t), typeof(mesh.f), typeof(mesh.t2f), 
                                     typeof(mesh.fcurved), typeof(mesh.tcurved), typeof(mesh.porder),

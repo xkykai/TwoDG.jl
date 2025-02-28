@@ -160,8 +160,6 @@ nfs:       shape function adn derivatives (np,3,npoints)
              nsf[:,2,:] shape fucntions derivatives w.r.t. y
 """
 function shape2d(porder, plocal, pts)
-    # shap = shape2d(master.porder, master.plocal, gpts)
-
     # Calculate number of nodes for this polynomial order
     np = (porder + 1) * (porder + 2) ÷ 2
     
@@ -169,21 +167,25 @@ function shape2d(porder, plocal, pts)
     npoints = size(pts, 1)
     
     # Calculate coefficient matrix A
-    A, _, _ = koornwinder2d(plocal[:, 2:3], porder)
+    W, _, _ = koornwinder2d(plocal[:, 2:3], porder)
     
+    # display(W)
+    A = W \ I
+
     # Initialize output array for shape functions and derivatives
     nfs = zeros(np, 3, npoints)
     
     # Evaluate at all points
     Λ, Λξ, Λη = koornwinder2d(pts, porder)
+    display(Λ)
 
-    ϕ = Λ / A
-    ψξ = Λξ / A
-    ψη = Λη / A
+    ϕ = (Λ * A)'
+    ϕξ = (Λξ * A)'
+    ϕη = (Λη * A)'
 
-    nfs[:, 1, :] .= ϕ'
-    nfs[:, 2, :] .= ψξ'
-    nfs[:, 3, :] .= ψη'
+    nfs[:, 1, :] .= ϕ
+    nfs[:, 2, :] .= ϕξ
+    nfs[:, 3, :] .= ϕη
     
     return nfs
 end

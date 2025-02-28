@@ -95,7 +95,6 @@ function koornwinder2d(x::AbstractMatrix{<:Real}, p::Int)
     # Copy x to avoid modifying the original array
     xc = copy(x)
     # Adjust second coordinate (column 2 in Julia) to avoid singularities
-    # xc[:, 2] .= min.(0.99999999, xc[:, 2])
     xc[:, 2] .= min.(0.99999999, xc[:, 2])
     
     # Set up the evaluation coordinates e.
@@ -125,13 +124,13 @@ function koornwinder2d(x::AbstractMatrix{<:Real}, p::Int)
         # Note Polynomual convention is different between Python and Julia.
         # In Python, the coefficients are in decreasing order, while in Julia, they are in increasing order.
         for j in 1:p_order
-            qp = Polynomial(reverse(conv([0.5, -0.5], reverse(qp.coeffs))))
+            qp = Polynomial(reverse(conv([-0.5, 0.5], reverse(qp.coeffs))))
         end
         
         # Evaluate the polynomials at the mapped coordinates.
         pval = pp.(e[:, 1])
         qval = qp.(e[:, 2])
-        
+
         # Compute the scaling factor
         fc = sqrt((2.0 * p_order + 1.0) * 2.0 * (p_order + q_order + 1.0))
         
@@ -164,10 +163,9 @@ function koornwinder2d(x::AbstractMatrix{<:Real}, p::Int)
         qval  = qp.(e[:, 2])
         dpval = dpp.(e[:, 1])
         dqval = dqp.(e[:, 2])
-
         
         fc = sqrt((2.0 * p_order + 1.0) * 2.0 * (p_order + q_order + 1.0))
-        
+
         fx[:, i] .= fc .* dpval .* qval .* de1[:, 1]
         fy[:, i] .= fc .* (dpval .* qval .* de1[:, 2] .+ pval .* dqval)
     end
