@@ -40,12 +40,16 @@ end
 
 autodiff(f) = x -> ForwardDiff.derivative(f, x)
 
-function project_to_boundary(distance_function, x₀, s=0.1)
+function project_to_boundary(distance_function, x₀, s=0)
     grad = ForwardDiff.gradient(distance_function, x₀)
-    grad_norm = grad / norm(grad)
-    fd_linedirection(s) = distance_function(x₀ .+ s .* grad_norm)
-    s = newton_raphson(fd_linedirection, autodiff(fd_linedirection), s)
-    return x₀ .+ s .* grad_norm
+    if grad[1] == 0 && grad[2] == 0
+        return x₀
+    else
+        grad_norm = grad / norm(grad)
+        fd_linedirection(s) = distance_function(x₀ .+ s .* grad_norm)
+        s = newton_raphson(fd_linedirection, autodiff(fd_linedirection), s)
+        return x₀ .+ s .* grad_norm
+    end
 end
 
 function isvertex(λ)
@@ -116,7 +120,8 @@ function project_vertex_to_boundary!(mesh::Mesh, distance_functions::Union{Nothi
 
         for i in 1:n_curves
             fd = distance_functions[i]
-            abs_fd(p) = abs(fd(p))
+            # abs_fd(p) = abs(fd(p))
+            abs_fd = fd
             curved_faces = all_curved_faces[all_curved_faces[:, 4] .== -i, :]
             unique_curved_nodes = Dict{Int, Nothing}()
             for node in curved_faces[:, 1:2]
@@ -125,7 +130,7 @@ function project_vertex_to_boundary!(mesh::Mesh, distance_functions::Union{Nothi
 
             for node in keys(unique_curved_nodes)
                 node_coords = mesh.p[node, :]
-                mesh.p[node, :] .= project_to_boundary(abs_fd, node_coords, 0.1)
+                mesh.p[node, :] .= project_to_boundary(abs_fd, node_coords, 0)
             end
         end
     end
@@ -165,7 +170,7 @@ function createnodes(mesh, fd=nothing)
             dgnodes[ipl, :, it] .= x
             if fd !== nothing && iscurved_triangle && !isvertex(λ) && isedge(λ) && iscurvedboundary(λ, mesh, vn₁, vn₂, vn₃, it)
                 fdn = get_boundary_number(mesh, it)
-                x = project_to_boundary(fd[fdn], x)
+                x = project_to_boundary(fd[fdn], x, 0)
                 dgnodes[ipl, :, it] .= x
             end
         end

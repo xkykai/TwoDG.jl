@@ -239,21 +239,21 @@ function mkmesh_naca(t_naca = 10, porder=2, name="naca0012", display_gmsh=false)
     fd_bottom(p) = abs(p[2] + 3)
     fd_top(p) = abs(p[2] - 3)
 
-    # fd_airfoil(p) = min(abs(naca0012(p[1], t_naca) - p[2]), abs(-naca0012(p[1], t_naca) - p[2]))
     function fd_airfoil(p)
-        if p[2] > 0
-            return (naca0012(abs(p[1]), t_naca) - p[2])^2
+        if p[1] .^2 + p[2] .^2 < 1e-4
+            return 0
+        elseif p[2] > 0
+            return naca0012(abs(p[1]), t_naca) - p[2]
+        elseif p[2] < 0
+            return -naca0012(abs(p[1]), t_naca) - p[2]
         else
-            # @info "Lower"
-            # @info -naca0012(p[1], t_naca)
-            # @info p[2]
-            return (-naca0012(p[1], t_naca) - p[2])^2
+            return 0
         end
     end
 
     fds = [fd_airfoil, fd_left, fd_right, fd_bottom, fd_top]
 
-    mesh = createnodes(mesh)
+    mesh = createnodes(mesh, fds)
 
     return mesh
 end
