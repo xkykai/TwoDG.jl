@@ -1,4 +1,3 @@
-using Interpolations
 using TwoDG.Meshes: mkmesh_trefftz
 using TwoDG.Masters: Master, shape2d, get_local_face_nodes
 using Dierckx
@@ -189,7 +188,7 @@ function trefftz(V∞, α, m=15, n=30, porder=3, node_spacing_type=0, tparam=[0.
     # Calculate potential
     ψ, vx_analytical, vy_analytical, Γ_analytical = potential_trefftz(mesh.dgnodes[:, 1, :], mesh.dgnodes[:, 2, :], V=V∞, alpha=α, tparam=tparam)
 
-    _, _, chord = trefftz_points(tparam)
+    xs_foil, ys_foil, chord = trefftz_points(tparam)
 
     shapefunction_local = shape2d(porder, master.plocal, master.plocal[:, 2:3])
 
@@ -210,17 +209,6 @@ function trefftz(V∞, α, m=15, n=30, porder=3, node_spacing_type=0, tparam=[0.
         end
     end
 
-    # vx_singularity_locations = findall(x -> abs(x) > 2, vx)
-    # vy_singularity_locations = findall(x -> abs(x) > 2, vy)
-
-    # for i in vx_singularity_locations
-    #     vx[i] = 0
-    # end
-
-    # for i in vy_singularity_locations
-    #     vy[i] = 0
-    # end
-
     Γ = 0
     boundary_facenumbers = findall(x -> x == -2, mesh.f[:, 4])
     for face_number in boundary_facenumbers
@@ -239,14 +227,13 @@ function trefftz(V∞, α, m=15, n=30, porder=3, node_spacing_type=0, tparam=[0.
     end
 
     CL = -2 * Γ / V∞ / chord
+    CL_analytical = -2 * Γ_analytical / V∞ / chord
     CP = 1 .- (vx .^2 .+ vy .^2) ./ V∞^2
     CP_analytical = 1 .- (vx_analytical .^2 .+ vy_analytical .^2) ./ V∞^2
 
     Clift = 0
     CF = zeros(2)
     airfoil_facenumbers = findall(x -> x == -1, mesh.f[:, 4])
-    # u∞_direction = [cos(deg2rad(α)), sin(deg2rad(α))]
-    u∞_direction = [cos(deg2rad(α)), sin(deg2rad(α)), 0]
     for face_number in airfoil_facenumbers
         it = mesh.f[face_number, 3]
         node_numbers = get_local_face_nodes(mesh, master, face_number)
@@ -255,26 +242,21 @@ function trefftz(V∞, α, m=15, n=30, porder=3, node_spacing_type=0, tparam=[0.
         for j in eachindex(master.gw1d)
             τ = master.sh1d[:, 2, j]' * element_coordinates
             n = [τ[2], -τ[1]]
-            # @info "n = $(n ./ norm(n))"
-            # n = [τ[2], -τ[1], 0]
 
             CPj = sum(CP[node_numbers, it] .* master.sh1d[:, 1, j])
-
-            # cosθ = n ⋅ u∞_direction
-            # cosθ = (n × u∞_direction)[3]
 
             CF .+= master.gw1d[j] * CPj .* n
         end
     end
-
     CF /= chord
 
-    CF_angle = atan(CF[2], CF[1])
-    Clift = norm(CF) * sin(CF_angle - deg2rad(α))
-    Cdrag = norm(CF) * cos(CF_angle - deg2rad(α))
+    u∞_direction = [cos(deg2rad(α)), sin(deg2rad(α)), 0]
+
+    Clift = (u∞_direction × vcat(CF, 0))[3]
+    Cdrag = -vcat(CF, 0) ⋅ u∞_direction
 
     CM = 0
-    x_quarter_chord = [0.25 * chord, 0, 0]
+    quarter_chord_coordinate = [minimum(xs_foil) + chord/4, 0, 0]
     for face_number in airfoil_facenumbers
         it = mesh.f[face_number, 3]
         node_numbers = get_local_face_nodes(mesh, master, face_number)
@@ -286,10 +268,7 @@ function trefftz(V∞, α, m=15, n=30, porder=3, node_spacing_type=0, tparam=[0.
 
             CPj = sum(CP[node_numbers, it] .* master.sh1d[:, 1, j])
             gauss_coordinate = vec(master.sh1d[:, 1, j]' * element_coordinates)
-            moment = ((vcat(gauss_coordinate, 0) .- x_quarter_chord) × n)[3]
-
-            # cosθ = n ⋅ u∞_direction
-            # cosθ = (n × u∞_direction)[3]
+            moment = ((vcat(gauss_coordinate, 0) .- quarter_chord_coordinate) × n)[3]
 
             CM += master.gw1d[j] * CPj * moment
         end
@@ -297,5 +276,5 @@ function trefftz(V∞, α, m=15, n=30, porder=3, node_spacing_type=0, tparam=[0.
 
     CM /= chord^2
 
-    return mesh, master, ψ, vx, vy, Γ, CL, CP, CP_analytical, Clift, Cdrag, CF, CM, vx_analytical, vy_analytical, Γ_analytical
+    return mesh, master, xs_foil, ys_foil, chord, ψ, vx, vy, Γ, CP, CF, Clift, Cdrag, CM, vx_analytical, vy_analytical, Γ_analytical, CP_analytical, CL, CL_analytical
 end
