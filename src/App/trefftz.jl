@@ -1,6 +1,6 @@
 using Interpolations
 using TwoDG.Meshes: mkmesh_trefftz
-using TwoDG.Masters: Master, shape2d
+using TwoDG.Masters: Master, shape2d, get_local_face_nodes
 
 function trefftz_points(tparam=[0.1, 0.05, 1.98], np=120)
     # Extract parameters
@@ -191,16 +191,10 @@ function trefftz(V∞, α, m=15, n=30, porder=3, node_spacing_type=0, tparam=[0.
     # Calculate potential
     ψ, vx_analytical, vy_analytical, Γ_analytical = potential_trefftz(mesh.dgnodes[:, 1, :], mesh.dgnodes[:, 2, :], V=V∞, alpha=α, tparam=tparam)
 
-    shapefunction_dgnodes = zeros(size(mesh.plocal, 1), 3, size(dgnodes, 1), size(dgnodes, 3))
-    for i in axes(dgnodes, 1)
-        shapefunction_dgnodes[:, :, i, :] .= shape2d(mesh.porder, mesh.plocal, dgnodes[i, :, :]')
-    end
-
-    shapefunction_local = shape2d(porder, master.plocal, master.plocal)
+    shapefunction_local = shape2d(porder, master.plocal, master.plocal[:, 2:3])
 
     vx = zeros(size(ψ))
     vy = zeros(size(ψ))
-    @info size(ψ)
 
     for i in axes(dgnodes, 3)
         element_coordinates = @view dgnodes[:, :, i]
@@ -208,12 +202,32 @@ function trefftz(V∞, α, m=15, n=30, porder=3, node_spacing_type=0, tparam=[0.
             J = shapefunction_local[:, 2:3, j]' * element_coordinates
             invJ = inv(J)
 
-            v_components = [ψ[k, i] .* (invJ * shapefunction_local[k, 2:3, j]) for k in axes(master.plocal, 1)]
+            ∂ψ = sum([ψ[k, i] .* (invJ * shapefunction_local[k, 2:3, j]) for k in axes(master.plocal, 1)])
 
-            vx[j, i] = -sum([vel[2] for vel in v_components])
-            vy[j, i] = sum([vel[1] for vel in v_components])
+            vx[j, i] = -∂ψ[2]
+            vy[j, i] = ∂ψ[1]
         end
     end
 
-    return mesh, master,  ψ, vx, vy, vx_analytical, vy_analytical, Γ_analytical
+    Cp = 1.0 .- (vx.^2 .+ vy.^2) ./ V∞^2
+
+    Γ = 0
+    airfoil_facenumbers = findall(x -> x == -2, mesh.f[:, 4])
+    for face_number in airfoil_facenumbers
+        it = mesh.f[face_number, 3]
+        node_numbers = get_local_face_nodes(mesh, master, face_number)
+        element_coordinates = @view dgnodes[node_numbers, :, it]
+
+        for j in eachindex(master.gw1d)
+            τ = master.sh1d[:, 2, j]' * element_coordinates
+
+            vxj = sum(vx[node_numbers, it] .* master.sh1d[:, 1, j])
+            vyj = sum(vy[node_numbers, it] .* master.sh1d[:, 1, j])
+
+            Γ += sum(master.gw1d[j] * dot(vcat(vxj, vyj), τ))
+        end
+
+    end
+
+    return mesh, master, ψ, vx, vy, Γ, vx_analytical, vy_analytical, Γ_analytical
 end
