@@ -130,14 +130,15 @@ Plot contours of a scalar field on a mesh.
 """
 function scaplot(mesh, c; limits=nothing, show_mesh=false)
     n_contours = 31  # number of contours
-    cmap = :plasma  # other options: :RdYlBu, :inferno, :viridis, :magma
+    # cmap = :plasma  # other options: :RdYlBu, :inferno, :viridis, :magma
+    cmap = :turbo  # other options: :RdYlBu, :inferno, :viridis, :magma
     
-    fig = Figure()
+    fig = Figure(size=(800, 800))
     ax = Axis(fig[1,1], aspect=DataAspect())
     
     if isnothing(limits)
-        cmin = minimum(c)
-        cmax = maximum(c)
+        cmin = quantile(vec(c), 0.01) - 1e-6
+        cmax = quantile(vec(c), 0.99) + 1e-6
     else
         cmin, cmax = limits
     end
