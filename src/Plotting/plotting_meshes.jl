@@ -126,27 +126,21 @@ Plot contours of a scalar field on a mesh.
 - `limits`: Optional [cmin, cmax] for thresholding
 - `show_mesh`: Boolean to plot mesh over contours
 """
-function scaplot(mesh, c; limits=nothing, show_mesh=false)
-    n_contours = 31  # number of contours
+function scaplot(mesh, c; limits=nothing, show_mesh=false, figure_size=(800, 800), title="", cmap=:turbo)
     # cmap = :plasma  # other options: :RdYlBu, :inferno, :viridis, :magma
-    cmap = :turbo  # other options: :RdYlBu, :inferno, :viridis, :magma
     
-    fig = Figure(size=(800, 800))
-    ax = Axis(fig[1,1], aspect=DataAspect())
+    fig = Figure(size=figure_size)
+    ax = Axis(fig[1,1], aspect=DataAspect(), xlabel="x", ylabel="y", title=title)
     
     if isnothing(limits)
-        cmin = quantile(vec(c), 0.01) - 1e-6
-        cmax = quantile(vec(c), 0.99) + 1e-6
+        cmin, cmax = extrema(vec(c))
     else
         cmin, cmax = limits
     end
     
-    println("cmin: ", cmin)
-    println("cmax: ", cmax)
-    
-    # Create a colormap for the contours
-    contour_colormap = cgrad(cmap, n_contours)
-    
+    @info "cmin: $cmin"
+    @info "cmax: $cmax"
+
     # For each element in the mesh
     for i in 1:size(mesh.t, 1)
         # Create triangulation for this element
@@ -177,10 +171,8 @@ function scaplot(mesh, c; limits=nothing, show_mesh=false)
     end
     
     # Add colorbar
-    Colorbar(fig[1,2], colormap=cmap, limits=(cmin, cmax), ticks=LinRange(cmin, cmax, 11))
-
-    # scatter!(mesh.dgnodes[:, 1, 40], mesh.dgnodes[:, 2, 40], color=:red, markersize=1)
-    # scatter!(mesh.dgnodes[:, 1, 39], mesh.dgnodes[:, 2, 39], color=:blue, markersize=1)
+    # Colorbar(fig[1,2], colormap=cmap, limits=(cmin, cmax), ticks=LinRange(cmin, cmax, 11))
+    Colorbar(fig[1,2], colormap=cmap, limits=(cmin, cmax))
     
     return fig
 end
@@ -196,12 +188,12 @@ Plot a curved mesh of triangles.
 - `annotate`: "p" to annotate nodes, "t" to annotate simplices
 - `pplot`: Order of the polynomial used to display mesh
 """
-function meshplot_curved(mesh; nodes=false, annotate="", pplot=0)
+function meshplot_curved(mesh; nodes=false, annotate="", pplot=0, figure_size=(800, 800), title="")
     p = mesh.p
     t = mesh.t
     
-    fig = Figure()
-    ax = Axis(fig[1,1], aspect=DataAspect())
+    fig = Figure(size=figure_size)
+    ax = Axis(fig[1,1], aspect=DataAspect(), xlabel="x", ylabel="y", title=title)
     hidedecorations!(ax)
     hidespines!(ax)
     
@@ -226,6 +218,6 @@ function meshplot_curved(mesh; nodes=false, annotate="", pplot=0)
             text!(ax, "$(it-1)", position=pmid, align=(:center, :center))
         end
     end
-    
+
     return fig
 end
