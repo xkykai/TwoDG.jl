@@ -188,3 +188,15 @@ function shape2d(porder, plocal, pts)
     
     return nfs
 end
+
+function get_local_face_nodes(mesh, master, face_number, flip_face_direction=false)
+    it = mesh.f[face_number, 3]
+    local_face_number = findfirst(x -> x == face_number, mesh.t2f[it, :])
+    if flip_face_direction
+        node_numbers = master.perm[:, local_face_number, 2]
+    else
+        node_numbers = master.perm[:, local_face_number, 1]
+    end
+
+    return node_numbers
+end

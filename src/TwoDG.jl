@@ -9,6 +9,7 @@ export
     mkmesh_circle, mkmesh_square, mkmesh_duct, mkmesh_trefftz, mkmesh_naca,
     fixmesh, mkt2f, setbndnbrs, createnodes,
     uniformlocalpnts,
+    get_local_face_nodes,
     meshplot, scaplot, meshplot_curved,
     gaussquad1d, gaussquad2d, newton_raphson,
     koornwinder1d, koornwinder2d,
