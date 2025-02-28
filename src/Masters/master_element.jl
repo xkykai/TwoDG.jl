@@ -177,7 +177,6 @@ function shape2d(porder, plocal, pts)
     
     # Evaluate at all points
     Λ, Λξ, Λη = koornwinder2d(pts, porder)
-    display(Λ)
 
     ϕ = (Λ * A)'
     ϕξ = (Λξ * A)'
