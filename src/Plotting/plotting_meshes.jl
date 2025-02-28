@@ -84,8 +84,6 @@ function meshplot(mesh; nodes=false, annotate="")
     p = mesh.p
     t = mesh.t
 
-    @info size(p), size(t)
-    
     fig = Figure()
     ax = Axis(fig[1,1], aspect=DataAspect())
     hidedecorations!(ax)
@@ -180,6 +178,9 @@ function scaplot(mesh, c; limits=nothing, show_mesh=false)
     
     # Add colorbar
     Colorbar(fig[1,2], colormap=cmap, limits=(cmin, cmax), ticks=LinRange(cmin, cmax, 11))
+
+    # scatter!(mesh.dgnodes[:, 1, 40], mesh.dgnodes[:, 2, 40], color=:red, markersize=1)
+    # scatter!(mesh.dgnodes[:, 1, 39], mesh.dgnodes[:, 2, 39], color=:blue, markersize=1)
     
     return fig
 end
