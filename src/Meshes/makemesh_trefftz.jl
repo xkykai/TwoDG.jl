@@ -22,7 +22,7 @@ function mkmesh_trefftz(m=15, n=30, porder=3, node_spacing_type=0, tparam=[0.1, 
     
     plocal, tlocal = uniformlocalpnts(porder)
     
-    mesh = TwoDG.Mesh(p, t, 3, plocal, tlocal)
+    mesh = TwoDG.Mesh(p, t, porder, plocal, tlocal)
     mesh = createnodes(mesh)
     
     mesh.p[:, 1] .*= 2
@@ -33,7 +33,7 @@ function mkmesh_trefftz(m=15, n=30, porder=3, node_spacing_type=0, tparam=[0.1, 
     
     mesh.p[:, 1] = real(w)
     mesh.p[:, 2] = imag(w)
-    
+
     p_unique, t_unique = fixmesh(mesh.p, mesh.t)
     
     mesh = TwoDG.Mesh(p_unique, t_unique, nothing, nothing, nothing, nothing, porder, plocal, tlocal, mesh.dgnodes)
