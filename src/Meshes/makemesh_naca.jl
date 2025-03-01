@@ -3,6 +3,7 @@ using CSV
 using DataFrames
 using CairoMakie
 using LinearAlgebra
+using Gmsh
     
 function naca0012(x, t=10)
     """Generate y-coordinates for NACA0012 airfoil at given x-coordinates"""
