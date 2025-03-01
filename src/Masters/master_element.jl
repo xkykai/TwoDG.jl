@@ -15,16 +15,16 @@ struct Master{PO, PL, C, PE, PLO, GP, GPT, GW, GWG, SH, SHA}
     shap::SHA
 end
 
+
 function Master(mesh::Mesh)
-    # Initialize Master with basic fields
     master = Master(mesh.porder, mesh.plocal, zeros(Int, 3), zeros(Int, mesh.porder+1, 3, 2), nothing, nothing, nothing, nothing, nothing, nothing, nothing)
     
-    # Find corners
+    # Find indices of corner nodes (vertices) of the reference triangle
+    # A corner node has a coordinate equal to 1 in one of the barycentric coordinates
     for i in 1:3
         master.corner[i] = findfirst(x -> x > 1-1e-6, master.plocal[:, i])
     end
     
-    # Process permutations
     aux = [1, 2, 3, 1, 2]
     ploc1d = nothing
     
@@ -38,18 +38,15 @@ function Master(mesh::Mesh)
         end
     end
     
-    # Flip permutation
     master.perm[:,:,2] = reverse(master.perm[:,:,1], dims=1)
     
-    # Compute Gaussian quadrature points and weights
     pgauss = max(4*mesh.porder, 1)
-    gp1d, gw1d = gaussquad1d(pgauss)
-    gpts, gwgh = gaussquad2d(pgauss)
+    gp1d, gw1d = gaussquad1d(pgauss)  # 1D quadrature points and weights
+    gpts, gwgh = gaussquad2d(pgauss)  # 2D quadrature points and weights
 
     sh1d = shape1d(master.porder, ploc1d, gp1d)
     shap = shape2d(master.porder, master.plocal, gpts)
     
-    # Create and return the final Master object
     return Master(master.porder, master.plocal, master.corner, master.perm, ploc1d, gp1d, gpts, gw1d, gwgh, sh1d, shap)
 end
 
@@ -62,27 +59,36 @@ uniformlocalpnts 2-d mesh generator for the master element.
    porder:    order of the complete polynomial 
               npl = (porder+1)*(porder+2)/2
  """
-function uniformlocalpnts(porder)
+ function uniformlocalpnts(porder)
     plocal = zeros()
     n = porder + 1
-    npl = (porder + 1) * (porder + 2) ÷ 2
+    npl = (porder + 1) * (porder + 2) ÷ 2  # Total number of nodes for order porder
 
-    plocal = zeros(npl, 3)
-    xs = ys = range(0, 1, length=n)
-
+    plocal = zeros(npl, 3)  # Initialize array for barycentric coordinates
+    xs = ys = range(0, 1, length=n)  # Create uniform distribution in each direction
+    
+    # Generate nodal points in barycentric coordinates
+    # We're placing points on a regular grid and converting to barycentric coordinates
     i_start = 1
     for i in 1:n
         i_end = i_start + n - i
+        # Set barycentric coordinates:
+        # 2nd coordinate increases with row index
         plocal[i_start:i_end, 2] .= xs[1:n+1-i]
+        # 3rd coordinate is constant in each row
         plocal[i_start:i_end, 3] .= ys[i]
+        # 1st coordinate decreases to maintain sum(coords) = 1
         plocal[i_start:i_end, 1] .= xs[n+1-i:-1:1]
         i_start = i_end + 1
     end
 
+    # Generate triangle connectivity based on the nodal distribution
+    # This creates a triangulation of the reference element
     tlocal = zeros(Int, porder^2, 3)
     i_start_t = 1
     vertex_start = 1
     for i in 1:porder
+        # Create the first set of triangles in this row (pointing up)
         i_end_t = i_start_t + porder - i
         tlocal[i_start_t:i_end_t, 1] .= vertex_start:vertex_start + porder - i
         tlocal[i_start_t:i_end_t, 2] .= vertex_start + 1:vertex_start + porder - i + 1
@@ -90,6 +96,8 @@ function uniformlocalpnts(porder)
         
         i_start_t = i_end_t + 1
 
+        # Create the second set of triangles in this row (pointing down)
+        # except for the last row which only has upward triangles
         if i_start_t < porder^2
             i_end_t = i_start_t + porder - i - 1
             vertex_start += 1
@@ -124,23 +132,26 @@ function shape1d(porder, plocal, pts)
     # Number of evaluation points
     npoints = length(pts)
     
-    # Extract x-coordinates from plocal and use them for Koornwinder
+    # Extract x-coordinates from plocal and use them for Koornwinder polynomial basis
     x_coords = plocal[:, 1]
     
     # Create Vandermonde matrix at node locations
-    V, Vξ = koornwinder1d(x_coords, porder)
+    # This maps from modal (Koornwinder polynomial) to nodal basis
+    V, _ = koornwinder1d(x_coords, porder)
     
-    # Calculate coefficient matrix A
+    # Calculate coefficient matrix A to transform from modal to nodal basis
+    # This is effectively inverting the Vandermonde matrix
     A = (V \ I)
     
     # Initialize output array for shape functions and derivatives
     nfs = zeros(np, 2, npoints)
     
-    # For each evaluation point
+    # Evaluate Koornwinder polynomials at requested points
     Λ, dΛ = koornwinder1d(pts, porder)
     
-    nfs[:, 1, :] = (Λ * A)'
-    nfs[:, 2, :] = (dΛ * A)'
+    # Transform modal basis values to nodal basis (shape functions)
+    nfs[:, 1, :] = (Λ * A)'   # Shape functions
+    nfs[:, 2, :] = (dΛ * A)'  # Shape function derivatives
     
     return nfs
 end
@@ -166,22 +177,25 @@ function shape2d(porder, plocal, pts)
     # Number of evaluation points
     npoints = size(pts, 1)
     
-    # Calculate coefficient matrix A
+    # Calculate coefficient matrix A for transforming from modal to nodal basis
+    # Using Koornwinder polynomials as the modal basis
     W, _, _ = koornwinder2d(plocal[:, 2:3], porder)
     
-    # display(W)
+    # Invert the Vandermonde matrix to get transformation coefficients
     A = W \ I
 
     # Initialize output array for shape functions and derivatives
     nfs = zeros(np, 3, npoints)
     
-    # Evaluate at all points
+    # Evaluate Koornwinder polynomials and their derivatives at requested points
     Λ, Λξ, Λη = koornwinder2d(pts, porder)
 
-    ϕ = (Λ * A)'
-    ϕξ = (Λξ * A)'
-    ϕη = (Λη * A)'
+    # Transform from modal to nodal basis
+    ϕ = (Λ * A)'    # Shape functions
+    ϕξ = (Λξ * A)'  # x-derivatives of shape functions
+    ϕη = (Λη * A)'  # y-derivatives of shape functions
 
+    # Store results in the output array
     nfs[:, 1, :] .= ϕ
     nfs[:, 2, :] .= ϕξ
     nfs[:, 3, :] .= ϕη
@@ -190,12 +204,20 @@ function shape2d(porder, plocal, pts)
 end
 
 function get_local_face_nodes(mesh, master, face_number, flip_face_direction=false)
+    # Get the triangle index that contains this face
     it = mesh.f[face_number, 3]
+    
+    # Find which local face of the triangle corresponds to the global face number
+    # (triangles have 3 faces, each with a local number 1, 2, or 3)
     local_face_number = findfirst(x -> x == face_number, mesh.t2f[it, :])
+    
+    # Get the nodes on this face in the appropriate order
+    # flip_face_direction=true uses reversed ordering, important for maintaining
+    # consistent orientation between elements sharing a face
     if flip_face_direction
-        node_numbers = master.perm[:, local_face_number, 2]
+        node_numbers = master.perm[:, local_face_number, 2]  # Reversed ordering
     else
-        node_numbers = master.perm[:, local_face_number, 1]
+        node_numbers = master.perm[:, local_face_number, 1]  # Standard ordering
     end
 
     return node_numbers
