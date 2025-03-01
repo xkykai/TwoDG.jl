@@ -180,101 +180,121 @@ function potential_trefftz(x, y; V=1.0, alpha=0.0, tparam=[0.1, 0.05, 1.98])
 end
 
 function trefftz(V∞, α, m=15, n=30, porder=3, node_spacing_type=0, tparam=[0.1, 0.05, 1.98])
-    # Generate mesh
+    # Generate mesh for Trefftz airfoil with given parameters
     mesh = mkmesh_trefftz(m, n, porder, node_spacing_type, tparam)
-    master = Master(mesh)
-    dgnodes = mesh.dgnodes
-    
-    # Calculate potential
+    master = Master(mesh)  # Create master element for reference transformations
+    dgnodes = mesh.dgnodes  # Nodal coordinates of the discontinuous Galerkin mesh
+   
+    # Calculate analytical potential flow solution
     ψ, vx_analytical, vy_analytical, Γ_analytical = potential_trefftz(mesh.dgnodes[:, 1, :], mesh.dgnodes[:, 2, :], V=V∞, alpha=α, tparam=tparam)
-
-    xs_foil, ys_foil, chord = trefftz_points(tparam)
-
-    shapefunction_local = shape2d(porder, master.plocal, master.plocal[:, 2:3])
-
-    vx = zeros(size(ψ))
+    xs_foil, ys_foil, chord = trefftz_points(tparam)  # Get airfoil coordinates and chord length
+    shapefunction_local = shape2d(porder, master.plocal, master.plocal[:, 2:3])  # Shape functions for numerical integration
+    vx = zeros(size(ψ))  # Initialize velocity arrays
     vy = zeros(size(ψ))
-
-    for i in axes(dgnodes, 3)
-        element_coordinates = @view dgnodes[:, :, i]
-
-        for j in axes(master.plocal, 1)
+    
+    # Calculate velocity field from potential gradient
+    for i in axes(dgnodes, 3)  # Loop over all elements
+        element_coordinates = @view dgnodes[:, :, i]  # Coordinates of current element
+        for j in axes(master.plocal, 1)  # Loop over all quadrature points
+            # Calculate Jacobian matrix for coordinate transformation (physical to reference element)
             J = shapefunction_local[:, 2:3, j]' * element_coordinates
-            invJ = inv(J)
-
+            invJ = inv(J)  # Inverse Jacobian for gradient transformation
+            
+            # Calculate gradient of potential (∂ψ/∂x, ∂ψ/∂y) using chain rule via Jacobian
             ∂ψ = sum([ψ[k, i] .* (invJ * shapefunction_local[k, 2:3, j]) for k in axes(master.plocal, 1)])
-
-            vx[j, i] = -∂ψ[2]
-            vy[j, i] = ∂ψ[1]
+            
+            # Velocity components (negative gradient of potential)
+            vx[j, i] = -∂ψ[2]  # u = -∂ψ/∂y
+            vy[j, i] = ∂ψ[1]   # v = ∂ψ/∂x
         end
     end
-
+    
+    # Calculate circulation Γ around the airfoil by integrating along the outer boundary
+    # Circulation is directly related to lift via Kutta-Joukowski theorem
     Γ = 0
-    boundary_facenumbers = findall(x -> x == -2, mesh.f[:, 4])
+    boundary_facenumbers = findall(x -> x == -2, mesh.f[:, 4])  # Identify outer boundary faces
     for face_number in boundary_facenumbers
-        it = mesh.f[face_number, 3]
-        node_numbers = get_local_face_nodes(mesh, master, face_number)
-        element_coordinates = @view dgnodes[node_numbers, :, it]
-
-        for j in eachindex(master.gw1d)
-            τ = master.sh1d[:, 2, j]' * element_coordinates
-
+        it = mesh.f[face_number, 3]  # Element number containing this face
+        node_numbers = get_local_face_nodes(mesh, master, face_number)  # Get nodes on this face
+        element_coordinates = @view dgnodes[node_numbers, :, it]  # Coordinates of these nodes
+        
+        for j in eachindex(master.gw1d)  # Loop over 1D quadrature points on the face
+            τ = master.sh1d[:, 2, j]' * element_coordinates  # Tangent vector at quadrature point
+            
+            # Interpolate velocity at quadrature point
             vxj = sum(vx[node_numbers, it] .* master.sh1d[:, 1, j])
             vyj = sum(vy[node_numbers, it] .* master.sh1d[:, 1, j])
-
+            
+            # Add contribution to circulation (v·τ*ds)
             Γ += sum(master.gw1d[j] * dot(vcat(vxj, vyj), τ))
         end
     end
-
+    
+    # Calculate lift coefficients using Kutta-Joukowski theorem (CL = -2Γ/(V∞*chord))
     CL = -2 * Γ / V∞ / chord
     CL_analytical = -2 * Γ_analytical / V∞ / chord
+    
+    # Calculate pressure coefficient using Bernoulli's equation (Cp = 1 - (v²/V∞²))
     CP = 1 .- (vx .^2 .+ vy .^2) ./ V∞^2
     CP_analytical = 1 .- (vx_analytical .^2 .+ vy_analytical .^2) ./ V∞^2
-
+    
+    # Calculate force coefficients by integrating pressure along the airfoil surface
     Clift = 0
-    CF = zeros(2)
-    airfoil_facenumbers = findall(x -> x == -1, mesh.f[:, 4])
+    CF = zeros(2)  # Force vector [Fx, Fy]
+    airfoil_facenumbers = findall(x -> x == -1, mesh.f[:, 4])  # Identify airfoil surface faces
+    
     for face_number in airfoil_facenumbers
-        it = mesh.f[face_number, 3]
+        it = mesh.f[face_number, 3]  # Element containing this face
         node_numbers = get_local_face_nodes(mesh, master, face_number)
         element_coordinates = @view dgnodes[node_numbers, :, it]
-
-        for j in eachindex(master.gw1d)
-            τ = master.sh1d[:, 2, j]' * element_coordinates
-            n = [τ[2], -τ[1]]
-
+        
+        for j in eachindex(master.gw1d)  # Loop over quadrature points
+            τ = master.sh1d[:, 2, j]' * element_coordinates  # Tangent vector at quadrature point
+            n = [τ[2], -τ[1]]  # Normal vector (90° rotation of tangent)
+            
+            # Interpolate pressure coefficient at quadrature point
             CPj = sum(CP[node_numbers, it] .* master.sh1d[:, 1, j])
-
+            
+            # Add contribution to force (Cp*n*ds)
             CF .+= master.gw1d[j] * CPj .* n
         end
     end
-    CF /= chord
-
-    u∞_direction = [cos(deg2rad(α)), sin(deg2rad(α)), 0]
-
+    CF /= chord  # Non-dimensionalize by chord length
+    
+    # Transform force components to lift and drag in the freestream coordinate system
+    u∞_direction = [cos(deg2rad(α)), sin(deg2rad(α)), 0]  # Freestream direction vector
+    
+    # Lift is perpendicular to freestream direction (cross product)
     Clift = (u∞_direction × vcat(CF, 0))[3]
+    
+    # Drag is parallel to freestream direction (dot product)
     Cdrag = -vcat(CF, 0) ⋅ u∞_direction
-
+    
+    # Calculate moment coefficient around quarter-chord point
     CM = 0
-    quarter_chord_coordinate = [minimum(xs_foil) + chord/4, 0, 0]
+    quarter_chord_coordinate = [minimum(xs_foil) + chord/4, 0, 0]  # Quarter-chord location
+    
     for face_number in airfoil_facenumbers
         it = mesh.f[face_number, 3]
         node_numbers = get_local_face_nodes(mesh, master, face_number)
         element_coordinates = @view dgnodes[node_numbers, :, it]
-
+        
         for j in eachindex(master.gw1d)
-            τ = master.sh1d[:, 2, j]' * element_coordinates
-            n = [τ[2], -τ[1], 0]
-
-            CPj = sum(CP[node_numbers, it] .* master.sh1d[:, 1, j])
+            τ = master.sh1d[:, 2, j]' * element_coordinates  # Tangent vector
+            n = [τ[2], -τ[1], 0]  # Normal vector in 3D
+            CPj = sum(CP[node_numbers, it] .* master.sh1d[:, 1, j])  # Interpolated pressure
+            
+            # Calculate position of quadrature point
             gauss_coordinate = vec(master.sh1d[:, 1, j]' * element_coordinates)
+            
+            # Calculate moment arm × normal force (r × F)
             moment = ((vcat(gauss_coordinate, 0) .- quarter_chord_coordinate) × n)[3]
-
+            
+            # Add contribution to moment coefficient
             CM += master.gw1d[j] * CPj * moment
         end
     end
-
-    CM /= chord^2
-
+    CM /= chord^2  # Non-dimensionalize by chord²
+    
     return mesh, master, xs_foil, ys_foil, chord, ψ, vx, vy, Γ, CP, CF, Clift, Cdrag, CM, vx_analytical, vy_analytical, Γ_analytical, CP_analytical, CL, CL_analytical
 end
