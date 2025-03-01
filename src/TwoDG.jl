@@ -1,7 +1,5 @@
 module TwoDG
 
-# Write your package code here.
-
 export 
     Mesh, Master,
     unique_rows,
