@@ -2,7 +2,8 @@ module Masters
 
 export 
     Master,
-    uniformlocalpnts, shape2d,
+    uniformlocalpnts, localpnts, localpnts1d,
+    shape1d, shape2d,
     get_local_face_nodes,
     gaussquad1d, gaussquad2d,
     koornwinder1d, koornwinder2d
