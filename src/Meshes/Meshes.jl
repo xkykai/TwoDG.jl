@@ -7,7 +7,7 @@ using TwoDG.Utils
 export
     Mesh,
     make_circle_mesh, make_square_mesh,
-    fixmesh, mkt2f, setbndnbrs, createnodes,
+    fixmesh, mkt2f, setbndnbrs, createnodes, uniref,
     mkmesh_circle, mkmesh_square, mkmesh_duct, mkmesh_trefftz, mkmesh_naca
 
 include("make_meshes.jl")
