@@ -22,7 +22,7 @@ function mkmesh_trefftz(m=15, n=30, porder=3, node_spacing_type=0, tparam=[0.1, 
     
     plocal, tlocal = uniformlocalpnts(porder)
     
-    mesh = TwoDG.Mesh(p, t, porder, plocal, tlocal)
+    mesh = TwoDG.Mesh(; p, t, porder, plocal, tlocal)
     mesh = createnodes(mesh)
     
     mesh.p[:, 1] .*= 2
@@ -36,7 +36,7 @@ function mkmesh_trefftz(m=15, n=30, porder=3, node_spacing_type=0, tparam=[0.1, 
 
     p_unique, t_unique = fixmesh(mesh.p, mesh.t)
     
-    mesh = TwoDG.Mesh(p_unique, t_unique, nothing, nothing, nothing, nothing, porder, plocal, tlocal, mesh.dgnodes)
+    mesh = TwoDG.Mesh(; p=p_unique, t=t_unique, porder, plocal, tlocal, mesh.dgnodes)
     
     f, t2f = mkt2f(t_unique)
     
@@ -50,7 +50,7 @@ function mkmesh_trefftz(m=15, n=30, porder=3, node_spacing_type=0, tparam=[0.1, 
     
     f = setbndnbrs(p_unique, f, bndexpr)
     
-    mesh = TwoDG.Mesh(p_unique, t_unique, f, t2f, fcurved, tcurved, porder, plocal, tlocal, mesh.dgnodes)
+    mesh = TwoDG.Mesh(; p=p_unique, t=t_unique, f, t2f, fcurved, tcurved, porder, plocal, tlocal, mesh.dgnodes)
     
     # now do a K-T transformation
     x0 = tparam[1]

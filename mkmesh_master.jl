@@ -16,7 +16,7 @@ tcurved = falses(size(t, 1))
 
 plocal, tlocal = uniformlocalpnts(porder)
 
-mesh = TwoDG.Mesh(p, t, f, t2f, fcurved, tcurved, porder, plocal, tlocal)
+mesh = TwoDG.Mesh(; p, t, f, t2f, fcurved, tcurved, porder, plocal, tlocal)
 mesh = createnodes(mesh)
 
 #%%

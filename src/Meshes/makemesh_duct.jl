@@ -19,7 +19,7 @@ function mkmesh_duct(mesh, db, dt, H)
     pnew[ii, 2] .= p[ii, 2] .* (H .- dt .* sin.(π .* (pnew[ii, 1] .- 1)).^2) .+ 
                     (1 .- p[ii, 2]) .* (db .* sin.(π .* (pnew[ii, 1] .- 1)).^2)
     
-    mesh = TwoDG.Mesh(pnew, mesh.t, mesh.f, mesh.t2f, mesh.fcurved, mesh.tcurved, mesh.porder, mesh.plocal, mesh.tlocal)
+    mesh = TwoDG.Mesh(; p=pnew, mesh.t, mesh.f, mesh.t2f, mesh.fcurved, mesh.tcurved, mesh.porder, mesh.plocal, mesh.tlocal)
     
     fd_left(p) = abs(p[1])
     fd_right(p) = abs(p[1] .- 3)

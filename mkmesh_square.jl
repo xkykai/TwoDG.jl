@@ -4,6 +4,7 @@ using CairoMakie
 m = 10
 n = 10
 parity = 0
+porder = 2
 
 mesh = mkmesh_square(m, n, porder, parity)
 #%%

@@ -2,35 +2,27 @@ using ForwardDiff
 using LinearAlgebra
 using TwoDG.Utils: newton_raphson
 
-struct Mesh{P, T, F, TF, FC, TC, PO, PL, TL, DG}
-    p::P
-    t::T
-    f::F
-    t2f::TF
-    fcurved::FC
-    tcurved::TC
-    porder::PO
-    plocal::PL
-    tlocal::TL
-    dgnodes::DG
-    
-    Mesh(p, t, f, t2f, fcurved, tcurved, porder, plocal, tlocal) = new{typeof(p), typeof(t), typeof(f), typeof(t2f), 
-                                                                       typeof(fcurved), typeof(tcurved), typeof(porder),
-                                                                       typeof(plocal), typeof(tlocal), Nothing}(
-                                                                       p, t, f, t2f, fcurved, tcurved, porder, plocal, tlocal, nothing)
+struct Mesh{P, T, F, TF, FC, TC, PO, PL, TL, DG, PCG, TCG}
+          p :: P
+          t :: T
+          f :: F
+        t2f :: TF
+    fcurved :: FC
+    tcurved :: TC
+     porder :: PO
+     plocal :: PL
+     tlocal :: TL
+    dgnodes :: DG
+        pcg :: PCG
+        tcg :: TCG
+end
 
-    Mesh(p, t, f, t2f, fcurved, tcurved, porder, plocal, tlocal, dgnodes) = new{typeof(p), typeof(t), typeof(f), typeof(t2f), 
-                                                                                typeof(fcurved), typeof(tcurved), typeof(porder),
-                                                                                typeof(plocal), typeof(tlocal), typeof(dgnodes)}(
-                                                                                p, t, f, t2f, fcurved, tcurved, porder, plocal, tlocal, dgnodes)
+function Mesh(; p, t, f=nothing, t2f=nothing, fcurved=nothing, tcurved=nothing, porder, plocal, tlocal, dgnodes=nothing, pcg=nothing, tcg=nothing)
+    return Mesh(p, t, f, t2f, fcurved, tcurved, porder, plocal, tlocal, dgnodes, pcg, tcg)
+end
 
-    Mesh(p, t, porder, plocal, tlocal) = new{typeof(p), typeof(t), Nothing, Nothing, Nothing, Nothing, typeof(porder),
-                                             typeof(plocal), typeof(tlocal), Nothing}(p, t, nothing, nothing, nothing, nothing, porder, plocal, tlocal, nothing)
-    
-    Mesh(mesh::Mesh, dgnodes) = new{typeof(mesh.p), typeof(mesh.t), typeof(mesh.f), typeof(mesh.t2f), 
-                                    typeof(mesh.fcurved), typeof(mesh.tcurved), typeof(mesh.porder),
-                                    typeof(mesh.plocal), typeof(mesh.tlocal), typeof(dgnodes)}(
-                                    mesh.p, mesh.t, mesh.f, mesh.t2f, mesh.fcurved, mesh.tcurved, mesh.porder, mesh.plocal, mesh.tlocal, dgnodes)
+function Mesh(mesh::Mesh; dgnodes=nothing, pcg=nothing, tcg=nothing)
+    return Mesh(; mesh.p, mesh.t, mesh.f, mesh.t2f, mesh.fcurved, mesh.tcurved, mesh.porder, mesh.plocal, mesh.tlocal, dgnodes, pcg, tcg)
 end
 
 # Converts barycentric coordinates (λ) to Cartesian coordinates using vertices v₁, v₂, v₃
@@ -259,5 +251,101 @@ function createnodes(mesh, fd=nothing)
     end
     
     # Create and return a new mesh with the same structure but using the computed high-order nodes
-    return Mesh(mesh, dgnodes)
+    return Mesh(mesh; dgnodes)
 end
+
+"""
+    unique_with_inverse(arr)
+
+Find unique rows in a matrix and return inverse mapping.
+Similar to `np.unique(arr, return_inverse=True, axis=0)` in NumPy.
+"""
+function unique_with_inverse(arr::Matrix{Int})
+    # Create dictionary for fast lookup
+    row_dict = Dict{Tuple{Int,Int}, Int}()
+    unique_rows = Matrix{Int}(undef, 0, 2)
+    
+    # Find unique rows
+    for i in 1:size(arr, 1)
+        key = (arr[i,1], arr[i,2])
+        if !haskey(row_dict, key)
+            unique_rows = vcat(unique_rows, arr[i:i,:])
+            row_dict[key] = size(unique_rows, 1)
+        end
+    end
+    
+    # Create inverse mapping
+    pairj = [row_dict[(arr[i,1], arr[i,2])] for i in 1:size(arr, 1)]
+    
+    return unique_rows, pairj
+end
+
+"""
+    uniref(p, t, nref=1)
+
+Uniformly refine simplicial mesh.
+
+# Arguments
+- `p::Matrix{T}`: Nodes as a matrix of size (np, dim)
+- `t::Matrix{Int}`: Triangulation as a matrix of size (nt, dim+1)
+- `nref::Int=1`: Number of uniform refinements
+
+# Returns
+- `p::Matrix{T}`: Refined nodes
+- `t::Matrix{Int}`: Refined triangulation
+"""
+function uniref(p::Matrix{T}, t::Matrix{Int}, nref::Int=1) where T <: AbstractFloat
+    for _ in 1:nref
+        n = size(p, 1)
+        nt = size(t, 1)
+        
+        # Extract all edges from triangulation
+        pair = zeros(Int, 3*nt, 2)
+        for i in 1:nt
+            pair[i,:] = [t[i,1], t[i,2]]
+            pair[nt+i,:] = [t[i,1], t[i,3]]
+            pair[2*nt+i,:] = [t[i,2], t[i,3]]
+        end
+        
+        # Sort each row
+        for i in 1:size(pair, 1)
+            if pair[i,1] > pair[i,2]
+                pair[i,1], pair[i,2] = pair[i,2], pair[i,1]
+            end
+        end
+        
+        # Find unique edges and their inverse indices
+        unique_pair, pairj = unique_with_inverse(pair)
+        
+        # Calculate midpoints
+        pmid = zeros(T, size(unique_pair, 1), size(p, 2))
+        for i in 1:size(unique_pair, 1)
+            pmid[i,:] = (p[unique_pair[i,1],:] + p[unique_pair[i,2],:]) ./ 2
+        end
+        
+        # Create new triangulation
+        t1 = t[:,1]
+        t2 = t[:,2]
+        t3 = t[:,3]
+        
+        t12 = pairj[1:nt] .+ n
+        t13 = pairj[(nt+1):(2*nt)] .+ n
+        t23 = pairj[(2*nt+1):(3*nt)] .+ n
+        
+        # Construct new triangulation
+        t_new = zeros(Int, 4*nt, 3)
+        for i in 1:nt
+            t_new[i,:] = [t1[i], t12[i], t13[i]]
+            t_new[nt+i,:] = [t12[i], t23[i], t13[i]]
+            t_new[2*nt+i,:] = [t2[i], t23[i], t12[i]]
+            t_new[3*nt+i,:] = [t3[i], t13[i], t23[i]]
+        end
+        
+        # Update points and triangulation
+        p = vcat(p, pmid)
+        t = t_new
+    end
+    
+    return p, t
+end
+

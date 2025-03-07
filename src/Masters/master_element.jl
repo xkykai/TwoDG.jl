@@ -2,20 +2,20 @@ using LinearAlgebra
 using TwoDG.Meshes: Mesh
 
 struct Master{PO, PL, C, PE, PLO, GP, GPT, GW, GWG, SH, SHA}
-    porder::PO
-    plocal::PL
-    corner::C
-    perm::PE
-    ploc1d::PLO
-    gp1d::GP
-    gpts::GPT
-    gw1d::GW
-    gwgh::GWG
-    sh1d::SH
-    shap::SHA
+    porder :: PO
+    plocal :: PL
+    corner :: C
+      perm :: PE
+    ploc1d :: PLO
+      gp1d :: GP
+      gpts :: GPT
+      gw1d :: GW
+      gwgh :: GWG
+      sh1d :: SH
+      shap :: SHA
 end
 
-function Master(mesh::Mesh, pgauss=Nothing)
+function Master(mesh::Mesh, pgauss=nothing)
     master = Master(mesh.porder, mesh.plocal, zeros(Int, 3), zeros(Int, mesh.porder+1, 3, 2), nothing, nothing, nothing, nothing, nothing, nothing, nothing)
     
     # Find indices of corner nodes (vertices) of the reference triangle
@@ -319,8 +319,6 @@ function localpnts(porder::Integer, nodetype::Integer=0)
     uf = vec(u)
     vf = vec(v)
     
-    display(uf)
-    display(vf)
     # Create barycentric coordinates [1-u-v, u, v]
     plocal = hcat(1 .- uf .- vf, uf, vf)
     
