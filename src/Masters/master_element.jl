@@ -356,6 +356,8 @@ function localpnts(porder::Integer, nodetype::Integer=0)
         
         shf += ii + 1
     end
+
+    tlocal .+= 1  # Convert to 1-based indexing
     
     return plocal, tlocal
 end

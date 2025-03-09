@@ -29,6 +29,7 @@ function mkmesh_square(m=2, n=2, porder=1, parity=0, nodetype=0)
     mesh = TwoDG.Mesh(; p, t, f, t2f, fcurved, tcurved, porder, plocal, tlocal)
     
     mesh = createnodes(mesh)
+    mesh = cgmesh(mesh)
 
     return mesh
 end
