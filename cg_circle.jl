@@ -11,7 +11,6 @@ c = [1, -2]
 s = 1 
 param = (; κ, c, s)
 
-#%%
 @variables x y
 u = cos(π/2 * sqrt(x^2 + y^2))
 
@@ -43,7 +42,8 @@ for i in eachindex(ps), j in eachindex(sizes)
     master = Master(mesh, 4*p)
     uh, energy, u_cg = cg_solve(mesh, master, source, param)
     uexact = exact.(mesh.pcg[:, 1], mesh.pcg[:, 2])
-    L2_errors[i][j] = mean((u_cg .- uexact).^2)
+    # L2_errors[i][j] = mean((u_cg .- uexact).^2)
+    L2_errors[i][j] = norm(u_cg .- uexact)
 end
 
 #%%
@@ -55,4 +55,6 @@ end
 axislegend(ax, position=:lb)
 display(fig)
 save("./output/cg_circle_convergence.pdf", fig)
+#%%
+meshplot_curved(circle_mesh, nodes=true)
 #%%
