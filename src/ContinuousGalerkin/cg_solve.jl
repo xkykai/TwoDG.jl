@@ -77,5 +77,5 @@ function cg_solve(mesh, master, source, param)
     # Extract scalar value from energy if it's an array
     energy_scalar = isa(energy, Array) ? energy[1] : energy
     
-    return uh, energy_scalar, ae, fe
+    return uh, energy_scalar, u
 end
