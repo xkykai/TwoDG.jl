@@ -7,7 +7,7 @@ using LinearAlgebra
 using CairoMakie
 using GeometryBasics
 using Colors
-using TwoDG.Masters: shape2d, uniformlocalpnts
+using TwoDG.Masters: shape2d, uniformlocalpnts, localpnts
 using Statistics
 
 """
@@ -42,7 +42,7 @@ function draw_curved_mesh!(ax, mesh, pplot=0; kwargs...)
         pplot = mesh.porder
     end
     
-    plocal, _ = uniformlocalpnts(pplot)
+    plocal, _ = localpnts(pplot, 1)
     perm = zeros(Int, (pplot+1, 3))
     aux = [1,2,3,1,2]
     for i in 1:3
