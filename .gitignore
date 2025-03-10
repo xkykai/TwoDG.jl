@@ -34,6 +34,7 @@ docs/Manifest.toml
 *.svg
 *.gif
 *.mp4
+*.pdf
 
 # Benchmark output
 *.html
