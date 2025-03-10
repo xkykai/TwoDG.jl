@@ -5,9 +5,6 @@ function cgmesh(mesh, ptol=2e-13)
     # Create array of indices
     th = reshape(1:size(ph, 1), (size(mesh.dgnodes, 3), :))
 
-    display(ph)
-    display(th)
-    
     # Find unique rows in rounded ph
     rounded_ph = round.(ph, digits=6)
     
