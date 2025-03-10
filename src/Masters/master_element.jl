@@ -330,6 +330,8 @@ function localpnts(porder::Integer, nodetype::Integer=0)
     plocal_1 = rotate_plocal(plocal, porder)
     plocal_2 = rotate_plocal(plocal_1, porder)
     plocal = (plocal + plocal_1 + plocal_2) / 3.0
+
+    plocal[abs.(plocal) .< eps(typeof(plocal[1]))] .= 0.0  # Set very small values to zero
     
     # Create triangulation
     shf = 0
