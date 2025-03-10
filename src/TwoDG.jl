@@ -12,7 +12,9 @@ export
     gaussquad1d, gaussquad2d, newton_raphson,
     koornwinder1d, koornwinder2d,
     areacircle, trefftz_points, potential_trefftz, trefftz,
-    elemmat_cg, cg_solve
+    elemmat_cg, cg_solve,
+    grad_u, equilibrate, reconstruct,
+    initu, l2_error
 
 include("Utils/Utils.jl")
 include("Meshes/Meshes.jl")
