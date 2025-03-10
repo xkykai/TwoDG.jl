@@ -35,15 +35,15 @@ for i in eachindex(ps), j in eachindex(ngrids)
     master = Master(mesh, 4*p)
     uh, energy, u = cg_solve(mesh, master, source, param)
     uexact = exact.(mesh.pcg[:, 1], mesh.pcg[:, 2])
-    L2_errors[i][j] = norm(u .- uexact)
+    L2_errors[i][j] = l2_error(mesh, uh, exact)
 end
 #%%
 fig = Figure()
-ax = Axis(fig[1, 1], xlabel="1/h", ylabel="Mean squared error", title="Error convergence of continuous Galerkin", yscale=log10, xscale=log10)
+ax = Axis(fig[1, 1], xlabel="1/h", ylabel="L2 norm", title="Error convergence of continuous Galerkin", yscale=log10, xscale=log10)
 for i in eachindex(ps)
     scatterlines!(ax, ngrids .- 1, L2_errors[i], label="p = $(ps[i])")
 end
 axislegend(ax, position=:lb)
 display(fig)
-# save("./output/cg_square_convergence.pdf", fig)
+save("./output/cg_square_convergence.pdf", fig)
 #%%
