@@ -115,45 +115,35 @@ uniformlocalpnts 2-d mesh generator for the master element.
     return plocal, tlocal
 end
 
-"""     
-shape1d calculates the nodal shapefunctions and its derivatives for 
-         the master 1d element [0,1]
-nfs=shape1d(porder,plocal,pts)
-
-   porder:    polynomial order
-   plocal:    node positions (np) (np=porder+1)
-   pts:       coordinates of the points where the shape fucntions
-               and derivatives are to be evaluated (npoints)
-   nsf:       shape function adn derivatives (np,2,npoints)
-              nsf[:,0,:] shape functions 
-              nsf[:,1,:] shape fucntions derivatives w.r.t. x 
 """
-function shape1d(porder, plocal, pts)
-    # Number of nodes
-    np = porder + 1
-    # Number of evaluation points
-    npoints = length(pts)
+shape1d calculates the nodal shapefunctions and its derivatives for
+         the master 1d element [0,1]
+
+Arguments:
+- `porder`: polynomial order
+- `plocal`: node positions (np,2) (np=porder+1)
+- `pts`: coordinates of the points where the shape functions
+         and derivatives are to be evaluated (npoints)
+
+Returns:
+- `nsf`: shape function and derivatives (np,2,npoints)
+         nsf[:,1,:] shape functions
+         nsf[:,2,:] shape functions derivatives w.r.t. x
+"""
+function shape1d(porder::Int, plocal::AbstractMatrix{T}, pts::AbstractVector{T}) where T <: Real
+    f, fx = koornwinder1d(pts, porder)
+    A, _ = koornwinder1d(@view(plocal[:,2]), porder)  # Using column 2 due to 1-based indexing
     
-    # Extract x-coordinates from plocal and use them for Koornwinder polynomial basis
-    x_coords = plocal[:, 1]
+    # Solve linear systems efficiently using Julia's \ operator
+    nf = A' \ f'
+    nfx = A' \ fx'
     
-    # Create Vandermonde matrix at node locations
-    # This maps from modal (Koornwinder polynomial) to nodal basis
-    V, _ = koornwinder1d(x_coords, porder)
+    # Preallocate memory for the result
+    nfs = zeros(T, porder+1, 2, length(pts))
     
-    # Calculate coefficient matrix A to transform from modal to nodal basis
-    # This is effectively inverting the Vandermonde matrix
-    A = (V \ I)
-    
-    # Initialize output array for shape functions and derivatives
-    nfs = zeros(np, 2, npoints)
-    
-    # Evaluate Koornwinder polynomials at requested points
-    Λ, dΛ = koornwinder1d(pts, porder)
-    
-    # Transform modal basis values to nodal basis (shape functions)
-    nfs[:, 1, :] = (Λ * A)'   # Shape functions
-    nfs[:, 2, :] = (dΛ * A)'  # Shape function derivatives
+    # Use views to avoid unnecessary copying
+    @views nfs[:,1,:] = nf  # Index 1 in Julia (was index 0 in Python)
+    @views nfs[:,2,:] = nfx # Index 2 in Julia (was index 1 in Python)
     
     return nfs
 end
