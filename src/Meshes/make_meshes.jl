@@ -38,8 +38,8 @@ function make_square_mesh(m::Int=10, n::Int=10, parity::Int=0)
     y = range(0.0, 1.0, length=n)
     
     # Create meshgrid equivalent in Julia
-    X = [x[i] for j in 1:n, i in 1:m]
-    Y = [y[j] for j in 1:n, i in 1:m]
+    X = [x[i] for i in 1:m, _ in 1:n]
+    Y = [y[j] for _ in 1:m, j in 1:n]
     
     # Create node positions
     p = hcat(X[:], Y[:])
