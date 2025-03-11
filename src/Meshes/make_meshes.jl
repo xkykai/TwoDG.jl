@@ -22,18 +22,50 @@ function make_circle_mesh(size)
     return p, t
 end
 
-function make_square_mesh(m, n, parity)
-    TEMP_DIR = "$(@__DIR__)/temp_square_$(m)_$(n)_$(parity)"
-    mkpath(TEMP_DIR)
+"""
+make_square_mesh 2-d regular triangle mesh generator for the unit square
+p, t = squaremesh(m, n, parity)
 
-    command = `python pyscripts/make_square_mesh.py $(m) $(n) $(parity) $(TEMP_DIR)`
-    run(command)
-
-    p = Array(CSV.read("$(TEMP_DIR)/p.csv", DataFrame, header=false))
-    t = Array(CSV.read("$(TEMP_DIR)/t.csv", DataFrame, header=false))
-
-    t .+= 1
-
-    rm(TEMP_DIR, recursive=true)
+  p:         node positions (np,2)
+  t:         triangle indices (nt,3)
+  parity:    flag determining the triangular pattern
+              flag = 0 (diagonals sw - ne) (default)
+              flag = 1 (diagonals nw - se)
+"""
+function make_square_mesh(m::Int=10, n::Int=10, parity::Int=0)
+    # Generate mesh for unit square
+    x = range(0.0, 1.0, length=m)
+    y = range(0.0, 1.0, length=n)
+    
+    # Create meshgrid equivalent in Julia
+    X = [x[i] for j in 1:n, i in 1:m]
+    Y = [y[j] for j in 1:n, i in 1:m]
+    
+    # Create node positions
+    p = hcat(X[:], Y[:])
+    
+    # Pre-allocate triangle indices
+    nt = 2*(m-1)*(n-1)
+    t = zeros(Int, nt, 3)
+    
+    # Generate triangle indices
+    idx = 1
+    for j in 1:(n-1), i in 1:(m-1)
+        i0 = i + (j-1)*m
+        i1 = i0 + 1
+        i2 = i0 + m
+        i3 = i2 + 1
+        
+        if parity == 0
+            t[idx,:] = [i0, i3, i2]
+            t[idx+1,:] = [i0, i1, i3]
+        else
+            t[idx,:] = [i0, i1, i2]
+            t[idx+1,:] = [i1, i3, i2]
+        end
+        
+        idx += 2
+    end
+    
     return p, t
 end
