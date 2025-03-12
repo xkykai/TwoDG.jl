@@ -18,24 +18,21 @@ function mkmesh_trefftz(m=15, n=30, porder=3, node_spacing_type=0, tparam=[0.1, 
     p = vcat(p0, p1)
     t = vcat(t0, t1)
     
-    scatter(p[:, 1], p[:, 2])
-    
-    plocal, tlocal = uniformlocalpnts(porder)
+    plocal, tlocal = localpnts(porder, node_spacing_type)
     
     mesh = TwoDG.Mesh(; p, t, porder, plocal, tlocal)
     mesh = createnodes(mesh)
-    
+
     mesh.p[:, 1] .*= 2
     mesh.p[:, 2] .*= π
     
     z = mesh.p[:, 1] .+ im * mesh.p[:, 2]
     w = exp.(z)
     
-    mesh.p[:, 1] = real(w)
-    mesh.p[:, 2] = imag(w)
+    mesh.p[:, 1] .= real.(w)
+    mesh.p[:, 2] .= imag.(w)
 
     p_unique, t_unique = fixmesh(mesh.p, mesh.t)
-    
     mesh = TwoDG.Mesh(; p=p_unique, t=t_unique, porder, plocal, tlocal, mesh.dgnodes)
     
     f, t2f = mkt2f(t_unique)
@@ -69,15 +66,15 @@ function mkmesh_trefftz(m=15, n=30, porder=3, node_spacing_type=0, tparam=[0.1, 
     mesh.p[:, 1] .= real(w)
     mesh.p[:, 2] .= imag(w)
     
-    z = 2 .* mesh.dgnodes[:, 1, :] .- im * π .* mesh.dgnodes[:, 2, :]
+    z = 2 .* mesh.dgnodes[:, 1, :] .+ im * π .* mesh.dgnodes[:, 2, :]
     w = exp.(z)
     w .= r * exp(-im * rot) .* w .- x0 .+ im * y0
     
     z = ((w .- 1) ./ (w .+ 1)).^n
     w .= ((1 .+ z) ./ (1 .- z)) .* n
-    
-    mesh.dgnodes[:, 1, :] .= real(w)
-    mesh.dgnodes[:, 2, :] .= imag(w)
+
+    mesh.dgnodes[:, 1, :] .= real.(w)
+    mesh.dgnodes[:, 2, :] .= imag.(w)
 
     return mesh
 end

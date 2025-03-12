@@ -84,7 +84,6 @@ function fixmesh(p::Matrix{T}, t::Matrix{Int}, ptol::Real=2e-13) where T<:Real
     return p_unique, t_unique
 end
 
-
 """
 mkt2t(t)
 Compute element connectivities from element indices.
