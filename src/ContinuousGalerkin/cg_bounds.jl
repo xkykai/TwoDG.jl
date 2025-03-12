@@ -171,9 +171,9 @@ function equilibrate(master, mesh, guh, forcing)
                 ipr = sum(mesh.t[i, :]) - ipt
                 isr = findfirst(x -> x == ipr, mesh.t[i, :])
                 if mesh.t2f[i, isr] < 0
-                    ior = 2  # Python: 1
+                    ior = 2
                 else
-                    ior = 1  # Python: 0
+                    ior = 1
                 end
                 
                 xxi = master.sh1d[:, 2, :]' * mesh.dgnodes[perm[:, isr, ior], 1, i]
@@ -189,9 +189,7 @@ function equilibrate(master, mesh, guh, forcing)
     il = zeros(Int, npl1d, npl1d, nf)
     jl = zeros(Int, npl1d, npl1d, nf)
     for i in 1:nf
-        # Python: i * npl1d + np.arange(npl1d)
         row_range = (i-1) * npl1d .+ (1:npl1d)
-        # Python: np.tile(row_range.reshape(-1, 1), (1, npl1d))
         il[:, :, i] = repeat(reshape(row_range, :, 1), 1, npl1d)
         jl[:, :, i] = repeat(row_range', npl1d, 1)
     end
@@ -203,14 +201,12 @@ function equilibrate(master, mesh, guh, forcing)
         for j in 1:3
             f = abs(mesh.t2f[i, j])
             row_offset = (j-1) * npl1d
-            # Python: (f - 1) * npl1d + np.arange(npl1d)
             f_range = (f-1) * npl1d .+ (1:npl1d)
             ilc[(row_offset+1):(row_offset+npl1d), i] = f_range
         end
         jlc[:, i] .= npl1d * nf + i
     end
     
-    # Flatten arrays - Python reshape uses 'F' for column-major, Julia is column-major by default
     M_flat = reshape(M, :)
     il_flat = reshape(il, :)
     jl_flat = reshape(jl, :)
@@ -219,7 +215,6 @@ function equilibrate(master, mesh, guh, forcing)
     ilc_flat = reshape(ilc, :)
     jlc_flat = reshape(jlc, :)
     
-    # Python: np.concatenate
     ilt = [il_flat; ilc_flat; jlc_flat]
     jlt = [jl_flat; jlc_flat; ilc_flat]
     
@@ -232,10 +227,8 @@ function equilibrate(master, mesh, guh, forcing)
     F[1:(npl1d*nf)] = rhs_flat
     F[(npl1d*nf+1):end] = rs
     
-    # Python: sp.coo_matrix((Ke, (ilt, jlt))).tocsr()
     K = sparse(ilt, jlt, Ke, npl1d*nf + nt, npl1d*nf + nt)
     
-    # Python: spsolve(K, F)
     u = K \ F
     qn = reshape(u[1:(npl1d*nf)], npl1d, nf)
     
