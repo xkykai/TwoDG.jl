@@ -74,8 +74,5 @@ function cg_solve(mesh, master, source, param)
         uh[:,i] .= u[mesh.tcg[i,:]]
     end
     
-    # Extract scalar value from energy if it's an array
-    energy_scalar = isa(energy, Array) ? energy[1] : energy
-    
-    return uh, energy_scalar, u
+    return uh, energy[1], u
 end
