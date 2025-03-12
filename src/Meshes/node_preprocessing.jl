@@ -85,7 +85,7 @@ function fixmesh(p::Matrix{T}, t::Matrix{Int}, ptol::Real=2e-13) where T<:Real
 end
 
 """
-mkt2t(t)
+mkt2f(t)
 Compute element connectivities from element indices.
 
 t2t, t2n = mkt2t(t)
