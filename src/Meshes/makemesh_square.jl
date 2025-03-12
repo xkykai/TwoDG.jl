@@ -6,7 +6,6 @@ using LinearAlgebra
 
 function mkmesh_square(m=2, n=2, porder=1, parity=0, nodetype=0)
     p, t = make_square_mesh(m, n, parity)
-    p, t = fixmesh(p, t)
     
     f, t2f = mkt2f(t)
     
