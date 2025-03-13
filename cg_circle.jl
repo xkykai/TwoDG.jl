@@ -47,7 +47,7 @@ end
 
 #%%
 fig = Figure()
-ax = Axis(fig[1, 1], xlabel="1/h", ylabel="L2 norm", title="Error convergence of continuous Galerkin", yscale=log10, xscale=log10)
+ax = Axis(fig[1, 1], xlabel="1/h", ylabel="L2 norm", title="Error convergence of continuous Galerkin, circular domain", yscale=log10, xscale=log10)
 for i in eachindex(ps)
     scatterlines!(ax, one_over_sizes, L2_errors[i], label="p = $(ps[i])")
 end

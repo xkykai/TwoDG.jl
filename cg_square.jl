@@ -50,7 +50,7 @@ for i in eachindex(ps), j in eachindex(ngrids)
 end
 #%%
 fig = Figure()
-ax = Axis(fig[1, 1], xlabel="1/h", ylabel="L2 norm", title="Error convergence of continuous Galerkin", yscale=log10, xscale=log10)
+ax = Axis(fig[1, 1], xlabel="1/h", ylabel="L2 norm", title="Error convergence of continuous Galerkin, square domain", yscale=log10, xscale=log10)
 for i in eachindex(ps)
     scatterlines!(ax, ngrids .- 1, L2_errors[i], label="p = $(ps[i])")
 end
