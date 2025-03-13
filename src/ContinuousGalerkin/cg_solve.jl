@@ -74,5 +74,5 @@ function cg_solve(mesh, master, source, param)
         uh[:,i] .= u[mesh.tcg[i,:]]
     end
     
-    return uh, energy[1], u
+    return uh, energy[1]
 end
