@@ -27,6 +27,18 @@ ngrids = [5, 9, 17, 33]
 ps = [1, 2, 3, 4]
 L2_errors = [zeros(length(ngrids)) for _ in ps]
 
+ngrid = 5
+p = 6
+mesh = mkmesh_square(ngrid, ngrid, p, parity, nodetype)
+master = Master(mesh, 4*p)
+uh, energy, u = cg_solve(mesh, master, source, param)
+uexact = exact.(mesh.dgnodes[:, 1, :], mesh.dgnodes[:, 2, :])
+
+scaplot(mesh, uh, show_mesh=true)
+scaplot(mesh, uexact, show_mesh=true)
+
+@info "Energy upper bound: $energy"
+
 for i in eachindex(ps), j in eachindex(ngrids)
     @info "Computing MSE for p = $(ps[i]) and ngrid = $(ngrids[j])"
     p = ps[i]
@@ -34,7 +46,6 @@ for i in eachindex(ps), j in eachindex(ngrids)
     mesh = mkmesh_square(ngrid, ngrid, p, parity, nodetype)
     master = Master(mesh, 4*p)
     uh, energy, u = cg_solve(mesh, master, source, param)
-    uexact = exact.(mesh.pcg[:, 1], mesh.pcg[:, 2])
     L2_errors[i][j] = l2_error(mesh, uh, exact)
 end
 #%%
