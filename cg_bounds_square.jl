@@ -19,8 +19,7 @@ param = (; κ, c, s)
 
 source(x, y) = 1
 
-uh, energy_upper, u = cg_solve(mesh, master, source, param)
-# scaplot(mesh, uh, show_mesh=true)
+uh, energy_upper = cg_solve(mesh, master, source, param)
 
 guh = grad_u(master, mesh, uh)
 qn, qn0 = equilibrate(master, mesh, guh, source)
@@ -80,7 +79,7 @@ ax = Axis(fig[1, 1], xlabel="Element", title="Equilibrated flux anomaly (∫ f d
 scatter!(ax, 1:size(mesh.t, 1), f_integrals .+ qn_lineintegrals)
 ylims!(ax, (-3e-16, 3e-16))
 display(fig)
-save("./output/equilibrated_flux_anomaly.pdf", fig)
+# save("./output/square_equilibrated_flux_anomaly_n_$(ngrid)_p_$(porder).pdf", fig)
 #%%
 function compute_lower_bound(mesh, master, q)
     energy_lower = 0.
@@ -99,5 +98,59 @@ end
 
 energy_lower = compute_lower_bound(mesh, master, q)
 #%%
+ngrids = [3, 5, 9, 17]
+ps = [1, 2, 3, 4]
+Gs = [zeros(length(ngrids)) for _ in ps]
 
+for (i, p) in enumerate(ps), (j, ngrid) in enumerate(ngrids)
+    mesh = mkmesh_square(ngrid, ngrid, p, parity, nodetype)
+    master = Master(mesh, 4*p)
+
+    uh, energy_upper = cg_solve(mesh, master, source, param)
+    guh = grad_u(master, mesh, uh)
+    qn, qn0 = equilibrate(master, mesh, guh, source)
+
+    q, energy_lowerq = reconstruct(master, mesh, source, qn)
+
+    energy_lower = compute_lower_bound(mesh, master, q)
+    Gs[i][j] = energy_upper - energy_lower
+    @info "p = $p, ngrid = $ngrid, G $(Gs[i][j]), energy upper $(energy_upper), energy lower $(energy_lower)"
+end
+#%%
+fig = Figure()
+ax = Axis(fig[1, 1], xlabel="1/h", ylabel="G", title="Energy error bounds gap for square domain", xscale=log10, yscale=log10)
+for (i, p) in enumerate(ps)
+    scatterlines!(ax, ngrids .- 1, Gs[i], label="p = $p")
+end
+axislegend(ax, position=:lb)
+display(fig)
+# save("./output/square_energy_error_bounds_gap.pdf", fig)
+#%%
+ngrids_unequilibrated = [3, 5, 9, 17]
+ps_unequilibrated = [1, 2, 3, 4]
+Gs_unequilibrated = [zeros(length(ngrids_unequilibrated)) for _ in ps_unequilibrated]
+
+for (i, p) in enumerate(ps_unequilibrated), (j, ngrid) in enumerate(ngrids_unequilibrated)
+    mesh = mkmesh_square(ngrid, ngrid, p, parity, nodetype)
+    master = Master(mesh, 4*p)
+
+    uh, energy_upper = cg_solve(mesh, master, source, param)
+    guh = grad_u(master, mesh, uh)
+    qn, qn0 = equilibrate(master, mesh, guh, source)
+
+    q, energy_lowerq = reconstruct(master, mesh, source, qn0)
+    energy_lower = compute_lower_bound(mesh, master, q)
+    Gs_unequilibrated[i][j] = energy_upper - energy_lower
+    @info "p = $p, ngrid = $ngrid, G $(Gs_unequilibrated[i][j]), energy upper $(energy_upper), energy lower $(energy_lower), energy lower q $(energy_lowerq)"
+end
+#%%
+fig = Figure()
+ax = Axis(fig[1, 1], xlabel="1/h", ylabel="G", title="Energy error bounds gap for square domain, Unequilibrated qₙ", xscale=log10)
+for (i, p) in enumerate(ps)
+    scatterlines!(ax, ngrids_unequilibrated .- 1, Gs_unequilibrated[i], label="p = $p")
+end
+axislegend(ax, position=:lb)
+display(fig)
+# save("./output/square_energy_error_bounds_gap_unequilibrated.pdf", fig)
+#%%
 #%%
