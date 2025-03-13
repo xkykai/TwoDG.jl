@@ -1,8 +1,4 @@
 using TwoDG
-using CSV
-using DataFrames
-using CairoMakie
-using LinearAlgebra
 
 function mkmesh_duct(mesh, db, dt, H)
     p = mesh.p

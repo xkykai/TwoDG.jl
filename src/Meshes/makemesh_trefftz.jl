@@ -1,8 +1,4 @@
 using TwoDG
-using CSV
-using DataFrames
-using CairoMakie
-using LinearAlgebra
 
 function mkmesh_trefftz(m=15, n=30, porder=3, node_spacing_type=0, tparam=[0.1, 0.05, 1.98])
     n = 2 * Int(ceil(n / 2))

@@ -1,8 +1,4 @@
 using TwoDG
-using CSV
-using DataFrames
-using CairoMakie
-using LinearAlgebra
 
 function mkmesh_circle(siz=0.4, porder=3, nodetype=0)
     p, t = make_circle_mesh(siz)
