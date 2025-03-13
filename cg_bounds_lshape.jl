@@ -10,7 +10,7 @@ porder = 3
 mesh = mkmesh_lshape(m, porder)
 master = Master(mesh, 3*porder)
 
-meshplot_curved(mesh, nodes=true)
+# meshplot_curved(mesh, nodes=true)
 κ = 1
 c = [0, 0]
 s = 0
@@ -18,7 +18,7 @@ param = (; κ, c, s)
 
 source(x, y) = 1
 
-uh, energy_upper, u = cg_solve(mesh, master, source, param)
+uh, energy_upper = cg_solve(mesh, master, source, param)
 scaplot(mesh, uh, show_mesh=true)
 
 guh = grad_u(master, mesh, uh)
@@ -74,14 +74,6 @@ f_integrals = compute_source_integral(master, mesh)
 
 q, energy_lowerq = reconstruct(master, mesh, source, qn)
 
-#%%
-fig = Figure()
-ax = Axis(fig[1, 1], xlabel="Element", title="Equilibrated flux anomaly (∫ f dΩ + ∫ qₙ dS)", ylabel="Anomaly")
-scatter!(ax, 1:size(mesh.t, 1), f_integrals .+ qn_lineintegrals)
-ylims!(ax, (-3e-16, 3e-16))
-display(fig)
-# save("./output/equilibrated_flux_anomaly_lshape.pdf", fig)
-#%%
 function compute_lower_bound(mesh, master, q)
     energy_lower = 0.
     for it in 1:size(mesh.t, 1)
@@ -98,6 +90,29 @@ function compute_lower_bound(mesh, master, q)
 end
 
 energy_lower = compute_lower_bound(mesh, master, q)
-@info "energy upper $(energy_upper), energy lower $(energy_lower), energy lower q $(energy_lowerq)"
 #%%
+ngrids = [3, 5, 9]
+ps = [1, 2, 3, 4]
+Gs = [zeros(length(ngrids)) for _ in ps]
 
+for (i, p) in enumerate(ps), (j, ngrid) in enumerate(ngrids)
+    mesh = mkmesh_lshape(ngrid, p)
+    master = Master(mesh, 3*p)
+    uh, energy_upper = cg_solve(mesh, master, source, param)
+    guh = grad_u(master, mesh, uh)
+    qn, qn0 = equilibrate(master, mesh, guh, source)
+    q, energy_lowerq = reconstruct(master, mesh, source, qn)
+    energy_lower = compute_lower_bound(mesh, master, q)
+    Gs[i][j] = energy_upper - energy_lower
+    @info "p = $p, ngrid = $ngrid, G = $(Gs[i][j]), energy upper = $energy_upper, energy lower = $energy_lower"
+end
+#%%
+fig = Figure()
+ax = Axis(fig[1, 1], xlabel="1/h", ylabel="G", title="Energy error bounds gap for L-shape domain", xscale=log10, yscale=log10)
+for (i, p) in enumerate(ps)
+    scatterlines!(ax, ngrids .- 1, Gs[i], label="p = $p")
+end
+axislegend(ax, position=:lb)
+display(fig)
+# save("./output/lshape_energy_error_bounds_gap.pdf", fig)
+#%%
