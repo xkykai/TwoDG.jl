@@ -70,3 +70,4 @@ statprof
 *.slurm
 
 *.msh
+*.code-workspace
