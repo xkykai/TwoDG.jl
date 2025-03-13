@@ -31,7 +31,7 @@ ngrid = 5
 p = 6
 mesh = mkmesh_square(ngrid, ngrid, p, parity, nodetype)
 master = Master(mesh, 4*p)
-uh, energy, u = cg_solve(mesh, master, source, param)
+uh, energy = cg_solve(mesh, master, source, param)
 uexact = exact.(mesh.dgnodes[:, 1, :], mesh.dgnodes[:, 2, :])
 
 scaplot(mesh, uh, show_mesh=true)
@@ -45,7 +45,7 @@ for i in eachindex(ps), j in eachindex(ngrids)
     ngrid = ngrids[j]
     mesh = mkmesh_square(ngrid, ngrid, p, parity, nodetype)
     master = Master(mesh, 4*p)
-    uh, energy, u = cg_solve(mesh, master, source, param)
+    uh, energy = cg_solve(mesh, master, source, param)
     L2_errors[i][j] = l2_error(mesh, uh, exact)
 end
 #%%
@@ -56,5 +56,5 @@ for i in eachindex(ps)
 end
 axislegend(ax, position=:lb)
 display(fig)
-save("./output/cg_square_convergence.pdf", fig)
+# save("./output/cg_square_convergence.pdf", fig)
 #%%

@@ -40,7 +40,7 @@ for i in eachindex(ps), j in eachindex(sizes)
     size = sizes[j]
     mesh = mkmesh_circle(size, p, 1)
     master = Master(mesh, 4*p)
-    uh, energy, u_cg = cg_solve(mesh, master, source, param)
+    uh, energy = cg_solve(mesh, master, source, param)
     uexact = exact.(mesh.pcg[:, 1], mesh.pcg[:, 2])
     L2_errors[i][j] = l2_error(mesh, uh, exact)
 end
@@ -53,5 +53,5 @@ for i in eachindex(ps)
 end
 axislegend(ax, position=:lb)
 display(fig)
-save("./output/cg_circle_convergence.pdf", fig)
+# save("./output/cg_circle_convergence.pdf", fig)
 #%%
