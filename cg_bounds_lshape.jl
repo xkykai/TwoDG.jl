@@ -113,7 +113,7 @@ for (i, p) in enumerate(ps), (j, ngrid) in enumerate(ngrids)
 end
 #%%
 fig = Figure()
-ax = Axis(fig[1, 1], xlabel="1/h", ylabel="G", title="Energy error bounds gap for L-shape domain", xscale=log10, yscale=log10)
+ax = Axis(fig[1, 1], xlabel="1/h", ylabel="G", title="Energy bounds gap for L-shape domain", xscale=log10, yscale=log10)
 for (i, p) in enumerate(ps)
     scatterlines!(ax, ngrids .- 1, Gs[i], label="p = $p")
 end

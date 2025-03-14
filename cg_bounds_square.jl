@@ -119,14 +119,14 @@ for (i, p) in enumerate(ps), (j, ngrid) in enumerate(ngrids)
 end
 #%%
 fig = Figure()
-ax = Axis(fig[1, 1], xlabel="1/h", ylabel="G", title="Energy error bounds gap for square domain", xscale=log10, yscale=log10)
+ax = Axis(fig[1, 1], xlabel="1/h", ylabel="G", title="Energy bounds gap for square domain", xscale=log10, yscale=log10)
 for (i, p) in enumerate(ps)
     scatterlines!(ax, ngrids .- 1, Gs[i], label="p = $p")
 end
 axislegend(ax, position=:lb)
 display(fig)
 # save("./output/square_energy_error_bounds_gap.pdf", fig)
-# save("./output/square_energy_error_bounds_gap.png", fig, px_per_unit=8)
+save("./output/square_energy_error_bounds_gap.png", fig, px_per_unit=8)
 #%%
 ngrids_unequilibrated = [3, 5, 9, 17]
 ps_unequilibrated = [1, 2, 3, 4]
@@ -147,13 +147,13 @@ for (i, p) in enumerate(ps_unequilibrated), (j, ngrid) in enumerate(ngrids_unequ
 end
 #%%
 fig = Figure()
-ax = Axis(fig[1, 1], xlabel="1/h", ylabel="G", title="Energy error bounds gap for square domain, Unequilibrated qₙ", xscale=log10)
+ax = Axis(fig[1, 1], xlabel="1/h", ylabel="G", title="Energy bounds gap for square domain, Unequilibrated qₙ", xscale=log10)
 for (i, p) in enumerate(ps)
     scatterlines!(ax, ngrids_unequilibrated .- 1, Gs_unequilibrated[i], label="p = $p")
 end
 axislegend(ax, position=:lb)
 display(fig)
 # save("./output/square_energy_error_bounds_gap_unequilibrated.pdf", fig)
-# save("./output/square_energy_error_bounds_gap_unequilibrated.png", fig, px_per_unit=8)
+save("./output/square_energy_error_bounds_gap_unequilibrated.png", fig, px_per_unit=8)
 #%%
 #%%
