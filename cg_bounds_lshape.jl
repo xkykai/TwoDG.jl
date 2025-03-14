@@ -19,10 +19,15 @@ param = (; κ, c, s)
 source(x, y) = 1
 
 uh, energy_upper = cg_solve(mesh, master, source, param)
-scaplot(mesh, uh, show_mesh=true)
+fig = scaplot(mesh, uh, show_mesh=true, title="u")
+# save("./output/lshape_uh.png", fig, px_per_unit=8)
 
 guh = grad_u(master, mesh, uh)
-scaplot(mesh, guh[:, 1, :], show_mesh=true)
+fig = scaplot(mesh, guh[:, 1, :], show_mesh=true, title="∂u/∂x")
+# save("./output/lshape_guh_x.png", fig, px_per_unit=8)
+fig = scaplot(mesh, guh[:, 2, :], show_mesh=true, title="∂u/∂y")
+# save("./output/lshape_guh_y.png", fig, px_per_unit=8)
+
 qn, qn0 = equilibrate(master, mesh, guh, source)
 
 function compute_qn_lineintegral(master, mesh, qn)
@@ -115,4 +120,5 @@ end
 axislegend(ax, position=:lb)
 display(fig)
 # save("./output/lshape_energy_error_bounds_gap.pdf", fig)
+# save("./output/lshape_energy_error_bounds_gap.png", fig, px_per_unit=8)
 #%%

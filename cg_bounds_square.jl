@@ -80,6 +80,7 @@ scatter!(ax, 1:size(mesh.t, 1), f_integrals .+ qn_lineintegrals)
 ylims!(ax, (-3e-16, 3e-16))
 display(fig)
 # save("./output/square_equilibrated_flux_anomaly_n_$(ngrid)_p_$(porder).pdf", fig)
+# save("./output/square_equilibrated_flux_anomaly_n_$(ngrid)_p_$(porder).png", fig, px_per_unit=8)
 #%%
 function compute_lower_bound(mesh, master, q)
     energy_lower = 0.
@@ -125,6 +126,7 @@ end
 axislegend(ax, position=:lb)
 display(fig)
 # save("./output/square_energy_error_bounds_gap.pdf", fig)
+# save("./output/square_energy_error_bounds_gap.png", fig, px_per_unit=8)
 #%%
 ngrids_unequilibrated = [3, 5, 9, 17]
 ps_unequilibrated = [1, 2, 3, 4]
@@ -152,5 +154,6 @@ end
 axislegend(ax, position=:lb)
 display(fig)
 # save("./output/square_energy_error_bounds_gap_unequilibrated.pdf", fig)
+# save("./output/square_energy_error_bounds_gap_unequilibrated.png", fig, px_per_unit=8)
 #%%
 #%%
