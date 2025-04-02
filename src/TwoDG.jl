@@ -22,6 +22,7 @@ include("Masters/Masters.jl")
 include("Drivers/Drivers.jl")
 include("Plotting/Plotting.jl")
 include("ContinuousGalerkin/ContinuousGalerkin.jl")
+include("DiscontinuousGalerkin/DiscontinuousGalerkin.jl")
 
 using .Drivers
 using .Masters
@@ -29,5 +30,6 @@ using .Meshes
 using .Utils
 using .Plotting
 using .ContinuousGalerkin
+using .DiscontinuousGalerkin
 
 end
