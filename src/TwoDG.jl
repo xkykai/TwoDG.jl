@@ -19,11 +19,11 @@ export
 include("Utils/Utils.jl")
 include("Meshes/Meshes.jl")
 include("Masters/Masters.jl")
-include("App/App.jl")
+include("Drivers/Drivers.jl")
 include("Plotting/Plotting.jl")
 include("ContinuousGalerkin/ContinuousGalerkin.jl")
 
-using .App
+using .Drivers
 using .Masters
 using .Meshes
 using .Utils
