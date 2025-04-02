@@ -23,7 +23,7 @@ include("Drivers/Drivers.jl")
 include("Plotting/Plotting.jl")
 include("ContinuousGalerkin/ContinuousGalerkin.jl")
 include("DiscontinuousGalerkin/DiscontinuousGalerkin.jl")
-include("App/App.jl")
+include("Apps/Apps.jl")
 
 using .Drivers
 using .Masters
@@ -32,6 +32,6 @@ using .Utils
 using .Plotting
 using .ContinuousGalerkin
 using .DiscontinuousGalerkin
-using .App
+using .Apps
 
 end
