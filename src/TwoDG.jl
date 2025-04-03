@@ -14,7 +14,9 @@ export
     areacircle, trefftz_points, potential_trefftz, trefftz,
     elemmat_cg, cg_solve,
     grad_u, equilibrate, reconstruct,
-    initu, l2_error
+    initu, l2_error,
+    App, mkapp_convection,
+    rk4, rk4!, rinvexpl
 
 include("Utils/Utils.jl")
 include("Meshes/Meshes.jl")
