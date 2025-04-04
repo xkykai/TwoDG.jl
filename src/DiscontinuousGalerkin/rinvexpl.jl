@@ -67,8 +67,8 @@ function rinvexpl(master, mesh, app, u, time)
         fng = app.finvi(ulg, urg, nl, plg, app.arg, time)
         cnt = sh1d * Diagonal(dws) * fng 
    
-        r[perml, :, el] = r[perml, :, el] - cnt
-        r[permr, :, er] = r[permr, :, er] + cnt
+        r[perml, :, el] .-= cnt
+        r[permr, :, er] .+= cnt
     end
 
     # Boundary faces
@@ -89,9 +89,9 @@ function rinvexpl(master, mesh, app, u, time)
             plg = []
         end
 
-        dx = mesh.p[mesh.f[i, 2], :] - mesh.p[mesh.f[i, 1], :]
+        dx = mesh.p[mesh.f[i, 2], :] .- mesh.p[mesh.f[i, 1], :]
         dsdxi = sqrt(sum(dx .^ 2))
-        nl = repeat([dx[2], -dx[1]]/dsdxi, 1, ng1d)'  # Similar to np.matlib.repmat
+        nl = repeat([dx[2], -dx[1]] ./ dsdxi, 1, ng1d)'  # Similar to np.matlib.repmat
         dws = master.gw1d * dsdxi
 
         ul = u[perml, :, el]
@@ -137,7 +137,7 @@ function rinvexpl(master, mesh, app, u, time)
 
         r[:, :, i] .+=  shapx * fgx .+ shapy * fgy
    
-        r[:, :, i] = M \ r[:, :, i]  # More efficient than inv(M) * r
+        r[:, :, i] .= M \ r[:, :, i]  # More efficient than inv(M) * r
     end
 
     return r
