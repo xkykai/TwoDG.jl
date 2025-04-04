@@ -14,7 +14,7 @@ function initu(mesh, app, value)
         if isa(value[i], Number)
             u[:,i,:] .= value[i]
         else
-            u[:,i,:] = value[i](mesh.dgnodes)
+            u[:,i,:] .= value[i].(mesh.dgnodes[:, 1, :], mesh.dgnodes[:, 2, :])
         end
     end
     return u

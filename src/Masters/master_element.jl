@@ -1,7 +1,7 @@
 using LinearAlgebra
 using TwoDG.Meshes: Mesh
 
-struct Master{PO, PL, C, PE, PLO, GP, GPT, GW, GWG, SH, SHA}
+struct Master{PO, PL, C, PE, PLO, GP, GPT, GW, GWG, SH, SHA, M, CV}
     porder :: PO
     plocal :: PL
     corner :: C
@@ -13,10 +13,12 @@ struct Master{PO, PL, C, PE, PLO, GP, GPT, GW, GWG, SH, SHA}
       gwgh :: GWG
       sh1d :: SH
       shap :: SHA
+      mass :: M
+      conv :: CV
 end
 
 function Master(mesh::Mesh, pgauss=nothing)
-    master = Master(mesh.porder, mesh.plocal, zeros(Int, 3), zeros(Int, mesh.porder+1, 3, 2), nothing, nothing, nothing, nothing, nothing, nothing, nothing)
+    master = Master(mesh.porder, mesh.plocal, zeros(Int, 3), zeros(Int, mesh.porder+1, 3, 2), nothing, nothing, nothing, nothing, nothing, nothing, nothing, nothing, nothing)
     
     # Find indices of corner nodes (vertices) of the reference triangle
     # A corner node has a coordinate equal to 1 in one of the barycentric coordinates
@@ -48,8 +50,14 @@ function Master(mesh::Mesh, pgauss=nothing)
 
     sh1d = shape1d(master.porder, ploc1d, gp1d)
     shap = shape2d(master.porder, master.plocal, gpts)
+
+    npl = size(master.plocal, 1)
+    conv = zeros(npl, npl, 2)
+    mass = shap[:, 1, :] * Diagonal(gwgh) * shap[:, 1, :]'
+    conv[:, :, 1] .= shap[:, 1, :] * Diagonal(gwgh) * shap[:, 2, :]'
+    conv[:, :, 2] .= shap[:, 1, :] * Diagonal(gwgh) * shap[:, 3, :]'
     
-    return Master(master.porder, master.plocal, master.corner, master.perm, ploc1d, gp1d, gpts, gw1d, gwgh, sh1d, shap)
+    return Master(master.porder, master.plocal, master.corner, master.perm, ploc1d, gp1d, gpts, gw1d, gwgh, sh1d, shap, mass, conv)
 end
 
 """
