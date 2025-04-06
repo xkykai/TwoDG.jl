@@ -1,4 +1,4 @@
-struct App{N, P, A, BM, BS, FII, FIB, FIV, FVI, FVB, FVV, FVUB, S}
+mutable struct App{N, P, A, BM, BS, FII, FIB, FIV, FVI, FVB, FVV, FVUB, S}
     nc::N
     pg::P
     arg::A
