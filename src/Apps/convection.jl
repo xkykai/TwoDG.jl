@@ -94,10 +94,11 @@ function convectionv(u, p, param, time)
 end
 
 function mkapp_convection()
+    nc = 1
     pg = true
     finvi = convectioni
     finvb = convectionb
     finvv = convectionv
 
-    return App(; nc=1, pg, finvi, finvb, finvv)
+    return App(; nc, pg, finvi, finvb, finvv)
 end
