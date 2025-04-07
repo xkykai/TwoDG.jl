@@ -1,4 +1,5 @@
 using LinearAlgebra
+using Statistics
 
 """
 rinvexpl calculates the residual vector for explicit time stepping.
@@ -65,18 +66,18 @@ function rinvexpl(master, mesh, app, u, time)
         else
             coords = mesh.dgnodes[perml, :, el]
             nl = zeros(ng1d, 2)
-            dsdxi = 0.
+            dsdxi = zeros(ng1d)
             for j in axes(nl, 1)
                 τ = master.sh1d[:, 2, j]' * coords
                 τ_norm = sqrt(sum(τ.^2))
                 τ ./= τ_norm
 
                 nl[j, :] .= [τ[2], -τ[1]]
-                dsdxi += sum(master.gw1d[j] .* master.sh1d[:, 1, j] .* τ_norm)
+                dsdxi[j] = τ_norm
             end
         end
 
-        dws = master.gw1d * dsdxi
+        dws = master.gw1d .* dsdxi
  
         ul = u[perml, :, el]
         ur = u[permr, :, er]
@@ -90,7 +91,7 @@ function rinvexpl(master, mesh, app, u, time)
         r[permr, :, er] .+= cnt
     end
 
-    # Boundary faces
+    # # Boundary faces
     for i in ni+1:nf
         ipt = mesh.f[i, 1] + mesh.f[i, 2]
         el  = mesh.f[i, 3]
@@ -117,18 +118,18 @@ function rinvexpl(master, mesh, app, u, time)
         else
             coords = mesh.dgnodes[perml, :, el]
             nl = zeros(ng1d, 2)
-            dsdxi = 0.
+            dsdxi = zeros(ng1d)
             for j in axes(nl, 1)
                 τ = master.sh1d[:, 2, j]' * coords
                 τ_norm = sqrt(sum(τ.^2))
                 τ ./= τ_norm
-
+                
                 nl[j, :] .= [τ[2], -τ[1]]
-                dsdxi += sum(master.gw1d[j] .* master.sh1d[:, 1, j] .* τ_norm)
+                dsdxi[j] = τ_norm
             end
         end
 
-        dws = master.gw1d * dsdxi
+        dws = master.gw1d .* dsdxi
 
         ul = u[perml, :, el]
         ulg = sh1d' * ul
@@ -139,7 +140,7 @@ function rinvexpl(master, mesh, app, u, time)
         r[perml, :, el] .-= cnt
     end
 
-    # # Volume integral
+    # Volume integral
     shap = master.shap[:, 1, :]
     shapxi = master.shap[:, 2, :]
     shapet = master.shap[:, 3, :]
