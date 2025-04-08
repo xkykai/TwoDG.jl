@@ -15,7 +15,7 @@ export
     elemmat_cg, cg_solve,
     grad_u, equilibrate, reconstruct,
     initu, l2_error,
-    App, mkapp_convection, mkapp_wave,
+    App, mkapp_convection, mkapp_wave, mkapp_euler,
     rk4, rk4!, rinvexpl
 
 include("Utils/Utils.jl")
