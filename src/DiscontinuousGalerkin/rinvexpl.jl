@@ -35,7 +35,7 @@ function rinvexpl(master, mesh, app, u, time)
     tcurved = mesh.tcurved
 
     # Interior faces first
-    for i in 1:ni
+    Threads.@threads for i in 1:ni
         ipt = mesh.f[i, 1] + mesh.f[i, 2]
         el  = mesh.f[i, 3]
         er  = mesh.f[i, 4]
@@ -92,7 +92,7 @@ function rinvexpl(master, mesh, app, u, time)
     end
 
     # # Boundary faces
-    for i in ni+1:nf
+    Threads.@threads for i in ni+1:nf
         ipt = mesh.f[i, 1] + mesh.f[i, 2]
         el  = mesh.f[i, 3]
         ib  = -mesh.f[i, 4]  # This gives a 1-based index in Julia
@@ -147,7 +147,7 @@ function rinvexpl(master, mesh, app, u, time)
     shapxig = shapxi * Diagonal(master.gwgh)
     shapetg = shapet * Diagonal(master.gwgh)
 
-    for i in 1:nt
+    Threads.@threads for i in 1:nt
         if app.pg
             pg = shap' * mesh.dgnodes[:, :, i]
         else
