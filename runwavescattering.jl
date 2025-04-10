@@ -19,27 +19,15 @@ k = [3, 0]
 kmod = sqrt(sum(k.^2))
 tparam = [0, 0, 1]
 
-porder = 5
-mesh = mkmesh_trefftz(m, n, porder, nodetype, tparam)
-master = Master(mesh, 2*porder)
 interp_points = 0.05:0.1:0.95
 n_interp = length(interp_points)
 
-a = rand(6)
-a_interp = shapefunction[:, 1, :]' * a
-#%%
-fig = Figure()
-ax = Axis(fig[1, 1], aspect=1)
-scatter!(ax, master.ploc1d[:, 2], a)
-scatter!(ax, interp_points, a_interp)
-display(fig)
-#%%
-
+porders = [4, 5]
 θs_p = []
 ηs_p = []
 
-porders = [4]
 for porder in porders
+    @info "Running for porder = $porder"
     mesh = mkmesh_trefftz(m, n, porder, nodetype, tparam)
     master = Master(mesh, 2*porder)
     shapefunction = shape1d(porder, master.ploc1d, interp_points)
@@ -48,15 +36,15 @@ for porder in porders
     indf_rad = findall(i -> mesh.f[i, 1] in indp_rad && mesh.f[i, 2] in indp_rad, 1:size(mesh.f, 1))
 
     ng1d = length(master.gw1d)
-    θs = zeros(length(indf_rad) * length(a_interp))
-    permls = zeros(Int, length(θs))
-    els = zeros(Int, length(θs))
-    ηs = zeros(length(θs))
+    θs = zeros(length(indf_rad) * n_interp)
+    ηs = similar(θs)
+    permls = zeros(Int, length(indf_rad), size(master.ploc1d, 1))
+    els = zeros(Int, length(indf_rad))
 
     iθ = 1
-    for i in indf_rad
-        ipt = mesh.f[i, 1] + mesh.f[i, 2]
-        el = mesh.f[i, 3]
+    for (i, face_num) in enumerate(indf_rad)
+        ipt = mesh.f[face_num, 1] + mesh.f[face_num, 2]
+        el = mesh.f[face_num, 3]
 
         ipl = sum(mesh.t[el, :]) - ipt
         isl = findfirst(x -> x == ipl, mesh.t[el, :])
@@ -64,20 +52,17 @@ for porder in porders
         perml = master.perm[:, isl, iol]
         dgs = mesh.dgnodes[perml, :, el]
 
-        θ = atan.(dgs[:, 2], dgs[:, 1])
+        dgs_interp = shapefunction[:, 1, :]' * dgs
 
-        θs[iθ:iθ + ng1d - 1] .= θ
-        permls[iθ:iθ + ng1d - 1] .= perml
-        els[iθ:iθ + ng1d - 1] .= el
-        iθ += ng1d
+        θ = atan.(dgs_interp[:, 2], dgs_interp[:, 1])
+
+        θs[iθ:iθ + n_interp - 1] .= θ
+        permls[i, :] .= perml
+        els[i] = el
+        iθ += n_interp
     end
 
     θs[θs .< 0] .+= 2π
-
-    θ_perm = sortperm(θs)
-    θs .= θs[θ_perm]
-    permls .= permls[θ_perm]
-    els .= els[θ_perm]
 
     bcm = [2, 3]
     bcs = zeros(3, 3)
@@ -107,13 +92,6 @@ for porder in porders
             u .= ue
         end
 
-        # # Plot the current solution
-        # # fig = scaplot(mesh, u[:, 3, :])
-        # if i != 1
-        #     fig = scaplot(mesh, u[:, 3, :] .- sin.(mesh.dgnodes[:, 1, :] .* k[1] .+ mesh.dgnodes[:, 2, :] .* k[2] .- c * kmod * tm))
-        #     display(fig)
-        # end
-
         # Update the solution using the convection operator
         rk4!(rinvexpl, master, mesh, app, u, tm, dt, nstep)
 
@@ -121,7 +99,7 @@ for porder in porders
         tm += nstep * dt
     end
 
-    scaplot(mesh, u[:, 3, :] .- sin.(mesh.dgnodes[:, 1, :] .* k[1] .+ mesh.dgnodes[:, 2, :] .* k[2] .- c * kmod * tm))
+    # scaplot(mesh, u[:, 3, :] .- sin.(mesh.dgnodes[:, 1, :] .* k[1] .+ mesh.dgnodes[:, 2, :] .* k[2] .- c * kmod * tm))
 
     @info "Computing wave amplitude..."
     for i in 1:ncycl_equilibrated
@@ -133,27 +111,37 @@ for porder in porders
         # Update the solution using the convection operator
         rk4!(rinvexpl, master, mesh, app, u, tm, dt, nstep)
 
-        for i in eachindex(θs)
+        iθ = 1
+        for (i, face_num) in enumerate(indf_rad)
             el = els[i]
-            perm = permls[i]
+            perml = permls[i, :]
+            us = u[perml, 3, el]
+            ηs_interp = abs.(shapefunction[:, 1, :]' * us)
 
-            η = abs(u[perm, 3, el] - sin(mesh.dgnodes[perm, 1, el] * k[1] + mesh.dgnodes[perm, 2, el] * k[2] - c * kmod * tm))
+            η = @view ηs[iθ:iθ + n_interp - 1]
+            η .= (ηs_interp .> η) .* ηs_interp .+ (ηs_interp .<= η) .* η
 
-            ηs[i] = η > ηs[i] ? η : ηs[i]
+            iθ += n_interp
         end
 
         # Increment time
         tm += nstep * dt
     end
 
-    scaplot(mesh, u[:, 3, :] .- sin.(mesh.dgnodes[:, 1, :] .* k[1] .+ mesh.dgnodes[:, 2, :] .* k[2] .- c * kmod * tm))
+    fig = scaplot(mesh, u[:, 3, :] .- sin.(mesh.dgnodes[:, 1, :] .* k[1] .+ mesh.dgnodes[:, 2, :] .* k[2] .- c * kmod * tm))
+    display(fig)
 
     push!(θs_p, θs)
     push!(ηs_p, ηs)
 end
 #%%
-θ_perm = sortperm(θs_p[1])
-lines(θs_p[1][θ_perm] ./ π, abs.(ηs_p[1][θ_perm]), label="p = $(porders[1])")
-
-scatter(θs_p[1], zeros(length(ηs_p[1])))
+fig = Figure()
+ax = Axis(fig[1, 1], xlabel="θ / π", ylabel="|η|", title="Scattered wave amplitude")
+for (i, porder) in enumerate(porders)
+    θ_perm = sortperm(θs_p[i])
+    lines!(ax, θs_p[i][θ_perm] ./ π, abs.(ηs_p[i][θ_perm]), label="p = $(porder)")
+end
+axislegend(ax, position=:ct)
+display(fig)
+save("./output/scattered_wave_amplitude.png", fig, px_per_unit=8)
 #%%
