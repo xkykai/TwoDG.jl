@@ -303,3 +303,23 @@ function mkapp_euler()
 
     return App(; nc, pg, finvi, finvb, finvv, arg)
 end
+
+function riemann_to_canonical(v, s, J⁺, J⁻, γ)
+    c = (γ - 1) / 4 * (J⁺ - J⁻)
+    ρu₁ = (J⁺ + J⁻) / 2
+    ρ = (c^2 / γ / s)^(1 / (γ - 1))
+    ρu₂ = ρ * v
+    p = s * ρ^γ
+    ρE = p / (γ - 1) + 0.5 * (ρu₁^2 + ρu₂^2) / ρ
+    return ρ, ρu₁, ρu₂, ρE
+end
+
+function canonical_to_riemann(ρ, ρu₁, ρu₂, ρE, γ)
+    p = (γ - 1) * (ρE - 0.5 * (ρu₁^2 + ρu₂^2) / ρ)
+    v = ρu₂ / ρ
+    s = p / (ρ^γ)
+    c = sqrt(γ * p / ρ)
+    J⁺ = ρu₁ + 2c / (γ - 1)
+    J⁻ = ρu₁ - 2c / (γ - 1)
+    return v, s, J⁺, J⁻
+end
