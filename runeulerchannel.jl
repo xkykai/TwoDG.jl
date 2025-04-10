@@ -36,6 +36,9 @@ pinf = 1 / (gam * Minf^2)
 background_rE = 0.5 * (background_ru^2 + background_rv^2) / background_rho + pinf / (gam - 1)
 background_riemann = canonical_to_riemann(background_rho, background_ru, background_rv, background_rE, gam)
 
+background_pressure = (gam - 1) * (background_rE - 0.5 * (background_ru^2 + background_rv^2) / background_rho)
+background_c = sqrt(gam * background_pressure / background_rho)
+
 plane_wave(x, y) = x >= 1.0 && x <= 2.0 ? 0.1 * sin(2π * (x-1)) : 0
 
 riemann_initv(x, y) = background_riemann[1]
