@@ -15,9 +15,9 @@ export
     elemmat_cg, cg_solve,
     grad_u, equilibrate, reconstruct,
     initu, l2_error,
-    App, mkapp_convection, mkapp_wave, mkapp_euler, eulereval, 
+    App, mkapp_convection, mkapp_wave, mkapp_euler, eulereval, mkapp_convection_diffusion,
     riemann_to_canonical, canonical_to_riemann,
-    rk4, rk4!, rinvexpl
+    rk4, rk4!, rinvexpl, rldgexpl
 
 include("Utils/Utils.jl")
 include("Meshes/Meshes.jl")
