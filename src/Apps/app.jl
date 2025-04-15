@@ -18,6 +18,6 @@ function App(; nc, pg=false, arg=Dict(), bcm=nothing, bcs=nothing, finvi=nothing
     return App(nc, pg, arg, bcm, bcs, finvi, finvb, finvv, fvisi, fvisb, fvisv, fvisub, src)
 end
 
-function App(app::App; bcm=nothing, bcs=nothing, fvisi=nothing, fvisb=nothing, fvisv=nothing, fvisub=nothing, src=nothing)
-    return App(app.nc, app.pg, app.arg, bcm, bcs, app.finvi, app.finvb, app.finvv, fvisi, fvisb, fvisv, fvisub, src)
+function App(app::App; bcm=nothing, bcs=nothing, src=nothing)
+    return App(app.nc, app.pg, app.arg, bcm, bcs, app.finvi, app.finvb, app.finvv, app.fvisi, app.fvisb, app.fvisv, app.fvisub, src)
 end

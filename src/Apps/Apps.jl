@@ -10,5 +10,6 @@ include("app.jl")
 include("convection.jl")
 include("wave.jl")
 include("euler.jl")
+include("convection_diffusion.jl")
 
 end
