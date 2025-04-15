@@ -54,7 +54,7 @@ Calculate the boundary flux for the linear convection-diffusion equation.
 # Arguments
 - `up`: Plus states
 - `nor`: Normal plus vectors (pointing outwards the p element)
-- `ib`: Boundary type (0: Dirichlet, 1: Neumann)
+- `ib`: Boundary type (1: Dirichlet, 2: Neumann)
 - `ui`: Infinity state associated with ib
 - `p`: Matrix of x,y coordinates
 - `param`: Dictionary containing velocity field information
@@ -64,9 +64,9 @@ Calculate the boundary flux for the linear convection-diffusion equation.
 - `fn`: Normal fluxes
 """
 function cdinvb(up, nor, ib, ui, p, param, time)
-    if ib == 0      # Dirichlet
+    if ib == 1      # Dirichlet
         um = zero(up)
-    elseif ib == 1  # Neumann
+    elseif ib == 2  # Neumann
         um = copy(up)
     end
 
@@ -110,7 +110,7 @@ Calculate the viscous boundary flux for the convection-diffusion equation.
 - `up`: Plus states
 - `qp`: Plus q states
 - `nor`: Normal plus vectors (pointing outwards the p element)
-- `ib`: Boundary type (0: Dirichlet, 1: Neumann)
+- `ib`: Boundary type (1: Dirichlet, 2: Neumann)
 - `ui`: Infinity state associated with ib
 - `p`: Matrix of x,y coordinates
 - `param`: Dictionary containing parameters
@@ -123,9 +123,9 @@ function cdvisb(up, qp, nor, ib, ui, p, param, time)
     kappa = param[:kappa]
     c11 = param[:c11]
     
-    if ib == 0      # Dirichlet
+    if ib == 1      # Dirichlet
         fn = -kappa .* (qp[:,1] .* nor[:,1] .+ qp[:,2] .* nor[:,2]) .+ c11 .* (up .- ui)
-    elseif ib == 1  # Neumann
+    elseif ib == 2  # Neumann
         fn = zeros(eltype(up), size(up))
     end
 
@@ -165,7 +165,7 @@ Calculate the viscous boundary flux for the convection-diffusion equation.
 # Arguments
 - `up`: Plus states
 - `nor`: Normal plus vectors (pointing outwards the p element)
-- `ib`: Boundary type (0: Dirichlet, 1: Neumann)
+- `ib`: Boundary type (1: Dirichlet, 2: Neumann)
 - `ui`: Infinity state associated with ib
 - `p`: Matrix of x,y coordinates
 - `param`: Dictionary containing parameters
@@ -175,10 +175,10 @@ Calculate the viscous boundary flux for the convection-diffusion equation.
 - `ub`: Values of u at the boundary interface
 """
 function cdvisub(up, nor, ib, ui, p, param, time)
-    if ib == 0      # Dirichlet
+    if ib == 1      # Dirichlet
         ub = zero(up)
-    elseif ib == 1  # Neumann
-        ub = copy(up)
+    elseif ib == 2  # Neumann
+        ub = up
     end
 
     return ub
@@ -199,7 +199,6 @@ function mkapp_convection_diffusion()
     fvisb = cdvisb
     fvisv = cdvisv
     fvisub = cdvisub
-
 
     return App(; nc, pg, finvi, finvb, finvv, fvisi, fvisb, fvisv, fvisub)
 end
