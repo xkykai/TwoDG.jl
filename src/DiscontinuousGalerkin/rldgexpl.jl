@@ -382,7 +382,7 @@ function rldgexpl(master, mesh, app, u, time)
 
         if app.src !== nothing
             src = app.src(ug, [], pg, app.arg, time)
-            r[:, :, i] = r[:, :, i] + shap * Diagonal(master.gwgh .* jac) * src
+            r[:, :, i] = r[:, :, i] + shap * Diagonal(master.gwgh .* detJ) * src
         end
 
         fgx, fgy = app.finvv(ug, pg, app.arg, time)
