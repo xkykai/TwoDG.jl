@@ -141,28 +141,35 @@ function getq(master, mesh, app, u, time)
     shapetg = shapet * Diagonal(master.gwgh)
     
     Threads.@threads for i in 1:nt
-        # INSERT CODE HERE .....
-        # Set up the coordinates and Jacobian for volume integration
-        if mesh.tcurved[i]
-            # For curved elements, compute Jacobian at each quadrature point
-            xxi = @view(mesh.dgnodes[:, 1, i])' * shapxi
-            xet = @view(mesh.dgnodes[:, 1, i])' * shapet
-            yxi = @view(mesh.dgnodes[:, 2, i])' * shapxi
-            yet = @view(mesh.dgnodes[:, 2, i])' * shapet
-            jac = xxi .* yet - xet .* yxi
-            shapx = shapxig * Diagonal(yet) - shapetg * Diagonal(yxi)
-            shapy = -shapxig * Diagonal(xet) + shapetg * Diagonal(xxi)
-            M = shap * Diagonal(master.gwgh .* jac) * shap'
-        else
-            # For straight elements, compute constant Jacobian
+        curved_t = mesh.tcurved[i]
+        ng   = length(master.gwgh)
+
+        if !curved_t
             xxi = mesh.p[mesh.t[i, 2], 1] - mesh.p[mesh.t[i, 1], 1]
             xet = mesh.p[mesh.t[i, 3], 1] - mesh.p[mesh.t[i, 1], 1]
             yxi = mesh.p[mesh.t[i, 2], 2] - mesh.p[mesh.t[i, 1], 2]
             yet = mesh.p[mesh.t[i, 3], 2] - mesh.p[mesh.t[i, 1], 2]
-            jac = xxi * yet - xet * yxi
-            shapx = shapxig * yet - shapetg * yxi
-            shapy = -shapxig * xet + shapetg * xxi
-            M = master.mass * jac
+            detJ = xxi * yet - xet * yxi
+            shapx =   shapxig * yet - shapetg * yxi
+            shapy = - shapxig * xet + shapetg * xxi
+
+            M = master.mass .* detJ
+        else
+            coords = mesh.dgnodes[:, :, i]
+            detJ = zeros(ng)
+            shapx = zeros(npl, ng)
+            shapy = zeros(npl, ng)
+
+            for j in eachindex(master.gwgh)
+                J = master.shap[:, 2:3, j]' * coords
+                invJ = inv(J)
+                detJ[j] = det(J)
+                shap∇ = invJ * master.shap[:, 2:3, j]'
+                shapx[:, j] .= shap∇[1, :] .* master.gwgh[j] .* detJ[j]
+                shapy[:, j] .= shap∇[2, :] .* master.gwgh[j] .* detJ[j]
+            end
+
+            M = shap * Diagonal(master.gwgh .* detJ) * shap'
         end
 
         # Calculate the contribution to gradient from the element interior
@@ -341,24 +348,34 @@ function rldgexpl(master, mesh, app, u, time)
     Threads.@threads for i in 1:nt
         pg = app.pg ? shap' * @view(mesh.dgnodes[:, :, i]) : []
 
-        if mesh.tcurved[i]
-            xxi = @view(mesh.dgnodes[:, 1, i])' * shapxi
-            xet = @view(mesh.dgnodes[:, 1, i])' * shapet
-            yxi = @view(mesh.dgnodes[:, 2, i])' * shapxi
-            yet = @view(mesh.dgnodes[:, 2, i])' * shapet
-            jac = xxi .* yet - xet .* yxi
-            shapx = shapxig * Diagonal(yet) - shapetg * Diagonal(yxi)
-            shapy = -shapxig * Diagonal(xet) + shapetg * Diagonal(xxi)
-            M = shap * Diagonal(master.gwgh .* jac) * shap'
-        else
+        curved_t = mesh.tcurved[i]
+        ng   = length(master.gwgh)
+        if !curved_t
             xxi = mesh.p[mesh.t[i, 2], 1] - mesh.p[mesh.t[i, 1], 1]
             xet = mesh.p[mesh.t[i, 3], 1] - mesh.p[mesh.t[i, 1], 1]
             yxi = mesh.p[mesh.t[i, 2], 2] - mesh.p[mesh.t[i, 1], 2]
             yet = mesh.p[mesh.t[i, 3], 2] - mesh.p[mesh.t[i, 1], 2]
-            jac = xxi * yet - xet * yxi
-            shapx = shapxig * yet - shapetg * yxi
-            shapy = -shapxig * xet + shapetg * xxi 
-            M = master.mass * jac
+            detJ = xxi * yet - xet * yxi
+            shapx =   shapxig * yet - shapetg * yxi
+            shapy = - shapxig * xet + shapetg * xxi
+
+            M = master.mass .* detJ
+        else
+            coords = mesh.dgnodes[:, :, i]
+            detJ = zeros(ng)
+            shapx = zeros(npl, ng)
+            shapy = zeros(npl, ng)
+
+            for j in eachindex(master.gwgh)
+                J = master.shap[:, 2:3, j]' * coords
+                invJ = inv(J)
+                detJ[j] = det(J)
+                shap∇ = invJ * master.shap[:, 2:3, j]'
+                shapx[:, j] .= shap∇[1, :] .* master.gwgh[j] .* detJ[j]
+                shapy[:, j] .= shap∇[2, :] .* master.gwgh[j] .* detJ[j]
+            end
+
+            M = shap * Diagonal(master.gwgh .* detJ) * shap'
         end
 
         ug = shap' * @view(u[:, :, i])
