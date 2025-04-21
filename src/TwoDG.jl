@@ -17,7 +17,8 @@ export
     initu, l2_error,
     App, mkapp_convection, mkapp_wave, mkapp_euler, eulereval, mkapp_convection_diffusion,
     riemann_to_canonical, canonical_to_riemann,
-    rk4, rk4!, rinvexpl, rldgexpl, getq
+    rk4, rk4!, rinvexpl, rldgexpl, getq,
+    localprob, elemmat_hdg
 
 include("Utils/Utils.jl")
 include("Meshes/Meshes.jl")
@@ -27,6 +28,7 @@ include("Plotting/Plotting.jl")
 include("ContinuousGalerkin/ContinuousGalerkin.jl")
 include("DiscontinuousGalerkin/DiscontinuousGalerkin.jl")
 include("Apps/Apps.jl")
+include("HybridizableDiscontinuousGalerkin/HybridizableDiscontinuousGalerkin.jl")
 
 using .Drivers
 using .Masters
@@ -35,6 +37,7 @@ using .Utils
 using .Plotting
 using .ContinuousGalerkin
 using .DiscontinuousGalerkin
+using .HybridizableDiscontinuousGalerkin
 using .Apps
 
 end
