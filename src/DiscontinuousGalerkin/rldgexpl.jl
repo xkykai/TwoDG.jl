@@ -183,7 +183,7 @@ function getq(master, mesh, app, u, time)
         q[:, 2, :, i] .-= Cy' * @view(u[:, :, i])
         
         q_reshaped = reshape(q[:, :, :, i], (npl, 2*nc))
-        q[:, :, :, i] = reshape(M \ q_reshaped, (npl, 2, nc))
+        q[:, :, :, i] .= reshape(M \ q_reshaped, (npl, 2, nc))
     end
     
     return q
@@ -297,15 +297,15 @@ function rldgexpl(master, mesh, app, u, time)
             qrg = reshape(sh1d' * reshape(qr, (np1d, 2*nc)), (ng1d, 2, nc))
             # Compute viscous interface flux (note: left element gradient not needed, hence nothing)
             fnvg = app.fvisi(ulg, urg, nothing, qrg, nl, plg, app.arg, time)
-            fng = fng + fnvg
+            fng .+= fnvg
         end
 
         # Apply numerical flux to both elements (with opposite signs)
         cnt = sh1d * Diagonal(dws) * fng  # Integrate flux along face
 
         ci = reshape(cnt, (np1d, nc))
-        r[perml, :, el] = r[perml, :, el] - ci  # Subtract from left element (outflow)
-        r[permr, :, er] = r[permr, :, er] + ci  # Add to right element (inflow)
+        r[perml, :, el] .-= ci  # Subtract from left element (outflow)
+        r[permr, :, er] .+= ci  # Add to right element (inflow)
     end
 
     # Process boundary faces
@@ -353,13 +353,13 @@ function rldgexpl(master, mesh, app, u, time)
             ql = @view(q[perml, :, :, el])
             qlg = reshape(sh1d' * reshape(ql, (np1d, 2*nc)), (ng1d, 2, nc))
             fnvg = app.fvisb(ulg, qlg, nl, app.bcm[ib], app.bcs[app.bcm[ib], :], plg, app.arg, time)
-            fng = fng + fnvg
+            fng .+= fnvg
         end
         
         # Apply boundary flux to element
         cnt = sh1d * Diagonal(dws) * fng
         ci = reshape(cnt, (np1d, nc))
-        r[perml, :, el] = r[perml, :, el] - ci
+        r[perml, :, el] .-= ci
     end
 
     # Volume integral (element contributions)
@@ -423,7 +423,7 @@ function rldgexpl(master, mesh, app, u, time)
         # Add source term contribution if present
         if app.src !== nothing
             src = app.src(ug, [], pg, app.arg, time)
-            r[:, :, i] = r[:, :, i] + shap * Diagonal(master.gwgh .* detJ) * src
+            r[:, :, i] .+= shap * Diagonal(master.gwgh .* detJ) * src
         end
 
         # Calculate inviscid volume flux
@@ -434,15 +434,15 @@ function rldgexpl(master, mesh, app, u, time)
             # Transform gradient vector to quadrature points
             qg = reshape(shap' * reshape(@view(q[:, :, :, i]), (npl, 2*nc)), (ng, 2, nc))
             fxvg, fyvg = app.fvisv(ug, qg, pg, app.arg, time)
-            fgx = fgx + fxvg
-            fgy = fgy + fyvg
+            fgx .+= fxvg
+            fgy .+= fyvg
         end
 
         # Add flux divergence to residual (∇·f term)
-        r[:, :, i] = r[:, :, i] + shapx * fgx + shapy * fgy
+        r[:, :, i] .+= shapx * fgx + shapy * fgy
 
         # Apply inverse mass matrix to get final residual
-        r[:, :, i] = M \ r[:, :, i]
+        r[:, :, i] .= M \ r[:, :, i]
     end
 
     return r
