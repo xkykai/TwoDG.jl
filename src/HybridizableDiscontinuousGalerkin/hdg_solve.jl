@@ -1,4 +1,5 @@
 using LinearAlgebra
+using SparseArrays
 
 """
     localprob(dg, master, m, source, param)
@@ -16,10 +17,10 @@ Solves the local convection-diffusion problems for the HDG method.
 - `umf`: Local solution uh
 - `qmf`: Local solution qh
 """
-function localprob(dg::Matrix{T}, master, m::Matrix{T}, source, param::Dict) where T <: AbstractFloat
+function localprob(dg, master, m, source, param)
     # Extract parameters
-    kappa = convert(T, param[:kappa])
-    c = convert(Vector{T}, param[:c])
+    kappa = param[:kappa]
+    c = param[:c]
     taud = kappa
     
     porder = master.porder
@@ -29,11 +30,11 @@ function localprob(dg::Matrix{T}, master, m::Matrix{T}, source, param::Dict) whe
     
     perm = master.perm[:,:,1]  # Adjusted for 1-based indexing
     
-    qmf = zeros(T, npl, 2, ncol)
+    qmf = zeros(npl, 2, ncol)
     
-    Fx = zeros(T, npl, ncol)
-    Fy = zeros(T, npl, ncol)
-    Fu = zeros(T, npl, ncol)
+    Fx = zeros(npl, ncol)
+    Fy = zeros(npl, ncol)
+    Fu = zeros(npl, ncol)
     
     # Volume integral
     shap = view(master.shap, :, 1, :)
@@ -46,10 +47,10 @@ function localprob(dg::Matrix{T}, master, m::Matrix{T}, source, param::Dict) whe
     shapetg = shapet * gwgh_diag
     
     # Compute Jacobian terms
-    xxi = dg[:,1] * shapxi
-    xet = dg[:,1] * shapet
-    yxi = dg[:,2] * shapxi
-    yet = dg[:,2] * shapet
+    xxi = shapxi' * dg[:,1]
+    xet = shapet' * dg[:,1]
+    yxi = shapxi' * dg[:,2]
+    yet = shapet' * dg[:,2]
     jac = xxi .* yet - xet .* yxi
     
     # Shape derivatives
@@ -62,10 +63,10 @@ function localprob(dg::Matrix{T}, master, m::Matrix{T}, source, param::Dict) whe
     Cx = shap * shapx'
     Cy = shap * shapy'
     
-    D = -c[1] * Cx' - c[2] * Cy'
+    D = -c[1] .* Cx' - c[2] .* Cy'
     
     # Process source term if provided
-    if source !== nothing
+    if source isa Function
         pg = shap' * dg
         src = source(pg)
         Fu = shap * Diagonal(gwgh_jac) * src
@@ -77,7 +78,7 @@ function localprob(dg::Matrix{T}, master, m::Matrix{T}, source, param::Dict) whe
     
     # First loop: Compute stabilization terms
     for s in 1:3
-        perm_s = view(perm, :, s)
+        perm_s = @view perm[:, s]
         
         # Calculate normal vectors and Jacobian
         xxi_edge = sh1d_deriv' * view(dg, perm_s, 1)
@@ -91,7 +92,7 @@ function localprob(dg::Matrix{T}, master, m::Matrix{T}, source, param::Dict) whe
         tau = taud .+ tauc
         
         # Add stabilization to diffusion matrix
-        D[perm_s, perm_s] += sh1d * Diagonal(master.gw1d .* dsdxi .* tau) * sh1d'
+        D[perm_s, perm_s] .+= sh1d * Diagonal(master.gw1d .* dsdxi .* tau) * sh1d'
     end
     
     # Second loop: Edge contributions to right-hand side
@@ -154,24 +155,24 @@ Calculates the element and force vectors for the HDG method.
 - `ae`: Element matrix
 - `fe`: Element force vector
 """
-function elemmat_hdg(dg::Matrix{T}, master, source, param::Dict) where T <: AbstractFloat
+function elemmat_hdg(dg, master, source, param)
     nps = master.porder + 1
 
-    kappa = convert(T, param[:kappa])
-    c = convert(Vector{T}, param[:c])
+    kappa = param[:kappa]
+    c = param[:c]
     taud = kappa
 
     # Identity matrix for local problem
-    mu = Matrix{T}(I, 3*nps, 3*nps)
+    mu = I(3*nps)
     um0, qm0 = localprob(dg, master, mu, nothing, param)
 
     # Zero matrix for force vector computation
-    m = zeros(T, 3*nps, 1)
+    m = zeros(3*nps, 1)
     u0f, q0f = localprob(dg, master, m, source, param)
 
     # Initialize element matrix and force vector
-    ae = zeros(T, 3*nps, 3*nps)
-    fe = zeros(T, 3*nps)
+    ae = zeros(3*nps, 3*nps)
+    fe = zeros(3*nps)
 
     perm = master.perm[:,:,1]  # Adjusted for 1-based indexing
     sh1d = master.sh1d[:,1,:]
@@ -205,7 +206,7 @@ function elemmat_hdg(dg::Matrix{T}, master, source, param::Dict) where T <: Abst
                     jdof = j + (s1-1)*nps
                     
                     # Create unit vector for basis function
-                    nul = zeros(T, nps, 1)
+                    nul = zeros(nps, 1)
                     if s == s1
                         nul[j] = 1.0
                     end
@@ -241,8 +242,6 @@ function elemmat_hdg(dg::Matrix{T}, master, source, param::Dict) where T <: Abst
     return ae, fe
 end
 
-using LinearAlgebra
-
 """
     hdg_solve(master, mesh, source, dbc, param)
 
@@ -260,7 +259,7 @@ Solves the convection-diffusion equation using the HDG method.
 - `qh`: Approximate flux
 - `uhath`: Approximate trace
 """
-function hdg_solve(master, mesh, source, dbc, param::Dict{Symbol,Any})
+function hdg_solve(master, mesh, source, dbc, param)
     nps = mesh.porder + 1
     npl = size(mesh.dgnodes, 1)
     nt = size(mesh.t, 1)
@@ -270,13 +269,110 @@ function hdg_solve(master, mesh, source, dbc, param::Dict{Symbol,Any})
     ae = zeros(3*nps, 3*nps, nt)
     fe = zeros(3*nps, nt)
 
+    idm = mesh.idm
+
+    ℍ = zeros(nf * nps, nf * nps)
+    ℝ = zeros(nf * nps)
+
     # Pre-allocate for multi-threading if needed
-    Threads.@threads for i in 1:nt
+    for i in 1:nt
         # Get element nodes and compute element matrices
         element_nodes = view(mesh.dgnodes, :, :, i)
-        ae[:,:,i], fe[:,i] = elemmat_hdg(element_nodes, master, source, param)
+        a, f = elemmat_hdg(element_nodes, master, source, param)
+        ae[:,:,i] .= a
+        fe[:,i] .= f
     end
 
-    # YOUR CODE HERE ...
+    # 1. First identify all boundary vertices
+    boundary_vertices = Dict()  # Maps vertex coordinates to global DOF indices
+    global_boundary_nodes = Dict()
+
+    is_boundary_nodes = zeros(Bool, nf * nps)
+
+    ni = findfirst(i -> mesh.f[i, 4] < 0, 1:nf)
+
+    # Scan boundary faces to find all boundary vertices
+    for i in ni:nf  # ni is the start index of boundary faces
+        it = mesh.f[i, 3]  # Element containing this face
+        face_num = findfirst(x -> x == i, abs.(mesh.t2f[it, :]))
+        orientation = mesh.t2f[it, face_num] > 0 ? 1 : 2
+        perm = master.perm[:, face_num, orientation]
+        face_coords = mesh.dgnodes[perm, :, it]
+        
+        # Add first and last nodes of face (endpoints) to boundary vertices
+        boundary_vertices[face_coords[1, :]] = -mesh.f[i, 4]  # First node
+        boundary_vertices[face_coords[end, :]] = -mesh.f[i, 4]        # Last node
+
+        for j in 1:nps
+            global_node_num = (i-1)*nps + j
+            is_boundary_nodes[global_node_num] = true
+            global_boundary_nodes[global_node_num] = dbc(face_coords[j, :])[1]
+        end
+
+    end
     
+    # 2. Now scan interior faces to find vertices that lie on boundary but aren't part of boundary faces
+    for i in 1:(ni-1)  # Interior faces
+        it = mesh.f[i, 3]  # Left element
+        
+        # Get coordinates of the face endpoints
+        face_num = findfirst(x -> x == i, abs.(mesh.t2f[it, :]))
+        orientation = mesh.t2f[it, face_num] > 0 ? 1 : 2
+        perm = master.perm[:, face_num, orientation]
+        face_coords = mesh.dgnodes[perm, :, it]
+
+        # Check if the face endpoints are in the boundary vertices
+        if haskey(boundary_vertices, face_coords[1, :])
+            global_node_num = (i-1)*nps + 1
+            is_boundary_nodes[global_node_num] = true
+            global_boundary_nodes[global_node_num] = dbc(face_coords[1, :])[1]
+        end
+
+        if haskey(boundary_vertices, face_coords[end, :])
+            global_node_num = i*nps
+            is_boundary_nodes[global_node_num] = true
+            global_boundary_nodes[global_node_num] = dbc(face_coords[end, :])[1]
+        end
+    end
+    
+    for i in 1:nt
+        global_inds = vec(idm[:, :, i])
+        ℍ[global_inds, global_inds] .+= ae[:,:,i]
+        ℝ[global_inds] .+= fe[:, i]
+    end
+
+    ℍ[is_boundary_nodes, :] .= 0  # Set rows corresponding to boundary nodes to zero
+    ℍ[:, is_boundary_nodes] .= 0  # Set columns corresponding to boundary nodes to zero
+    ℍ[is_boundary_nodes, is_boundary_nodes] .= I(sum(is_boundary_nodes))  # Set diagonal to identity for boundary nodes
+
+    for i in keys(global_boundary_nodes)
+        ℝ[i] = global_boundary_nodes[i]  # Set the right-hand side for boundary nodes
+    end
+
+    uhath = reshape(ℍ \ ℝ, nps, nf)
+
+    uh = zeros(npl, 1, nt)
+    qh = zeros(npl, 2, nt)
+
+    for i in 1:nt
+        element_nodes = view(mesh.dgnodes, :, :, i)
+        t2f = mesh.t2f[i, :]
+        û = zeros(nps, 3)
+        for (iface, face) in enumerate(t2f)
+            if face > 0
+                û[:, iface] .= uhath[:, face]
+            else
+                û[:, iface] .= reverse(uhath[:, -face])
+            end
+        end
+
+        umf, qmf = localprob(element_nodes, master, vec(û), source, param)
+
+        uh[:, 1, i] .= umf
+        qh[:, 1, i] .= qmf[:, 1]
+        qh[:, 2, i] .= qmf[:, 2]
+    end
+
+    return uh, qh, uhath
+
 end
