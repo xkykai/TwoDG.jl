@@ -2,7 +2,7 @@ using ForwardDiff
 using LinearAlgebra
 using TwoDG.Utils: newton_raphson
 
-struct Mesh{P, T, F, TF, FC, TC, PO, PL, TL, DG, PCG, TCG}
+struct Mesh{P, T, F, TF, FC, TC, PO, PL, TL, DG, PCG, TCG, IDM}
           p :: P
           t :: T
           f :: F
@@ -15,14 +15,15 @@ struct Mesh{P, T, F, TF, FC, TC, PO, PL, TL, DG, PCG, TCG}
     dgnodes :: DG
         pcg :: PCG
         tcg :: TCG
+        idm :: IDM
 end
 
-function Mesh(; p, t, f=nothing, t2f=nothing, fcurved=nothing, tcurved=nothing, porder, plocal, tlocal, dgnodes=nothing, pcg=nothing, tcg=nothing)
-    return Mesh(p, t, f, t2f, fcurved, tcurved, porder, plocal, tlocal, dgnodes, pcg, tcg)
+function Mesh(; p, t, f=nothing, t2f=nothing, fcurved=nothing, tcurved=nothing, porder, plocal, tlocal, dgnodes=nothing, pcg=nothing, tcg=nothing, idm=nothing)
+    return Mesh(p, t, f, t2f, fcurved, tcurved, porder, plocal, tlocal, dgnodes, pcg, tcg, idm)
 end
 
-function Mesh(mesh::Mesh; dgnodes=nothing, pcg=nothing, tcg=nothing)
-    return Mesh(; mesh.p, mesh.t, mesh.f, mesh.t2f, mesh.fcurved, mesh.tcurved, mesh.porder, mesh.plocal, mesh.tlocal, dgnodes, pcg, tcg)
+function Mesh(mesh::Mesh; dgnodes=nothing, pcg=nothing, tcg=nothing, idm=nothing)
+    return Mesh(; mesh.p, mesh.t, mesh.f, mesh.t2f, mesh.fcurved, mesh.tcurved, mesh.porder, mesh.plocal, mesh.tlocal, dgnodes, pcg, tcg, idm)
 end
 
 # Converts barycentric coordinates (λ) to Cartesian coordinates using vertices v₁, v₂, v₃
@@ -198,7 +199,7 @@ dgnodes=createnodes(mesh,fd)
 """
 # Creates high-order nodes for a finite element mesh, handling curved boundaries
 function createnodes(mesh, fd=nothing)
-    npl = size(mesh.plocal, 1) 
+    npl = size(mesh.plocal, 1)
     nt = size(mesh.t, 1)
     
     # First, project mesh vertices onto boundaries if needed
@@ -249,9 +250,20 @@ function createnodes(mesh, fd=nothing)
             end
         end
     end
+
+    nps = mesh.porder + 1
+    # Create a mapping from local node numbers to global node numbers
+    idm = zeros(Int, nps, 3, nt)
+    for it in axes(mesh.t, 1)
+        t2f = mesh.t2f[it, :]
+        for (iface, face) in enumerate(t2f)
+            global_face_nums = 1 + (abs(face) - 1) * nps : abs(face) * nps
+            idm[:, iface, it] .= face > 0 ? global_face_nums : reverse(global_face_nums)
+        end
+    end
     
     # Create and return a new mesh with the same structure but using the computed high-order nodes
-    return Mesh(mesh; dgnodes)
+    return Mesh(mesh; dgnodes, idm)
 end
 
 """
