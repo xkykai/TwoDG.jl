@@ -1,7 +1,8 @@
 module HybridizableDiscontinuousGalerkin
 
-export localprob, elemmat_hdg, hdg_solve
+export localprob, elemmat_hdg, hdg_solve, hdg_postprocess
 
 include("hdg_solve.jl")
+include("hdg_postprocess.jl")
 
 end
