@@ -60,13 +60,12 @@ function hdg_postprocess(master, mesh, master1, mesh1, uh, qh)
             # These include quadrature weights and Jacobian for integration
             shapgx1 =   shapxig1 * yet - shapetg1 * yxi  # ∂/∂x = ∂/∂ξ * ∂ξ/∂x + ∂/∂η * ∂η/∂x
             shapgy1 = - shapxig1 * xet + shapetg1 * xxi  # ∂/∂y = ∂/∂ξ * ∂ξ/∂y + ∂/∂η * ∂η/∂y
-            shapx1 = shapxi1 * yet - shapet1 * yxi
-            shapy1 = - shapxi1 * xet + shapet1 * xxi
+            shapx1 = (shapxi1 * yet - shapet1 * yxi) / detJ
+            shapy1 = (- shapxi1 * xet + shapet1 * xxi) / detJ
 
-            # r[:, 1, i] .-= (shapgx1 * qgx .+ shapgy1 * qgy) .* detJ  # r = ∂/∂x * qgx + ∂/∂y * qgy
             r[:, 1, i] .-= (shapgx1 * qgx .+ shapgy1 * qgy) # r = ∂/∂x * qgx + ∂/∂y * qgy
 
-            r[end, 1, i] = sum(master.shap[:, 1, :]' * uh[:, 1, i] .* master.gwgh.* detJ)
+            r[end, 1, i] = sum(master.shap[:, 1, :]' * uh[:, 1, i] .* master.gwgh .* detJ)
         else
             # For curved elements, geometric terms vary at each quadrature point
             coords = mesh1.dgnodes[:, :, i]
@@ -97,6 +96,7 @@ function hdg_postprocess(master, mesh, master1, mesh1, uh, qh)
         end
 
         M = shapx1 * Diagonal(master1.gwgh .* detJ) * shapx1' .+ shapy1 * Diagonal(master1.gwgh .* detJ) * shapy1' # Mass matrix
+
         M[end, :] .= sum(shap1 * Diagonal(master1.gwgh .* detJ), dims=2)  # Last row for boundary condition
         @info cond(M)
 
