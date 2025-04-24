@@ -349,6 +349,8 @@ function hdg_solve(master, mesh, source, dbc, param)
         ℝ[i] = global_boundary_nodes[i]  # Set the right-hand side for boundary nodes
     end
 
+    ℍ = sparse(ℍ)  # Convert to sparse matrix for efficiency
+
     uhath = reshape(ℍ \ ℝ, nps, nf)
 
     uh = zeros(npl, 1, nt)
