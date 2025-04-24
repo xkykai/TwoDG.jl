@@ -8,7 +8,7 @@ export
     Mesh,
     make_circle_mesh, make_square_mesh,
     fixmesh, mkt2f, setbndnbrs, createnodes, uniref, cgmesh,
-    mkmesh_circle, mkmesh_square, mkmesh_duct, mkmesh_trefftz, mkmesh_naca, mkmesh_lshape,
+    mkmesh_circle, make_circle_nodes, mkmesh_square, mkmesh_duct, mkmesh_trefftz, mkmesh_naca, mkmesh_lshape,
     mkmesh_distort!
 
 include("make_meshes.jl")

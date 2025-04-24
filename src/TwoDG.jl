@@ -4,7 +4,7 @@ export
     Mesh, Master,
     unique_rows,
     make_circle_mesh, make_square_mesh,
-    mkmesh_circle, mkmesh_square, mkmesh_duct, mkmesh_trefftz, mkmesh_naca, mkmesh_lshape, mkmesh_distort!,
+    mkmesh_circle, make_circle_nodes, mkmesh_square, mkmesh_duct, mkmesh_trefftz, mkmesh_naca, mkmesh_lshape, mkmesh_distort!,
     fixmesh, mkt2f, setbndnbrs, createnodes, uniref, cgmesh,
     uniformlocalpnts, localpnts, localpnts1d,
     get_local_face_nodes,
