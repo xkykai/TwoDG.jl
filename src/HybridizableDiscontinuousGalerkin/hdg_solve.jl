@@ -160,7 +160,7 @@ function elemmat_hdg(dg, master, source, param)
 
     kappa = param[:kappa]
     c = param[:c]
-    taud = kappa
+    taud = param[:taud]  # Stabilization parameter
 
     # Identity matrix for local problem
     mu = I(3*nps)
@@ -269,13 +269,13 @@ function hdg_solve(master, mesh, source, dbc, param)
     ae = zeros(3*nps, 3*nps, nt)
     fe = zeros(3*nps, nt)
 
-    idm = mesh.idm
+    elcon = mesh.elcon
 
     ℍ = zeros(nf * nps, nf * nps)
     ℝ = zeros(nf * nps)
 
     # Pre-allocate for multi-threading if needed
-    for i in 1:nt
+    Threads.@threads for i in 1:nt
         # Get element nodes and compute element matrices
         element_nodes = view(mesh.dgnodes, :, :, i)
         a, f = elemmat_hdg(element_nodes, master, source, param)
@@ -336,7 +336,7 @@ function hdg_solve(master, mesh, source, dbc, param)
     end
     
     for i in 1:nt
-        global_inds = vec(idm[:, :, i])
+        global_inds = vec(elcon[:, :, i])
         ℍ[global_inds, global_inds] .+= ae[:,:,i]
         ℝ[global_inds] .+= fe[:, i]
     end
@@ -354,7 +354,7 @@ function hdg_solve(master, mesh, source, dbc, param)
     uh = zeros(npl, 1, nt)
     qh = zeros(npl, 2, nt)
 
-    for i in 1:nt
+    Threads.@threads for i in 1:nt
         element_nodes = view(mesh.dgnodes, :, :, i)
         t2f = mesh.t2f[i, :]
         û = zeros(nps, 3)

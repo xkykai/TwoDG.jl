@@ -37,7 +37,7 @@ function hdg_postprocess(master, mesh, master1, mesh1, uh, qh)
     shapxig1 = shapxi1 * Diagonal(master1.gwgh)  # Weighted shape function derivatives
     shapetg1 = shapet1 * Diagonal(master1.gwgh)
 
-    for i in 1:nt
+    Threads.@threads for i in 1:nt
         curved_t = mesh1.tcurved[i]
         ng = length(master1.gwgh)
         
@@ -98,12 +98,8 @@ function hdg_postprocess(master, mesh, master1, mesh1, uh, qh)
         M = shapx1 * Diagonal(master1.gwgh .* detJ) * shapx1' .+ shapy1 * Diagonal(master1.gwgh .* detJ) * shapy1' # Mass matrix
 
         M[end, :] .= sum(shap1 * Diagonal(master1.gwgh .* detJ), dims=2)  # Last row for boundary condition
-        @info cond(M)
 
         ustarh[:, 1, i] .= M \ r[:, 1, i]  # Solve for postprocessed solution using mass matrix
-
-        @info "u integral $(sum(master.shap[:, 1, :]' * uh[:, 1, i] .* master.gwgh .* detJ))"
-        @info "u⋆ integral $(sum(master1.shap[:, 1, :]' * ustarh[:, 1, i] .* master1.gwgh .* detJ))"
     end
 
     return ustarh
