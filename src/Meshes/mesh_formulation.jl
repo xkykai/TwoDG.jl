@@ -2,7 +2,7 @@ using ForwardDiff
 using LinearAlgebra
 using TwoDG.Utils: newton_raphson
 
-struct Mesh{P, T, F, TF, FC, TC, PO, PL, TL, DG, PCG, TCG, ELC}
+struct Mesh{P, T, F, TF, FC, TC, PO, PL, TL, DG, PCG, TCG, ELC, FTF}
                      p :: P
                      t :: T
                      f :: F
@@ -16,14 +16,15 @@ struct Mesh{P, T, F, TF, FC, TC, PO, PL, TL, DG, PCG, TCG, ELC}
                    pcg :: PCG
                    tcg :: TCG
                  elcon :: ELC
+                   f2f :: FTF
 end
 
-function Mesh(; p, t, f=nothing, t2f=nothing, fcurved=nothing, tcurved=nothing, porder, plocal, tlocal, dgnodes=nothing, pcg=nothing, tcg=nothing, elcon=nothing)
-    return Mesh(p, t, f, t2f, fcurved, tcurved, porder, plocal, tlocal, dgnodes, pcg, tcg, elcon)
+function Mesh(; p, t, f=nothing, t2f=nothing, fcurved=nothing, tcurved=nothing, porder, plocal, tlocal, dgnodes=nothing, pcg=nothing, tcg=nothing, elcon=nothing, f2f=nothing)
+    return Mesh(p, t, f, t2f, fcurved, tcurved, porder, plocal, tlocal, dgnodes, pcg, tcg, elcon, f2f)
 end
 
-function Mesh(mesh::Mesh; dgnodes=nothing, pcg=nothing, tcg=nothing, elcon=nothing)
-    return Mesh(; mesh.p, mesh.t, mesh.f, mesh.t2f, mesh.fcurved, mesh.tcurved, mesh.porder, mesh.plocal, mesh.tlocal, dgnodes, pcg, tcg, elcon)
+function Mesh(mesh::Mesh; dgnodes=nothing, pcg=nothing, tcg=nothing, elcon=nothing, f2f=nothing)
+    return Mesh(; mesh.p, mesh.t, mesh.f, mesh.t2f, mesh.fcurved, mesh.tcurved, mesh.porder, mesh.plocal, mesh.tlocal, dgnodes, pcg, tcg, elcon, f2f)
 end
 
 # Converts barycentric coordinates (λ) to Cartesian coordinates using vertices v₁, v₂, v₃
@@ -261,9 +262,11 @@ function createnodes(mesh, fd=nothing)
             elcon[:, iface, it] .= face > 0 ? global_face_nums : reverse(global_face_nums)
         end
     end
+
+    f2f = mkf2f(mesh.f, mesh.t2f)
     
     # Create and return a new mesh with the same structure but using the computed high-order nodes
-    return Mesh(mesh; dgnodes, elcon)
+    return Mesh(mesh; dgnodes, elcon, f2f)
 end
 
 """

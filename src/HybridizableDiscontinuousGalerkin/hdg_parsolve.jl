@@ -216,7 +216,7 @@ function hdg_parsolve(master, mesh, source, dbc, param)
     end
 
     # Solve global system
-    uhath, _ = hdg_gmres(ae, fe, mesh.t2f, mesh.f, nps)
+    uhath, _ = hdg_gmres(ae, fe, mesh.t2f, mesh.f, nps, f2f=mesh.f2f)
 
     # Connectivity array for trace variable
     elcon = zeros(Int, 3*nps, nt)
@@ -312,7 +312,7 @@ HDG GMRES solver with block Jacobi preconditioning.
 - `iter::Int`: Number of iterations
 - `rev::Array`: Residual history
 """
-function hdg_gmres(AE, FE, t2f, f, npf; x=nothing, restart=200, tol=1e-6, maxit=1000)
+function hdg_gmres(AE, FE, t2f, f, npf; x=nothing, restart=200, tol=1e-6, maxit=1000, f2f=nothing)
     # Assemble the global system in dense format
     A, b = hdg_densesystem(AE, FE, f, t2f, npf)
 
@@ -320,7 +320,9 @@ function hdg_gmres(AE, FE, t2f, f, npf; x=nothing, restart=200, tol=1e-6, maxit=
     B = compute_blockjacobi(A)
     
     # Make face-to-face connectivities
-    f2f = mkf2f(f, t2f)
+    if f2f === nothing
+        f2f = mkf2f(f, t2f)
+    end
 
     # Get the system size
     N = length(b)

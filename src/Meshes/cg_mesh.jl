@@ -35,5 +35,5 @@ function cgmesh(mesh, ptol=2e-13)
     th = reshape(th_inverse, :, size(mesh.dgnodes, 1))
     ph = ph[unique_th, :]
     
-    return Mesh(mesh; mesh.dgnodes, pcg=ph, tcg=th, mesh.elcon)
+    return Mesh(mesh; mesh.dgnodes, pcg=ph, tcg=th, mesh.elcon, mesh.f2f)
 end
