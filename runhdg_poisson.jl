@@ -125,6 +125,3 @@ end
 Legend(fig[4, 1:3], axs[1], orientation=:horizontal, tellwidth=false, patchsize=(40, 20))
 display(fig)
 # save("./output/hdg_convergence.png", fig, px_per_unit=8)
-
-
-#%%

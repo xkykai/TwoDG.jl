@@ -361,3 +361,75 @@ function uniref(p::Matrix{T}, t::Matrix{Int}, nref::Int=1) where T <: AbstractFl
     return p, t
 end
 
+"""
+    mkf2f(f, t2f)
+
+Create face to face connectivity.
+
+# Arguments
+- `f`: Face to element connectivity
+- `t2f`: Element to face connectivity
+
+# Returns
+- `f2f::Matrix{Int}`: Face to face connectivity
+"""
+function mkf2f(f, t2f)
+    t2f_abs = abs.(t2f)
+    nf = size(f, 1)  # number of faces
+    nfe = size(t2f, 2)  # number of faces per element
+    nbf = 2*nfe-1  # number of neighboring faces
+    f2f = zeros(Int, nf, nbf)
+    
+    # This operation is highly parallelizable
+    for i in 1:nf  # Julia uses 1-based indexing
+        fi = f[i, end-1:end]  # obtain two elements sharing the same face i
+
+        if fi[2] >= 0  # face i is an interior face
+            kf = t2f_abs[fi, :]  # get neighboring faces
+            # Find the index of face i in the elements
+            i1 = findfirst(==(i), kf[1, :])
+            i2 = findfirst(==(i), kf[2, :])
+            
+            # The first block
+            k = 1  # Start with 1 in Julia
+            f2f[i, k] = i  # Store face number (already 1-indexed in Julia)
+            
+            # Process first element's faces
+            for is_ in 1:nfe
+                if is_ != i1
+                    k += 1
+                    j = kf[1, is_]
+                    f2f[i, k] = j
+                end
+            end
+            
+            # Process second element's faces
+            for is_ in 1:nfe
+                if is_ != i2
+                    k += 1
+                    j = kf[2, is_]
+                    f2f[i, k] = j
+                end
+            end
+        
+        else  # face i is a boundary face
+            kf = t2f_abs[fi[1], :]  # obtain neighboring faces
+            i1 = findfirst(==(i), kf)  # obtain the index of face i in the element
+            
+            # The first block
+            k = 1
+            f2f[i, k] = i  # Store face number
+            
+            # Process element's faces
+            for is_ in 1:nfe
+                if is_ != i1
+                    k += 1
+                    j = kf[is_]
+                    f2f[i, k] = j
+                end
+            end
+        end
+    end
+    
+    return f2f
+end

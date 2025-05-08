@@ -5,7 +5,7 @@ export
     unique_rows,
     make_circle_mesh, make_square_mesh,
     mkmesh_circle, make_circle_nodes, mkmesh_square, mkmesh_duct, mkmesh_trefftz, mkmesh_naca, mkmesh_lshape, mkmesh_distort!,
-    fixmesh, mkt2f, setbndnbrs, createnodes, uniref, cgmesh,
+    fixmesh, mkt2f, setbndnbrs, createnodes, uniref, cgmesh, mkf2f,
     uniformlocalpnts, localpnts, localpnts1d,
     get_local_face_nodes,
     meshplot, scaplot, meshplot_curved,
@@ -18,7 +18,7 @@ export
     App, mkapp_convection, mkapp_wave, mkapp_euler, eulereval, mkapp_convection_diffusion,
     riemann_to_canonical, canonical_to_riemann,
     rk4, rk4!, rinvexpl, rldgexpl, getq,
-    localprob, elemmat_hdg, hdg_solve, hdg_postprocess
+    localprob, elemmat_hdg, hdg_solve, hdg_postprocess, hdg_parsolve
 
 include("Utils/Utils.jl")
 include("Meshes/Meshes.jl")
