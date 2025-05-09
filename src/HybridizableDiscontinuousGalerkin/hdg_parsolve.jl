@@ -208,11 +208,21 @@ function hdg_parsolve(master, mesh, source, dbc, param)
         ipl = sum(mesh.t[el, :]) - sum(mesh.f[i, 1:2])
         isl = findfirst(x -> x == ipl, mesh.t[el, :])
         
+        # Get the nodes on this boundary face
+        face_nodes = master.perm[:, isl, 1]  # Get local indices of nodes on this face
+        
+        # Extract physical coordinates of the face nodes
+        face_coords = mesh.dgnodes[face_nodes, :, el]
+        
+        # Evaluate the Dirichlet boundary condition at these coordinates
+        bc_values = dbc(face_coords)
+        
         # Clear row and set identity block on diagonal
         view(ae, (isl-1)*nps+1:isl*nps, :, el) .= 0.0
         view(ae, (isl-1)*nps+1:isl*nps, (isl-1)*nps+1:isl*nps, el) .= I(nps)
-        view(fe, (isl-1)*nps+1:isl*nps, el) .= 0.0
-
+        
+        # Set the right-hand side to the boundary condition values
+        view(fe, (isl-1)*nps+1:isl*nps, el) .= bc_values
     end
 
     # Solve global system
@@ -312,7 +322,7 @@ HDG GMRES solver with block Jacobi preconditioning.
 - `iter::Int`: Number of iterations
 - `rev::Array`: Residual history
 """
-function hdg_gmres(AE, FE, t2f, f, npf; x=nothing, restart=200, tol=1e-6, maxit=1000, f2f=nothing)
+function hdg_gmres(AE, FE, t2f, f, npf; x=nothing, restart=160, tol=1e-6, maxit=1000, f2f=nothing)
     # Assemble the global system in dense format
     A, b = hdg_densesystem(AE, FE, f, t2f, npf)
 
