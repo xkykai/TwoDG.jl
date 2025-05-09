@@ -127,7 +127,7 @@ function hdg_densesystem(AE::AbstractArray, FE::AbstractArray, f::AbstractArray,
     # Calculate derived dimensions
     N = length(FE)
     ndf = npf * nfe  # Number of points per face times number of faces per element
-    nch = div(N, ndf * ne)  # Number of components of UH (integer division)
+    nch = N ÷ (ndf * ne)  # Number of components of UH (integer division)
     ncf = nch * npf  # Number of components of UH times number of points per face
     nbf = 2 * nfe - 1  # Number of neighboring faces
     
@@ -146,12 +146,10 @@ function hdg_densesystem(AE::AbstractArray, FE::AbstractArray, f::AbstractArray,
     
     # Parallel implementation
     # Threads.@threads for i in 1:nf
-    for i in 1:nf
-        @inbounds begin
-            A_i, F_i = global_assembly(AE_reshaped, FE_reshaped, f, t2f, ind1, ind2, ncf, nbf, nfe, i)
-            view(A, :, :, :, i) .= A_i
-            view(F, :, i) .= F_i
-        end
+    @views for i in 1:nf
+        A_i, F_i = global_assembly(AE_reshaped, FE_reshaped, f, t2f, ind1, ind2, ncf, nbf, nfe, i)
+        A[:, :, :, i] .= A_i
+        F[:, i] .= F_i
     end
 
     return A, F
@@ -189,21 +187,21 @@ function hdg_parsolve(master, mesh, source, dbc, param)
 
     # Get number of available threads
     num_threads = Threads.nthreads()
-    println("Number of parallel workers: $num_threads")
+    # println("Number of parallel workers: $num_threads")
     
     # Element matrix computation in parallel
     # Threads.@threads for i in 1:nt
-    for i in 1:nt
+    @views for i in 1:nt
         ae_i, fe_i = elemmat_hdg(view(mesh.dgnodes, :, :, i), master, source, param)
-        view(ae, :, :, i) .= ae_i
-        view(fe, :, i) .= fe_i
+        ae[:, :, i] = ae_i
+        fe[:, i] = fe_i
     end
 
     # Apply boundary conditions
     # Find first boundary face
     ni = findfirst(f -> f[4] < 0, eachrow(mesh.f))
     
-    for i in ni:size(mesh.f, 1)
+    @views for i in ni:size(mesh.f, 1)
         el = mesh.f[i, 3]  # Element index (adjusted for 1-based indexing)
         ipl = sum(mesh.t[el, :]) - sum(mesh.f[i, 1:2])
         isl = findfirst(x -> x == ipl, mesh.t[el, :])
@@ -218,11 +216,11 @@ function hdg_parsolve(master, mesh, source, dbc, param)
         bc_values = dbc(face_coords)
         
         # Clear row and set identity block on diagonal
-        view(ae, (isl-1)*nps+1:isl*nps, :, el) .= 0.0
-        view(ae, (isl-1)*nps+1:isl*nps, (isl-1)*nps+1:isl*nps, el) .= I(nps)
+        ae[(isl-1)*nps+1:isl*nps, :, el] .= 0
+        ae[(isl-1)*nps+1:isl*nps, (isl-1)*nps+1:isl*nps, el] = I(nps)
         
         # Set the right-hand side to the boundary condition values
-        view(fe, (isl-1)*nps+1:isl*nps, el) .= bc_values
+        fe[(isl-1)*nps+1:isl*nps, el] = bc_values
     end
 
     # Solve global system
@@ -235,10 +233,10 @@ function hdg_parsolve(master, mesh, source, dbc, param)
     for i in 1:nt, j in 1:3
         f = mesh.t2f[i, j]
         if f > 0
-            elcon[(j-1)*nps+1:j*nps, i] = (f-1)*nps+1:f*nps
+            elcon[(j-1)*nps+1:j*nps, i] .= (f-1)*nps+1:f*nps
         elseif f < 0
             f = abs(f)  # Get positive face index
-            elcon[(j-1)*nps+1:j*nps, i] = f*nps:-1:(f-1)*nps+1
+            elcon[(j-1)*nps+1:j*nps, i] .= f*nps:-1:(f-1)*nps+1
         end
     end
 
@@ -248,11 +246,11 @@ function hdg_parsolve(master, mesh, source, dbc, param)
   
     # Local problem computation in parallel
     # Threads.@threads for i in 1:nt
-    for i in 1:nt
+    @views for i in 1:nt
         uhath_local = uhath[elcon[:, i]]
-        uh_i, qh_i = localprob(view(mesh.dgnodes, :, :, i), master, uhath_local, source, param)
-        view(uh, :, i) .= uh_i
-        view(qh, :, :, i) .= qh_i
+        uh_i, qh_i = localprob(mesh.dgnodes[:, :, i], master, uhath_local, source, param)
+        uh[:, i] .= uh_i
+        qh[:, :, i] .= qh_i
     end
 
     return uh, qh, uhath
@@ -283,13 +281,12 @@ function hdg_matvec(A, F, f2f)
     
     # Parallel loop over all faces
     # Threads.@threads for i in 1:nf
-    for i in 1:nf
+    @views for i in 1:nf
         # Loop over all neighboring faces of face i
         for k in 1:size(f2f, 2)
             j = f2f[i, k]
             if j > 0  # Valid face index (exclude padding zeros)
                 # Add contribution from face j to face i
-                # mul!(view(v_2d, :, i), view(A, :, :, k, i), view(F_2d, :, j))
                 v_2d[:, i] .+= A[:, :, k, i] * F_2d[:, j]
             end
         end
@@ -363,7 +360,7 @@ function hdg_gmres(AE, FE, t2f, f, npf; x=nothing, restart=160, tol=1e-6, maxit=
     cs = ones(restart+1)  # Initialize with ones for efficiency
     sn = zeros(restart+1)
     
-    while true
+    @views while true
         # Perform matrix-vector multiplication
         d = hdg_matvec(A, x, f2f)
 
@@ -399,7 +396,7 @@ function hdg_gmres(AE, FE, t2f, f, npf; x=nothing, restart=160, tol=1e-6, maxit=
             
             # Arnoldi process to orthogonalize v[:, j+1]
             # Note: Julia indices start at 1, so we adjust the calls
-            H, v = arnoldi(H, v, j, ortho)
+            arnoldi!(H, v, j, ortho)
             H[j+1, j] = norm(view(v, :, j+1))
 
             if H[j+1, j] != 0.0
@@ -410,7 +407,8 @@ function hdg_gmres(AE, FE, t2f, f, npf; x=nothing, restart=160, tol=1e-6, maxit=
 
             # Solve the MINRES system using Givens Rotation and back solve
             H_col = copy(view(H, 1:(j+1), j))
-            H_col, g, cs, sn = givens_rotation(H_col, g, cs, sn, j)
+            
+            givens_rotation!(H_col, g, cs, sn, j)
             H[1:(j+1), j] .= H_col
 
             y_length = j  # Save the length of y
@@ -436,8 +434,7 @@ function hdg_gmres(AE, FE, t2f, f, npf; x=nothing, restart=160, tol=1e-6, maxit=
             end
         end
 
-        y = back_solve(view(H, 1:y_length, 1:y_length), view(g, 1:y_length))
-        # y = H[1:y_length, 1:y_length] \ g[1:y_length]
+        y = back_solve(H[1:y_length, 1:y_length], g[1:y_length])
         
         # Compute the solution - use the saved y_length
         x .+= v[:, 1:y_length] * y
@@ -445,7 +442,7 @@ function hdg_gmres(AE, FE, t2f, f, npf; x=nothing, restart=160, tol=1e-6, maxit=
         
         # Stop if converging or reaching maximum iterations
         if flags < 10
-            println("gmres($restart) converges at $iter_count iterations with relative residual $(res/nrmb)")
+            # println("gmres($restart) converges at $iter_count iterations with relative residual $(res/nrmb)")
             break
         end
     end
@@ -455,7 +452,7 @@ function hdg_gmres(AE, FE, t2f, f, npf; x=nothing, restart=160, tol=1e-6, maxit=
     d = hdg_matvec(A, x, f2f)
     r = vec(b0) - vec(d)
     final_residual = norm(r)
-    println("Final residual: $final_residual")
+    # println("Final residual: $final_residual")
 
     return x, flags, iter_count, rev
 end
@@ -480,10 +477,10 @@ function compute_blockjacobi(A)
 
     # Parallel computation of inverses
     # Threads.@threads for i in 1:nf
-    for i in 1:nf
+    @views for i in 1:nf
         # Extract diagonal block (self-interaction term) for face i
         # The first index (1) in the third dimension contains the diagonal block
-        @views A_i = A[:, :, 1, i]
+        A_i = A[:, :, 1, i]
 
         # Compute the inverse
         try
@@ -581,6 +578,34 @@ function arnoldi(H::AbstractMatrix, v::AbstractMatrix, j::Integer, ortho::Intege
 end
 
 """
+    arnoldi!(H, v, j, ortho=1)
+
+Performs the Arnoldi process to orthogonalize v[:, j+1] against previous basis vectors in a mutating way.
+
+# Arguments
+- `H::AbstractMatrix`: Hessenberg matrix
+- `v::AbstractMatrix`: Krylov subspace basis vectors
+- `j::Integer`: Current iteration
+- `ortho::Integer=1`: Orthogonalization method (1: MGS, 0: CGS)
+"""
+function arnoldi!(H::AbstractMatrix, v::AbstractMatrix, j::Integer, ortho::Integer=1)
+    @views if ortho == 1
+        # Modified Gram-Schmidt (MGS)
+        # Sequentially orthogonalize against each previous vector
+        for i in 1:j
+            H[i, j] = v[:, j+1] ⋅ v[:, i]
+            v[:, j+1] .= v[:, j+1] .- H[i, j] .* v[:, i]
+        end
+    else
+        # Classical Gram-Schmidt (CGS)
+        # Compute all projections at once
+        H[1:j, j] = v[:, 1:j]' * v[:, j+1]
+        # Orthogonalize against all previous vectors at once
+        v[:, j+1] = v[:, j+1] - v[:, 1:j] * H[1:j, j]
+    end
+end
+
+"""
     givens_rotation(H, s, cs, sn, i)
 
 Apply Givens rotation to the i-th column of H and update cs, sn, and s.
@@ -622,6 +647,49 @@ function givens_rotation(H, s, cs, sn, i)
 
     s[i:i+1] .= rotation_matrix * [s[i], 0]
     return H, s, cs, sn
+end
+
+"""
+    givens_rotation(H, s, cs, sn, i)
+
+Apply Givens rotation to the i-th column of H and update cs, sn, and s.
+This is a key component of the GMRES algorithm that transforms the Hessenberg
+matrix to upper triangular form via a series of plane rotations.
+
+# Arguments
+- `H`: Current column of the Hessenberg matrix
+- `s`: Residual vector
+- `cs`: Cosine values for rotations
+- `sn`: Sine values for rotations
+- `i`: Current iteration index
+
+# Returns
+- `H`: Updated Hessenberg matrix column
+- `s`: Updated residual vector
+- `cs`: Updated cosine values
+- `sn`: Updated sine values
+"""
+function givens_rotation!(H, s, cs, sn, i)
+    rotation_matrix = zeros(2, 2)
+    @views for k in 1:i-1
+        rotation_matrix[1, 1] = cs[k]
+        rotation_matrix[1, 2] = sn[k]
+        rotation_matrix[2, 1] = -sn[k]
+        rotation_matrix[2, 2] = cs[k]
+        H[k:k+1] = rotation_matrix * H[k:k+1]
+    end
+
+    cs[i] = abs(H[i]) / sqrt(H[i]^2 + H[i+1]^2)
+    sn[i] = H[i+1] / H[i] * cs[i]
+    H[i] = cs[i] * H[i] + sn[i] * H[i+1]
+    H[i+1] = 0.0
+
+    rotation_matrix[1, 1] = cs[i]
+    rotation_matrix[1, 2] = sn[i]
+    rotation_matrix[2, 1] = -sn[i]
+    rotation_matrix[2, 2] = cs[i]
+
+    s[i:i+1] = rotation_matrix * [s[i], 0]
 end
 
 """
