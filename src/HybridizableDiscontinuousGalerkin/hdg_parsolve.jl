@@ -173,7 +173,7 @@ Solves the convection-diffusion equation using the HDG method.
 - `qh`: approximate flux
 - `uhath`: approximate trace
 """
-@inline function hdg_parsolve(master, mesh, source, dbc, param)
+@inline function hdg_parsolve(master, mesh, source, dbc, param; kwargs...)
     # Get mesh dimensions
     nps = mesh.porder + 1
     npl = size(mesh.dgnodes, 1)
@@ -186,7 +186,7 @@ Solves the convection-diffusion equation using the HDG method.
 
     # Get number of available threads
     num_threads = Threads.nthreads()
-    # println("Number of parallel workers: $num_threads")
+    println("Number of parallel workers: $num_threads")
     
     # Element matrix computation in parallel
     @views Threads.@threads for i in 1:nt
@@ -222,7 +222,7 @@ Solves the convection-diffusion equation using the HDG method.
     end
 
     # Solve global system
-    uhath, _ = hdg_gmres(ae, fe, mesh.t2f, mesh.f, nps, f2f=mesh.f2f)
+    uhath, _ = hdg_gmres(ae, fe, mesh.t2f, mesh.f, nps, f2f=mesh.f2f; kwargs...)
 
     # Connectivity array for trace variable
     elcon = zeros(Int, 3*nps, nt)
@@ -341,7 +341,7 @@ HDG GMRES solver with block Jacobi preconditioning.
 - `iter::Int`: Number of iterations
 - `rev::Array`: Residual history
 """
-@inline function hdg_gmres(AE, FE, t2f, f, npf; x=nothing, restart=160, tol=1e-6, maxit=1000, f2f=nothing)
+@inline function hdg_gmres(AE, FE, t2f, f, npf; x=nothing, restart=80, tol=1e-6, maxit=2000, f2f=nothing)
     # Assemble the global system in dense format
     A, b = hdg_densesystem(AE, FE, f, t2f, npf)
 
@@ -466,7 +466,7 @@ HDG GMRES solver with block Jacobi preconditioning.
         cycle += 1
         
         if flags < 10
-            # println("gmres($restart) converges at $iter_count iterations with relative residual $(res/nrmb)")
+            println("gmres($restart) converges at $iter_count iterations with relative residual $(res/nrmb)")
             break
         end
     end
@@ -476,7 +476,7 @@ HDG GMRES solver with block Jacobi preconditioning.
     hdg_matvec!(d, A, x, f2f)
     r = vec(b0) - vec(d)
     final_residual = norm(r)
-    # println("Final residual: $final_residual")
+    println("Final residual: $final_residual")
 
     return x, flags, iter_count, rev
 end
