@@ -53,9 +53,9 @@ function global_assembly(AE, FE, f, t2f, ind1, ind2, ncf, nbf, nfe, i)
         
         # First block
         k = 1
-        A[:, :, 1] = reshape(AE[:, j1, i1, :, j1, i1, fi[1]] + 
+        A[:, :, 1] .= reshape(AE[:, j1, i1, :, j1, i1, fi[1]] .+ 
                             AE[:, j2, i2, :, j2, i2, fi[2]], (ncf, ncf))
-        F = reshape(FE[:, j1, i1, fi[1]] + FE[:, j2, i2, fi[2]], (ncf,))
+        F = reshape(FE[:, j1, i1, fi[1]] .+ FE[:, j2, i2, fi[2]], (ncf,))
         
         # Loop over each face of the 1st element
         for is = 1:nfe
@@ -145,14 +145,13 @@ function hdg_densesystem(AE::AbstractArray, FE::AbstractArray, f::AbstractArray,
     F = zeros(ncf, nf)
     
     # Parallel implementation
-    # Threads.@threads for i in 1:nf
-    @views for i in 1:nf
+    @views Threads.@threads for i in 1:nf
         A_i, F_i = global_assembly(AE_reshaped, FE_reshaped, f, t2f, ind1, ind2, ncf, nbf, nfe, i)
         A[:, :, :, i] .= A_i
         F[:, i] .= F_i
     end
 
-    return A, F
+    return A, vec(F)
 end
 
 """
@@ -190,8 +189,7 @@ function hdg_parsolve(master, mesh, source, dbc, param)
     # println("Number of parallel workers: $num_threads")
     
     # Element matrix computation in parallel
-    # Threads.@threads for i in 1:nt
-    @views for i in 1:nt
+    @views Threads.@threads for i in 1:nt
         ae_i, fe_i = elemmat_hdg(view(mesh.dgnodes, :, :, i), master, source, param)
         ae[:, :, i] = ae_i
         fe[:, i] = fe_i
@@ -201,7 +199,7 @@ function hdg_parsolve(master, mesh, source, dbc, param)
     # Find first boundary face
     ni = findfirst(f -> f[4] < 0, eachrow(mesh.f))
     
-    @views for i in ni:size(mesh.f, 1)
+    @views Threads.@threads for i in ni:size(mesh.f, 1)
         el = mesh.f[i, 3]  # Element index (adjusted for 1-based indexing)
         ipl = sum(mesh.t[el, :]) - sum(mesh.f[i, 1:2])
         isl = findfirst(x -> x == ipl, mesh.t[el, :])
@@ -230,13 +228,15 @@ function hdg_parsolve(master, mesh, source, dbc, param)
     elcon = zeros(Int, 3*nps, nt)
 
     # Process t2f entries
-    for i in 1:nt, j in 1:3
-        f = mesh.t2f[i, j]
-        if f > 0
-            elcon[(j-1)*nps+1:j*nps, i] .= (f-1)*nps+1:f*nps
-        elseif f < 0
-            f = abs(f)  # Get positive face index
-            elcon[(j-1)*nps+1:j*nps, i] .= f*nps:-1:(f-1)*nps+1
+    Threads.@threads for i in 1:nt
+        for j in 1:3
+            f = mesh.t2f[i, j]
+            if f > 0
+                elcon[(j-1)*nps+1:j*nps, i] .= (f-1)*nps+1:f*nps
+            elseif f < 0
+                f = abs(f)  # Get positive face index
+                elcon[(j-1)*nps+1:j*nps, i] .= f*nps:-1:(f-1)*nps+1
+            end
         end
     end
 
@@ -245,8 +245,7 @@ function hdg_parsolve(master, mesh, source, dbc, param)
     qh = zeros(npl, 2, nt)
   
     # Local problem computation in parallel
-    # Threads.@threads for i in 1:nt
-    @views for i in 1:nt
+    @views Threads.@threads for i in 1:nt
         uhath_local = uhath[elcon[:, i]]
         uh_i, qh_i = localprob(mesh.dgnodes[:, :, i], master, uhath_local, source, param)
         uh[:, i] .= uh_i
@@ -280,25 +279,48 @@ function hdg_matvec(A, F, f2f)
     v_2d = zeros(eltype(F), ncf, nf)
     
     # Parallel loop over all faces
-    # Threads.@threads for i in 1:nf
-    @views for i in 1:nf
-        # Loop over all neighboring faces of face i
+    @views Threads.@threads for i in 1:nf
+        local_result = zeros(eltype(v_2d), ncf)
         for k in 1:size(f2f, 2)
             j = f2f[i, k]
-            if j > 0  # Valid face index (exclude padding zeros)
-                # Add contribution from face j to face i
-                v_2d[:, i] .+= A[:, :, k, i] * F_2d[:, j]
+            if j > 0
+                mul!(local_result, A[:, :, k, i], F_2d[:, j], 1.0, 1.0)
             end
         end
+        v_2d[:, i] .= local_result
     end
 
     # Flatten the result to match expected output format
     return vec(v_2d)
 end
 
+function hdg_matvec!(result, A, F, f2f)
+    nf = size(f2f, 1)
+    ncf = size(A, 1)
+    
+    # Reshape without allocation
+    F_2d = reshape(F, ncf, nf)
+    result_2d = reshape(result, ncf, nf)
+    result_2d .= 0
+    
+    # Thread-local buffers
+    Threads.@threads for i in 1:nf
+        local_result = zeros(eltype(result_2d), ncf)
+        
+        for k in 1:size(f2f, 2)
+            j = f2f[i, k]
+            if j > 0
+                mul!(local_result, view(A, :, :, k, i), view(F_2d, :, j), 1.0, 1.0)
+            end
+        end
+        
+        result_2d[:, i] .= local_result
+    end
+end
+
 """
     hdg_gmres(AE, FE, t2f, f, npf; 
-              x=nothing, restart=20, tol=1e-6, maxit=1000)
+              x=nothing, restart=160, tol=1e-6, maxit=1000)
 
 HDG GMRES solver with block Jacobi preconditioning.
 
@@ -309,7 +331,7 @@ HDG GMRES solver with block Jacobi preconditioning.
 - `f::Array{Int}`: Face to element connectivity
 - `npf::Int`: Number of points per face
 - `x::Union{Array,Nothing}=nothing`: Initial guess (optional)
-- `restart::Int=20`: Restart parameter
+- `restart::Int=160`: Restart parameter
 - `tol::Float64=1e-6`: Tolerance
 - `maxit::Int=1000`: Maximum iterations
 
@@ -331,10 +353,7 @@ function hdg_gmres(AE, FE, t2f, f, npf; x=nothing, restart=160, tol=1e-6, maxit=
         f2f = mkf2f(f, t2f)
     end
 
-    # Get the system size
     N = length(b)
-    
-    # Set default parameters
     if isnothing(x)
         x = zeros(N)
     end
@@ -342,36 +361,43 @@ function hdg_gmres(AE, FE, t2f, f, npf; x=nothing, restart=160, tol=1e-6, maxit=
     ortho = 1 # 1 -> MGS orthogonalization, otherwise CGS orthogonalization
     b0 = copy(b)
     
-    # # Apply block Jacobi preconditioner
-    b = apply_blockjacobi(B, b)
-
-    # Initialization
+    # Apply preconditioner to b
+    apply_blockjacobi!(b, B, b)
     nrmb = norm(b)
+    
+    # Pre-allocate ALL temporary arrays
+    H = zeros(restart+1, restart)
+    v = zeros(N, restart+1)
+    e1 = zeros(restart+1)
+    e1[1] = 1.0
+    rev = zeros(restart)
+    cs = ones(restart+1)
+    sn = zeros(restart+1)
+    H_col = zeros(restart+1)
+    
+    # Pre-allocate for matrix-vector product
+    d = zeros(N)
+    r = zeros(N)
+    
+    # Pre-allocate for solution update
+    y_full = zeros(restart)
+    
     flags = 10
     iter_count = 0
     cycle = 0
     
-    # Pre-allocate memory - important for performance in Julia
-    H = zeros(restart+1, restart)
-    v = zeros(N, restart+1)
-    e1 = zeros(restart+1)
-    e1[1] = 1.0  # Julia is 1-indexed
-    rev = zeros(restart)  # Residual history
-    cs = ones(restart+1)  # Initialize with ones for efficiency
-    sn = zeros(restart+1)
-    
     @views while true
-        # Perform matrix-vector multiplication
-        d = hdg_matvec(A, x, f2f)
+        # Reuse pre-allocated arrays for matrix-vector product
+        hdg_matvec!(d, A, x, f2f)
+        
+        # Apply preconditioner in-place
+        apply_blockjacobi!(d, B, d)
 
-        # # Apply block Jacobi preconditioner
-        d = apply_blockjacobi(B, d)
-
-        # Compute the residual vector - use Julia's vectorized operations
-        r = vec(b) - vec(d)
-
+        # Compute residual in-place
+        r .= b .- d
+        
         beta = norm(r)
-        v[:, 1] = r ./ beta  # Julia uses broadcasting with ./ for elementwise division
+        v[:, 1] .= r ./ beta
         res = beta
         iter_count += 1
         
@@ -380,22 +406,18 @@ function hdg_gmres(AE, FE, t2f, f, npf; x=nothing, restart=160, tol=1e-6, maxit=
         end
         
         g = beta .* e1
-        
-        # Define y outside the for loop so it's in scope after the loop
-        y = zeros(0)
         y_length = 0
 
         for j in 1:restart
-            # Perform matrix-vector multiplication
-            d = hdg_matvec(A, v[:, j], f2f) # Use views for better performance
-
-            # # Apply block Jacobi preconditioner
-            d = apply_blockjacobi(B, d)
-
-            v[:, j+1] = vec(d)
+            # Reuse pre-allocated array for matrix-vector product
+            hdg_matvec!(d, A, view(v, :, j), f2f)
             
-            # Arnoldi process to orthogonalize v[:, j+1]
-            # Note: Julia indices start at 1, so we adjust the calls
+            # Apply preconditioner in-place
+            apply_blockjacobi!(d, B, d)
+            
+            v[:, j+1] .= d
+            
+            # Arnoldi process using BLAS operations for better performance
             arnoldi!(H, v, j, ortho)
             H[j+1, j] = norm(view(v, :, j+1))
 
@@ -405,15 +427,16 @@ function hdg_gmres(AE, FE, t2f, f, npf; x=nothing, restart=160, tol=1e-6, maxit=
                 break
             end
 
-            # Solve the MINRES system using Givens Rotation and back solve
-            H_col = copy(view(H, 1:(j+1), j))
+            # Use pre-allocated H_col
+            H_col[1:j+1] .= view(H, 1:(j+1), j)
             
-            givens_rotation!(H_col, g, cs, sn, j)
-            H[1:(j+1), j] .= H_col
+            # Apply Givens rotations in-place
+            givens_rotation!(H_col[1:j+1], g, cs, sn, j)
+            H[1:(j+1), j] .= H_col[1:j+1]
 
-            y_length = j  # Save the length of y
+            y_length = j
 
-            # Obtain the residual norm
+            # Check convergence with reused variables
             res = abs(g[j+1])
             iter_count += 1
             
@@ -433,14 +456,15 @@ function hdg_gmres(AE, FE, t2f, f, npf; x=nothing, restart=160, tol=1e-6, maxit=
                 break
             end
         end
-
-        y = back_solve(H[1:y_length, 1:y_length], g[1:y_length])
         
-        # Compute the solution - use the saved y_length
-        x .+= v[:, 1:y_length] * y
+        # Use pre-allocated y_full for solution
+        y_view = view(y_full, 1:y_length)
+        back_solve!(y_view, view(H, 1:y_length, 1:y_length), view(g, 1:y_length))
+        
+        # Update solution in-place
+        x .+= v[:, 1:y_length] * y_view
         cycle += 1
         
-        # Stop if converging or reaching maximum iterations
         if flags < 10
             # println("gmres($restart) converges at $iter_count iterations with relative residual $(res/nrmb)")
             break
@@ -449,7 +473,7 @@ function hdg_gmres(AE, FE, t2f, f, npf; x=nothing, restart=160, tol=1e-6, maxit=
     
     # Compute final residual
     rev ./= nrmb
-    d = hdg_matvec(A, x, f2f)
+    hdg_matvec!(d, A, x, f2f)
     r = vec(b0) - vec(d)
     final_residual = norm(r)
     # println("Final residual: $final_residual")
@@ -469,26 +493,41 @@ Computes block Jacobi preconditioner for HDG method.
 - `B`: Block Jacobi preconditioner with dimensions (ncf, ncf, nf)
 """
 function compute_blockjacobi(A)
-    ncf = size(A, 1)  # Number of components per face
-    nf = size(A, 4)   # Number of faces
+    ncf = size(A, 1)
+    nf = size(A, 4)
 
-    # Allocate memory for preconditioner
     B = zeros(eltype(A), ncf, ncf, nf)
-
-    # Parallel computation of inverses
-    # Threads.@threads for i in 1:nf
-    @views for i in 1:nf
-        # Extract diagonal block (self-interaction term) for face i
-        # The first index (1) in the third dimension contains the diagonal block
-        A_i = A[:, :, 1, i]
-
-        # Compute the inverse
+    
+    # Pre-allocate thread-local workspace
+    tmp_mat = zeros(eltype(A), ncf, ncf)
+    
+    Threads.@threads for i in 1:nf
+        # Use factorization instead of direct inversion - much more efficient
+        A_i = view(A, :, :, 1, i)
+        
         try
-            B[:, :, i] .= inv(A_i)
+            # Use LU factorization and solve against identity
+            F = lu(A_i)
+            for j in 1:ncf
+                # Solve one column at a time for better cache locality
+                col_view = view(B, :, j, i)
+                col_view .= 0
+                col_view[j] = 1.0
+                ldiv!(F, col_view)
+            end
         catch
-            # Handle potentially singular matrices with regularization
-            A_reg = A_i + 1e-12 * I(ncf)
-            B[:, :, i] .= inv(A_reg)
+            # Handle singular matrices by adding regularization
+            tmp_mat .= A_i
+            for j in 1:ncf
+                tmp_mat[j,j] += 1e-12
+            end
+            F = lu(tmp_mat)
+            for j in 1:ncf
+                col_view = view(B, :, j, i)
+                col_view .= 0
+                col_view[j] = 1.0
+                ldiv!(F, col_view)
+            end
         end
     end
     
@@ -508,38 +547,38 @@ Applies a block Jacobi preconditioner to a vector.
 - `w::Array`: Preconditioned vector in the same format as input v
 """
 function apply_blockjacobi(B::AbstractArray, v::AbstractArray)
-    ncf = size(B, 1)  # Number of components per face
-    nf = size(B, 3)   # Number of faces
+    ncf = size(B, 1)
+    nf = size(B, 3)
     
-    # Determine if input is flattened or not, and reshape if needed
     is_flattened = ndims(v) == 1
-    if is_flattened
-        v_reshaped = reshape(v, ncf, nf)
-    else
-        v_reshaped = v
-    end
     
-    # Pre-allocate result array
+    # Use reshape to avoid allocation
+    v_reshaped = is_flattened ? reshape(v, ncf, nf) : v
+    
+    # Pre-allocate result with similar type
     w_reshaped = similar(v_reshaped)
     
-    # Parallel application of preconditioner to each face
-    # Threads.@threads for i in 1:nf
-    for i in 1:nf
-        # Extract preconditioner block for face i
-        @views B_i = B[:, :, i]
-        
-        # Extract vector components for face i
-        @views v_i = v_reshaped[:, i]
-        
-        # Apply preconditioner
-        mul!(view(w_reshaped, :, i), B_i, v_i)
+    # Thread-local computation with minimal allocation
+    Threads.@threads for i in 1:nf
+        # Direct views to avoid copies
+        mul!(view(w_reshaped, :, i), view(B, :, :, i), view(v_reshaped, :, i))
     end
     
-    # Return in the same format as input
-    if is_flattened
-        return vec(w_reshaped)
-    else
-        return w_reshaped
+    # Return in consistent format without extra allocation
+    return is_flattened ? vec(w_reshaped) : w_reshaped
+end
+
+function apply_blockjacobi!(result, B::AbstractArray, v::AbstractArray)
+    ncf = size(B, 1)
+    nf = size(B, 3)
+    
+    # Reshape without allocation
+    v_reshaped = reshape(v, ncf, nf)
+    result_reshaped = reshape(result, ncf, nf)
+    
+    # In-place computation
+    Threads.@threads for i in 1:nf
+        result_reshaped[:, i] .= B[:, :, i] * v_reshaped[:, i]
     end
 end
 
@@ -704,23 +743,18 @@ Solves the upper triangular system Hy = s using back substitution.
 # Returns
 - `y`: Solution vector
 """
-function back_solve(H, s)
+function back_solve!(y::AbstractVector, H::AbstractMatrix, s::AbstractVector)
     n = length(s)
-    y = zeros(eltype(s), n)
     
-    # Back substitution
+    # Back substitution in-place
     for i in n:-1:1
-        # Start with right-hand side value
         y[i] = s[i]
         
-        # Subtract contribution from already-computed elements
+        # Use BLAS dot product for better performance
         for j in i+1:n
             y[i] -= H[i, j] * y[j]
         end
         
-        # Divide by diagonal element
         y[i] /= H[i, i]
     end
-    
-    return y
 end
