@@ -24,7 +24,7 @@ Solves the local convection-diffusion problems for the HDG method.
 - `umf`: Local solution uh
 - `qmf`: Local solution qh
 """
-function localprob(dg, master, m, source, param)
+@inline function localprob(dg, master, m, source, param)
     # Extract parameters
     kappa = param[:kappa]
     c = param[:c]
@@ -256,7 +256,7 @@ Calculates the element and force vectors for the HDG method.
 - `ae`: Element matrix
 - `fe`: Element force vector
 """
-function elemmat_hdg(dg, master, source, param)
+@inline function elemmat_hdg(dg, master, source, param)
     nps = master.porder + 1
 
     kappa = param[:kappa]

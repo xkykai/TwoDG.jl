@@ -34,7 +34,7 @@ A_i : Array
 F_i : Array
     Global vector for face i
 """
-function global_assembly(AE, FE, f, t2f, ind1, ind2, ncf, nbf, nfe, i)
+@inline function global_assembly(AE, FE, f, t2f, ind1, ind2, ncf, nbf, nfe, i)
     A = zeros(ncf, ncf, nbf)
     
     # Obtain two elements sharing the same face i
@@ -118,7 +118,7 @@ Assembles the global system in dense format.
 - `A`: Global matrix in dense format
 - `F`: Global vector in dense format
 """
-function hdg_densesystem(AE::AbstractArray, FE::AbstractArray, f::AbstractArray, 
+@inline function hdg_densesystem(AE::AbstractArray, FE::AbstractArray, f::AbstractArray, 
                          t2f::AbstractArray, npf::Integer)
     # Get dimensions
     nf = size(f, 1)  # Number of faces
@@ -173,7 +173,7 @@ Solves the convection-diffusion equation using the HDG method.
 - `qh`: approximate flux
 - `uhath`: approximate trace
 """
-function hdg_parsolve(master, mesh, source, dbc, param)
+@inline function hdg_parsolve(master, mesh, source, dbc, param)
     # Get mesh dimensions
     nps = mesh.porder + 1
     npl = size(mesh.dgnodes, 1)
@@ -268,7 +268,7 @@ Performs matrix-vector multiplication for HDG method using face-to-face connecti
 # Returns
 - `v`: Result of matrix-vector multiplication (flattened)
 """
-function hdg_matvec(A, F, f2f)
+@inline function hdg_matvec(A, F, f2f)
     nf = size(f2f, 1)   # Number of faces
     ncf = size(A, 1)    # Number of components per face
     
@@ -294,7 +294,7 @@ function hdg_matvec(A, F, f2f)
     return vec(v_2d)
 end
 
-function hdg_matvec!(result, A, F, f2f)
+@inline function hdg_matvec!(result, A, F, f2f)
     nf = size(f2f, 1)
     ncf = size(A, 1)
     
@@ -341,7 +341,7 @@ HDG GMRES solver with block Jacobi preconditioning.
 - `iter::Int`: Number of iterations
 - `rev::Array`: Residual history
 """
-function hdg_gmres(AE, FE, t2f, f, npf; x=nothing, restart=160, tol=1e-6, maxit=1000, f2f=nothing)
+@inline function hdg_gmres(AE, FE, t2f, f, npf; x=nothing, restart=160, tol=1e-6, maxit=1000, f2f=nothing)
     # Assemble the global system in dense format
     A, b = hdg_densesystem(AE, FE, f, t2f, npf)
 
@@ -492,7 +492,7 @@ Computes block Jacobi preconditioner for HDG method.
 # Returns
 - `B`: Block Jacobi preconditioner with dimensions (ncf, ncf, nf)
 """
-function compute_blockjacobi(A)
+@inline function compute_blockjacobi(A)
     ncf = size(A, 1)
     nf = size(A, 4)
 
@@ -546,7 +546,7 @@ Applies a block Jacobi preconditioner to a vector.
 # Returns
 - `w::Array`: Preconditioned vector in the same format as input v
 """
-function apply_blockjacobi(B::AbstractArray, v::AbstractArray)
+@inline function apply_blockjacobi(B::AbstractArray, v::AbstractArray)
     ncf = size(B, 1)
     nf = size(B, 3)
     
@@ -568,7 +568,7 @@ function apply_blockjacobi(B::AbstractArray, v::AbstractArray)
     return is_flattened ? vec(w_reshaped) : w_reshaped
 end
 
-function apply_blockjacobi!(result, B::AbstractArray, v::AbstractArray)
+@inline function apply_blockjacobi!(result, B::AbstractArray, v::AbstractArray)
     ncf = size(B, 1)
     nf = size(B, 3)
     
@@ -597,7 +597,7 @@ Performs the Arnoldi process to orthogonalize v[:, j+1] against previous basis v
 - `H::AbstractMatrix`: Updated Hessenberg matrix
 - `v::AbstractMatrix`: Updated basis vectors
 """
-function arnoldi(H::AbstractMatrix, v::AbstractMatrix, j::Integer, ortho::Integer=1)
+@inline function arnoldi(H::AbstractMatrix, v::AbstractMatrix, j::Integer, ortho::Integer=1)
     if ortho == 1
         # Modified Gram-Schmidt (MGS)
         # Sequentially orthogonalize against each previous vector
@@ -627,7 +627,7 @@ Performs the Arnoldi process to orthogonalize v[:, j+1] against previous basis v
 - `j::Integer`: Current iteration
 - `ortho::Integer=1`: Orthogonalization method (1: MGS, 0: CGS)
 """
-function arnoldi!(H::AbstractMatrix, v::AbstractMatrix, j::Integer, ortho::Integer=1)
+@inline function arnoldi!(H::AbstractMatrix, v::AbstractMatrix, j::Integer, ortho::Integer=1)
     @views if ortho == 1
         # Modified Gram-Schmidt (MGS)
         # Sequentially orthogonalize against each previous vector
@@ -664,7 +664,7 @@ matrix to upper triangular form via a series of plane rotations.
 - `cs`: Updated cosine values
 - `sn`: Updated sine values
 """
-function givens_rotation(H, s, cs, sn, i)
+@inline function givens_rotation(H, s, cs, sn, i)
     rotation_matrix = zeros(2, 2)
     for k in 1:i-1
         rotation_matrix[1, 1] = cs[k]
@@ -708,7 +708,7 @@ matrix to upper triangular form via a series of plane rotations.
 - `cs`: Updated cosine values
 - `sn`: Updated sine values
 """
-function givens_rotation!(H, s, cs, sn, i)
+@inline function givens_rotation!(H, s, cs, sn, i)
     rotation_matrix = zeros(2, 2)
     @views for k in 1:i-1
         rotation_matrix[1, 1] = cs[k]
@@ -743,7 +743,7 @@ Solves the upper triangular system Hy = s using back substitution.
 # Returns
 - `y`: Solution vector
 """
-function back_solve!(y::AbstractVector, H::AbstractMatrix, s::AbstractVector)
+@inline function back_solve!(y::AbstractVector, H::AbstractMatrix, s::AbstractVector)
     n = length(s)
     
     # Back substitution in-place
