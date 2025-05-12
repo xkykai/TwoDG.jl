@@ -222,7 +222,7 @@ Solves the convection-diffusion equation using the HDG method.
     end
 
     # Solve global system
-    uhath, _ = hdg_gmres(ae, fe, mesh.t2f, mesh.f, nps, f2f=mesh.f2f; kwargs...)
+    uhath, _, gmres_iter, _ = hdg_gmres(ae, fe, mesh.t2f, mesh.f, nps, f2f=mesh.f2f; kwargs...)
 
     # Connectivity array for trace variable
     elcon = zeros(Int, 3*nps, nt)
@@ -252,7 +252,7 @@ Solves the convection-diffusion equation using the HDG method.
         qh[:, :, i] .= qh_i
     end
 
-    return uh, qh, uhath
+    return uh, qh, uhath, gmres_iter
 end
 
 """
@@ -341,12 +341,14 @@ HDG GMRES solver with block Jacobi preconditioning.
 - `iter::Int`: Number of iterations
 - `rev::Array`: Residual history
 """
-@inline function hdg_gmres(AE, FE, t2f, f, npf; x=nothing, restart=80, tol=1e-6, maxit=2000, f2f=nothing)
+@inline function hdg_gmres(AE, FE, t2f, f, npf; x=nothing, restart=80, tol=1e-6, maxit=2000, f2f=nothing, ortho=1, preconditioner=true)
     # Assemble the global system in dense format
     A, b = hdg_densesystem(AE, FE, f, t2f, npf)
 
-    # Compute the block Jacobi preconditioner
-    B = compute_blockjacobi(A)
+    if preconditioner
+        # Compute the block Jacobi preconditioner
+        B = compute_blockjacobi(A)
+    end
     
     # Make face-to-face connectivities
     if f2f === nothing
@@ -358,11 +360,13 @@ HDG GMRES solver with block Jacobi preconditioning.
         x = zeros(N)
     end
     
-    ortho = 1 # 1 -> MGS orthogonalization, otherwise CGS orthogonalization
     b0 = copy(b)
     
-    # Apply preconditioner to b
-    apply_blockjacobi!(b, B, b)
+    if preconditioner
+        # Apply preconditioner to b0
+        apply_blockjacobi!(b0, B, b0)
+    end
+
     nrmb = norm(b)
     
     # Pre-allocate ALL temporary arrays
@@ -390,8 +394,10 @@ HDG GMRES solver with block Jacobi preconditioning.
         # Reuse pre-allocated arrays for matrix-vector product
         hdg_matvec!(d, A, x, f2f)
         
-        # Apply preconditioner in-place
-        apply_blockjacobi!(d, B, d)
+        if preconditioner
+            # Apply preconditioner in-place
+            apply_blockjacobi!(d, B, d)
+        end
 
         # Compute residual in-place
         r .= b .- d
@@ -412,8 +418,10 @@ HDG GMRES solver with block Jacobi preconditioning.
             # Reuse pre-allocated array for matrix-vector product
             hdg_matvec!(d, A, view(v, :, j), f2f)
             
-            # Apply preconditioner in-place
-            apply_blockjacobi!(d, B, d)
+            if preconditioner
+                # Apply preconditioner in-place
+                apply_blockjacobi!(d, B, d)
+            end
             
             v[:, j+1] .= d
             
@@ -638,9 +646,9 @@ Performs the Arnoldi process to orthogonalize v[:, j+1] against previous basis v
     else
         # Classical Gram-Schmidt (CGS)
         # Compute all projections at once
-        H[1:j, j] = v[:, 1:j]' * v[:, j+1]
+        H[1:j, j] .= v[:, 1:j]' * v[:, j+1]
         # Orthogonalize against all previous vectors at once
-        v[:, j+1] = v[:, j+1] - v[:, 1:j] * H[1:j, j]
+        v[:, j+1] .= v[:, j+1] .- v[:, 1:j] * H[1:j, j]
     end
 end
 
