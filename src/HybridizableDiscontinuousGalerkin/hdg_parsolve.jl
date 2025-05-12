@@ -132,11 +132,10 @@ Assembles the global system in dense format.
     nbf = 2 * nfe - 1  # Number of neighboring faces
     
     # Create index arrays for face orientation
-    ind1 = 1:npf  # Julia uses 1-based indexing
-    ind2 = npf:-1:1  # Reverse range from npf down to 1
+    ind1 = 1:npf  # Forward indices
+    ind2 = npf:-1:1  # Reverse indices for handling differently oriented faces
     
-    # Reshape element vectors and matrices
-    # Julia is column-major by default, matching Python's order='F'
+    # Reshape element matrices and vectors to access them by components, points, faces, and elements
     FE_reshaped = reshape(FE, (nch, npf, nfe, ne))
     AE_reshaped = reshape(AE, (nch, npf, nfe, nch, npf, nfe, ne))
     
@@ -144,7 +143,7 @@ Assembles the global system in dense format.
     A = zeros(ncf, ncf, nbf, nf)
     F = zeros(ncf, nf)
     
-    # Parallel implementation
+    # Process each face in parallel, assembling its contribution to the global system
     @views Threads.@threads for i in 1:nf
         A_i, F_i = global_assembly(AE_reshaped, FE_reshaped, f, t2f, ind1, ind2, ncf, nbf, nfe, i)
         A[:, :, :, i] .= A_i
@@ -188,24 +187,25 @@ Solves the convection-diffusion equation using the HDG method.
     num_threads = Threads.nthreads()
     println("Number of parallel workers: $num_threads")
     
-    # Element matrix computation in parallel
+    # Compute local element matrices in parallel
     @views Threads.@threads for i in 1:nt
         ae_i, fe_i = elemmat_hdg(view(mesh.dgnodes, :, :, i), master, source, param)
         ae[:, :, i] = ae_i
         fe[:, i] = fe_i
     end
 
-    # Apply boundary conditions
+    # Apply Dirichlet boundary conditions by modifying local matrices/vectors
     # Find first boundary face
     ni = findfirst(f -> f[4] < 0, eachrow(mesh.f))
     
     @views Threads.@threads for i in ni:size(mesh.f, 1)
-        el = mesh.f[i, 3]  # Element index (adjusted for 1-based indexing)
+        el = mesh.f[i, 3]  # Element index
+        # Find local face number through point indices
         ipl = sum(mesh.t[el, :]) - sum(mesh.f[i, 1:2])
         isl = findfirst(x -> x == ipl, mesh.t[el, :])
         
         # Get the nodes on this boundary face
-        face_nodes = master.perm[:, isl, 1]  # Get local indices of nodes on this face
+        face_nodes = master.perm[:, isl, 1]  # Local indices of nodes on this face
         
         # Extract physical coordinates of the face nodes
         face_coords = mesh.dgnodes[face_nodes, :, el]
@@ -213,40 +213,42 @@ Solves the convection-diffusion equation using the HDG method.
         # Evaluate the Dirichlet boundary condition at these coordinates
         bc_values = dbc(face_coords)
         
-        # Clear row and set identity block on diagonal
+        # Apply strong Dirichlet BC: clear row and set identity on diagonal
         ae[(isl-1)*nps+1:isl*nps, :, el] .= 0
         ae[(isl-1)*nps+1:isl*nps, (isl-1)*nps+1:isl*nps, el] = I(nps)
         
-        # Set the right-hand side to the boundary condition values
+        # Set RHS to boundary values
         fe[(isl-1)*nps+1:isl*nps, el] = bc_values
     end
 
-    # Solve global system
+    # Solve global system for trace variable (uhath)
     uhath, _, gmres_iter, _ = hdg_gmres(ae, fe, mesh.t2f, mesh.f, nps, f2f=mesh.f2f; kwargs...)
 
-    # Connectivity array for trace variable
+    # Build connectivity array for mapping global trace DOFs to local elements
     elcon = zeros(Int, 3*nps, nt)
 
-    # Process t2f entries
+    # Process t2f entries to build connectivity
     Threads.@threads for i in 1:nt
         for j in 1:3
             f = mesh.t2f[i, j]
             if f > 0
+                # Same orientation - use forward mapping
                 elcon[(j-1)*nps+1:j*nps, i] .= (f-1)*nps+1:f*nps
             elseif f < 0
+                # Opposite orientation - use reverse mapping
                 f = abs(f)  # Get positive face index
                 elcon[(j-1)*nps+1:j*nps, i] .= f*nps:-1:(f-1)*nps+1
             end
         end
     end
 
-    # Solve local problems to get uh and qh
+    # Solve local problems to get uh and qh using the computed trace values
     uh = zeros(npl, nt)
     qh = zeros(npl, 2, nt)
   
     # Local problem computation in parallel
     @views Threads.@threads for i in 1:nt
-        uhath_local = uhath[elcon[:, i]]
+        uhath_local = uhath[elcon[:, i]]  # Extract trace values for this element
         uh_i, qh_i = localprob(mesh.dgnodes[:, :, i], master, uhath_local, source, param)
         uh[:, i] .= uh_i
         qh[:, :, i] .= qh_i
@@ -272,18 +274,19 @@ Performs matrix-vector multiplication for HDG method using face-to-face connecti
     nf = size(f2f, 1)   # Number of faces
     ncf = size(A, 1)    # Number of components per face
     
-    # Reshape F from flattened vector to 2D array
+    # Reshape F from flattened vector to 2D array for face-wise operations
     F_2d = reshape(F, ncf, nf)
     
     # Initialize result vector in 2D form
     v_2d = zeros(eltype(F), ncf, nf)
     
-    # Parallel loop over all faces
+    # For each face, compute contribution from neighboring faces
     @views Threads.@threads for i in 1:nf
         local_result = zeros(eltype(v_2d), ncf)
         for k in 1:size(f2f, 2)
             j = f2f[i, k]
-            if j > 0
+            if j > 0  # Skip non-existent neighbors
+                # Add contribution from neighboring face j using the k-th block of A
                 mul!(local_result, A[:, :, k, i], F_2d[:, j], 1.0, 1.0)
             end
         end
@@ -298,22 +301,24 @@ end
     nf = size(f2f, 1)
     ncf = size(A, 1)
     
-    # Reshape without allocation
+    # Reshape without allocation - use existing arrays
     F_2d = reshape(F, ncf, nf)
     result_2d = reshape(result, ncf, nf)
     result_2d .= 0
     
-    # Thread-local buffers
+    # Thread-local computation to avoid race conditions
     Threads.@threads for i in 1:nf
         local_result = zeros(eltype(result_2d), ncf)
         
         for k in 1:size(f2f, 2)
             j = f2f[i, k]
-            if j > 0
+            if j > 0  # Skip non-existent neighbors
+                # Accumulate contributions from each neighbor
                 mul!(local_result, view(A, :, :, k, i), view(F_2d, :, j), 1.0, 1.0)
             end
         end
         
+        # Copy thread-local result to global result array
         result_2d[:, i] .= local_result
     end
 end
@@ -350,7 +355,7 @@ HDG GMRES solver with block Jacobi preconditioning.
         B = compute_blockjacobi(A)
     end
     
-    # Make face-to-face connectivities
+    # Make face-to-face connectivities if not provided
     if f2f === nothing
         f2f = mkf2f(f, t2f)
     end
@@ -363,21 +368,21 @@ HDG GMRES solver with block Jacobi preconditioning.
     b0 = copy(b)
     
     if preconditioner
-        # Apply preconditioner to b0
+        # Apply preconditioner to RHS
         apply_blockjacobi!(b0, B, b0)
     end
 
     nrmb = norm(b)
     
-    # Pre-allocate ALL temporary arrays
-    H = zeros(restart+1, restart)
-    v = zeros(N, restart+1)
+    # Pre-allocate arrays for GMRES
+    H = zeros(restart+1, restart)       # Hessenberg matrix
+    v = zeros(N, restart+1)             # Krylov basis vectors
     e1 = zeros(restart+1)
-    e1[1] = 1.0
-    rev = zeros(restart)
-    cs = ones(restart+1)
-    sn = zeros(restart+1)
-    H_col = zeros(restart+1)
+    e1[1] = 1.0                         # First unit vector for residual
+    rev = zeros(restart)                # Residual history
+    cs = ones(restart+1)                # Cosines for Givens rotations
+    sn = zeros(restart+1)               # Sines for Givens rotations
+    H_col = zeros(restart+1)            # Temporary storage for column of H
     
     # Pre-allocate for matrix-vector product
     d = zeros(N)
@@ -386,24 +391,22 @@ HDG GMRES solver with block Jacobi preconditioning.
     # Pre-allocate for solution update
     y_full = zeros(restart)
     
-    flags = 10
+    flags = 10  # Not converged by default
     iter_count = 0
     cycle = 0
     
     @views while true
-        # Reuse pre-allocated arrays for matrix-vector product
+        # Compute residual: r = b - Ax
         hdg_matvec!(d, A, x, f2f)
         
         if preconditioner
-            # Apply preconditioner in-place
             apply_blockjacobi!(d, B, d)
         end
 
-        # Compute residual in-place
         r .= b .- d
         
         beta = norm(r)
-        v[:, 1] .= r ./ beta
+        v[:, 1] .= r ./ beta  # First Krylov vector
         res = beta
         iter_count += 1
         
@@ -411,40 +414,39 @@ HDG GMRES solver with block Jacobi preconditioning.
             rev[iter_count] = res
         end
         
-        g = beta .* e1
+        g = beta .* e1  # RHS for the minimization problem
         y_length = 0
 
         for j in 1:restart
-            # Reuse pre-allocated array for matrix-vector product
+            # Matrix-vector product with current Krylov vector
             hdg_matvec!(d, A, view(v, :, j), f2f)
             
             if preconditioner
-                # Apply preconditioner in-place
                 apply_blockjacobi!(d, B, d)
             end
             
             v[:, j+1] .= d
             
-            # Arnoldi process using BLAS operations for better performance
+            # Arnoldi process to orthogonalize the new basis vector
             arnoldi!(H, v, j, ortho)
             H[j+1, j] = norm(view(v, :, j+1))
 
             if H[j+1, j] != 0.0
-                v[:, j+1] ./= H[j+1, j]
+                v[:, j+1] ./= H[j+1, j]  # Normalize
             else
-                break
+                break  # Linear dependence detected
             end
 
-            # Use pre-allocated H_col
+            # Extract column for Givens rotations
             H_col[1:j+1] .= view(H, 1:(j+1), j)
             
-            # Apply Givens rotations in-place
+            # Apply Givens rotations to transform H to upper triangular
             givens_rotation!(H_col[1:j+1], g, cs, sn, j)
             H[1:(j+1), j] .= H_col[1:j+1]
 
             y_length = j
 
-            # Check convergence with reused variables
+            # Current residual norm estimate
             res = abs(g[j+1])
             iter_count += 1
             
@@ -454,22 +456,22 @@ HDG GMRES solver with block Jacobi preconditioning.
             
             # Check convergence
             if res / nrmb <= tol
-                flags = 0
+                flags = 0  # Converged
                 break
             end
             
             # Check maximum iterations
             if iter_count >= maxit
-                flags = 1
+                flags = 1  # Max iterations reached
                 break
             end
         end
         
-        # Use pre-allocated y_full for solution
+        # Solve the upper triangular system to get Krylov coefficients
         y_view = view(y_full, 1:y_length)
         back_solve!(y_view, view(H, 1:y_length, 1:y_length), view(g, 1:y_length))
         
-        # Update solution in-place
+        # Update solution: x = x + V*y
         x .+= v[:, 1:y_length] * y_view
         cycle += 1
         
@@ -479,7 +481,7 @@ HDG GMRES solver with block Jacobi preconditioning.
         end
     end
     
-    # Compute final residual
+    # Compute final residual for verification
     rev ./= nrmb
     hdg_matvec!(d, A, x, f2f)
     r = vec(b0) - vec(d)
@@ -510,24 +512,24 @@ Computes block Jacobi preconditioner for HDG method.
     tmp_mat = zeros(eltype(A), ncf, ncf)
     
     Threads.@threads for i in 1:nf
-        # Use factorization instead of direct inversion - much more efficient
+        # Get the diagonal block for this face
         A_i = view(A, :, :, 1, i)
         
         try
-            # Use LU factorization and solve against identity
+            # Use LU factorization instead of direct inversion for better numerical stability
             F = lu(A_i)
             for j in 1:ncf
-                # Solve one column at a time for better cache locality
+                # Solve against identity columns to effectively compute inverse
                 col_view = view(B, :, j, i)
                 col_view .= 0
                 col_view[j] = 1.0
                 ldiv!(F, col_view)
             end
         catch
-            # Handle singular matrices by adding regularization
+            # Handle singular or nearly singular matrices with regularization
             tmp_mat .= A_i
             for j in 1:ncf
-                tmp_mat[j,j] += 1e-12
+                tmp_mat[j,j] += 1e-12  # Add small diagonal perturbation
             end
             F = lu(tmp_mat)
             for j in 1:ncf
@@ -637,14 +639,14 @@ Performs the Arnoldi process to orthogonalize v[:, j+1] against previous basis v
 """
 @inline function arnoldi!(H::AbstractMatrix, v::AbstractMatrix, j::Integer, ortho::Integer=1)
     @views if ortho == 1
-        # Modified Gram-Schmidt (MGS)
+        # Modified Gram-Schmidt (MGS) - more stable but more sequential
         # Sequentially orthogonalize against each previous vector
         for i in 1:j
-            H[i, j] = v[:, j+1] ⋅ v[:, i]
-            v[:, j+1] .= v[:, j+1] .- H[i, j] .* v[:, i]
+            H[i, j] = v[:, j+1] ⋅ v[:, i]  # Project onto basis vector
+            v[:, j+1] .= v[:, j+1] .- H[i, j] .* v[:, i]  # Subtract projection
         end
     else
-        # Classical Gram-Schmidt (CGS)
+        # Classical Gram-Schmidt (CGS) - less stable but more parallelizable
         # Compute all projections at once
         H[1:j, j] .= v[:, 1:j]' * v[:, j+1]
         # Orthogonalize against all previous vectors at once
@@ -674,25 +676,29 @@ matrix to upper triangular form via a series of plane rotations.
 """
 @inline function givens_rotation(H, s, cs, sn, i)
     rotation_matrix = zeros(2, 2)
-    for k in 1:i-1
+    @views for k in 1:i-1
+        # Apply previous Givens rotations to current column
         rotation_matrix[1, 1] = cs[k]
         rotation_matrix[1, 2] = sn[k]
         rotation_matrix[2, 1] = -sn[k]
         rotation_matrix[2, 2] = cs[k]
-        H[k:k+1] .= rotation_matrix * H[k:k+1]
+        H[k:k+1] = rotation_matrix * H[k:k+1]
     end
 
+    # Compute new Givens rotation to eliminate H[i+1,i]
     cs[i] = abs(H[i]) / sqrt(H[i]^2 + H[i+1]^2)
     sn[i] = H[i+1] / H[i] * cs[i]
+    
+    # Apply new Givens rotation to H
     H[i] = cs[i] * H[i] + sn[i] * H[i+1]
-    H[i+1] = 0.0
+    H[i+1] = 0.0  # Zero out the subdiagonal element
 
+    # Apply new Givens rotation to s (residual vector)
     rotation_matrix[1, 1] = cs[i]
     rotation_matrix[1, 2] = sn[i]
     rotation_matrix[2, 1] = -sn[i]
     rotation_matrix[2, 2] = cs[i]
-
-    s[i:i+1] .= rotation_matrix * [s[i], 0]
+    s[i:i+1] = rotation_matrix * [s[i], 0]
     return H, s, cs, sn
 end
 
@@ -719,6 +725,7 @@ matrix to upper triangular form via a series of plane rotations.
 @inline function givens_rotation!(H, s, cs, sn, i)
     rotation_matrix = zeros(2, 2)
     @views for k in 1:i-1
+        # Apply previous Givens rotations to current column
         rotation_matrix[1, 1] = cs[k]
         rotation_matrix[1, 2] = sn[k]
         rotation_matrix[2, 1] = -sn[k]
@@ -726,16 +733,19 @@ matrix to upper triangular form via a series of plane rotations.
         H[k:k+1] = rotation_matrix * H[k:k+1]
     end
 
+    # Compute new Givens rotation to eliminate H[i+1,i]
     cs[i] = abs(H[i]) / sqrt(H[i]^2 + H[i+1]^2)
     sn[i] = H[i+1] / H[i] * cs[i]
+    
+    # Apply new Givens rotation to H
     H[i] = cs[i] * H[i] + sn[i] * H[i+1]
-    H[i+1] = 0.0
+    H[i+1] = 0.0  # Zero out the subdiagonal element
 
+    # Apply new Givens rotation to s (residual vector)
     rotation_matrix[1, 1] = cs[i]
     rotation_matrix[1, 2] = sn[i]
     rotation_matrix[2, 1] = -sn[i]
     rotation_matrix[2, 2] = cs[i]
-
     s[i:i+1] = rotation_matrix * [s[i], 0]
 end
 
@@ -754,15 +764,16 @@ Solves the upper triangular system Hy = s using back substitution.
 @inline function back_solve!(y::AbstractVector, H::AbstractMatrix, s::AbstractVector)
     n = length(s)
     
-    # Back substitution in-place
+    # Back substitution for upper triangular system Hy = s
     for i in n:-1:1
         y[i] = s[i]
         
-        # Use BLAS dot product for better performance
+        # Subtract known terms 
         for j in i+1:n
             y[i] -= H[i, j] * y[j]
         end
         
+        # Divide by diagonal
         y[i] /= H[i, i]
     end
 end
