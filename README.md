@@ -10,12 +10,12 @@ A high-performance Julia framework for solving 2D partial differential equations
 <p align="center">
   <img src="figures/eulerchannel_machnumber.gif" height="300" />
   <br>
-  <em>Compressible flow through a channel with a bump showing Mach number evolution</em>
+  <em>Compressible flow through a channel with a bump computed with 2D Euler equations showing evolution of Mach number</em>
 </p>
 
 <p align="center">
-  <img src="figures/cp_trefftz_10.png" height="300" />
-  <img src="figures/hdg_convdiff_ustar_size_0.2_k_1_c_10_10_p_4.png" height="300" />
+  <img src="figures/cp_trefftz_10.png" height="350" />
+  <img src="figures/hdg_convdiff_ustar_size_0.2_k_1_c_10_10_p_4.png" height="350" />
   <br>
   <em>Pressure coefficient of a potential flow solution (left) and convection-diffusion solution on an unstructured mesh with Hybridizable Discontinuous Galerkin (HDG) (right)</em>
 </p>
