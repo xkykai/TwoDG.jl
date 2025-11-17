@@ -36,6 +36,13 @@ docs/Manifest.toml
 *.mp4
 *.pdf
 
+# Allow images and videos in figures/
+!figures/*.png
+!figures/*.svg
+!figures/*.gif
+!figures/*.mp4
+!figures/*.pdf
+
 # Benchmark output
 *.html
 *.json

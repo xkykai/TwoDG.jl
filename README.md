@@ -4,13 +4,23 @@
 
 A high-performance Julia framework for solving 2D partial differential equations using advanced finite element methods.
 
+## Cool Visuals
+
+<p align="center">
+  <img src="figures/cp_trefftz_10.png" height="300" />
+  <img src="figures/hdg_convdiff_ustar_size_0.2_k_1_c_10_10_p_4.png" height="300" />
+  <br>
+  <em>Pressure coefficient of a potential flow solution (left) and convection-diffusion solution on an unstructured mesh with Hybridizable Discontinuous Galerkin (HDG) (right)</em>
+</p>
+
+
 ## Overview
 
 TwoDG.jl provides a unified implementation of three powerful discretization schemes for 2D PDEs:
 
 - **Continuous Galerkin (CG)** - Traditional continuous finite elements
 - **Discontinuous Galerkin (DG)** - High-order explicit time-stepping methods
-- **Hybridizable Discontinuous Galerkin (HDG)** - Efficient implicit solvers with static condensation
+- **Hybridizable Discontinuous Galerkin (HDG)** - Efficient implicit solvers with static condensation and parallel capabilities
 
 Whether you're studying wave propagation, compressible flows, or convection-diffusion phenomena, TwoDG.jl offers the numerical tools to tackle these problems with arbitrary polynomial orders and sophisticated error analysis.
 
@@ -19,6 +29,7 @@ Whether you're studying wave propagation, compressible flows, or convection-diff
 - **Multiple PDE Types**: Poisson, convection-diffusion, wave equations, and Euler equations
 - **High-Order Accuracy**: Arbitrary polynomial order support (p-refinement) with Koornwinder orthogonal basis
 - **Efficient HDG**: Static condensation dramatically reduces system size compared to standard DG
+- **Parallel HDG Solver**: Multi-threaded assembly and solving for large-scale problems
 - **Rich Mesh Support**: Built-in generators for squares, circles, L-shapes, NACA airfoils, and more
 - **Comprehensive Examples**: Convergence studies, wave scattering, channel flows, and transport problems
 - **Performance Optimized**: Inline functions and careful pre-allocation for computational efficiency
