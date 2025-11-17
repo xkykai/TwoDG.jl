@@ -8,7 +8,7 @@ A high-performance Julia framework for solving 2D partial differential equations
 ## Cool Visuals
 
 <p align="center">
-  <video src="figures/eulerchannel_machnumber.mp4" height="300" autoplay loop muted controls></video>
+  <video src="figures/eulerchannel_machnumber.mp4" height="300" controls></video>
   <br>
   <em>Compressible flow through a channel with a bump showing Mach number evolution</em>
 </p>
