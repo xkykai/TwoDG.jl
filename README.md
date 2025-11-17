@@ -1,10 +1,17 @@
 # TwoDG.jl
 
+[![Build Status](https://github.com/xkykai/TwoDG.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/xkykai/TwoDG.jl/actions/workflows/CI.yml?query=branch%3Amain)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A high-performance Julia framework for solving 2D partial differential equations using advanced finite element methods.
 
 ## Cool Visuals
+
+<p align="center">
+  <video src="figures/eulerchannel_machnumber.mp4" height="300" autoplay loop muted controls></video>
+  <br>
+  <em>Compressible flow through a channel with a bump showing Mach number evolution</em>
+</p>
 
 <p align="center">
   <img src="figures/cp_trefftz_10.png" height="300" />
