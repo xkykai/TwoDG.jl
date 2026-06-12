@@ -20,6 +20,19 @@ A high-performance Julia framework for solving 2D partial differential equations
   <em>Pressure coefficient of a potential flow solution (left) and convection-diffusion solution on an unstructured mesh with Hybridizable Discontinuous Galerkin (HDG) (right)</em>
 </p>
 
+<p align="center">
+  <img src="figures/hdg_ns_boussinesq_temperature.png" height="350" />
+  <img src="figures/hdg_ns_boussinesq_speed.png" height="350" />
+  <br>
+  <em>Natural convection in a differentially heated cavity at Ra = 10⁴ (incompressible nonhydrostatic Navier-Stokes equations with the Boussinesq approximation, HDG k = 3): temperature (left) and speed (right). The steady hot-wall Nusselt number matches the de Vahl Davis benchmark.</em>
+</p>
+
+<p align="center">
+  <img src="figures/hdg_ns_kovasznay_convergence.png" width="1000" />
+  <br>
+  <em>Verification of the HDG incompressible Navier-Stokes solver with the Kovasznay flow at Re = 20: optimal k+1 convergence of velocity, pressure, and velocity gradient, and k+2 superconvergence of the exactly divergence-free, H(div)-conforming postprocessed velocity u*</em>
+</p>
+
 
 ## Overview
 
@@ -33,7 +46,7 @@ Whether you're studying wave propagation, compressible flows, or convection-diff
 
 ## Key Features
 
-- **Multiple PDE Types**: Poisson, convection-diffusion, wave equations, and Euler equations
+- **Multiple PDE Types**: Poisson, convection-diffusion, wave equations, Euler equations, and the incompressible Navier-Stokes equations (with optional Boussinesq buoyancy)
 - **High-Order Accuracy**: Arbitrary polynomial order support (p-refinement) with Koornwinder orthogonal basis
 - **Efficient HDG**: Static condensation dramatically reduces system size compared to standard DG
 - **Parallel HDG Solver**: Multi-threaded assembly and solving for large-scale problems
@@ -47,6 +60,7 @@ Whether you're studying wave propagation, compressible flows, or convection-diff
 - **Compare discretization methods** (CG vs DG vs HDG) on the same problems
 - **Simulate wave scattering** on complex geometries with absorption boundaries
 - **Solve compressible flow** problems including shock waves in channels
+- **Solve incompressible flow** problems (steady or time-dependent Navier-Stokes, natural convection with the Boussinesq approximation) with the HDG method of Nguyen, Peraire & Cockburn (JCP, 2011)
 - **Analyze convection-diffusion** transport with various stabilization parameters
 - **Develop new numerical methods** using the extensible master element framework
 
@@ -69,5 +83,7 @@ Explore the example scripts in `src/Apps/` to see the solvers in action:
 - `runwavescattering.jl` - Wave scattering on circular domains
 - `runeulerchannel.jl` - Compressible Euler equations with shocks
 - `runconvection.jl` - Pure convection with DG explicit time-stepping
+- `runhdg_ns_kovasznay.jl` - Steady incompressible Navier-Stokes verification (Kovasznay flow, optimal k+1 convergence)
+- `runhdg_ns_boussinesq.jl` - Natural convection in a heated cavity (incompressible nonhydrostatic Navier-Stokes with the Boussinesq approximation, validated against the de Vahl Davis benchmark)
 
 Perfect for researchers in numerical analysis, students learning finite element methods, or anyone needing a flexible high-order PDE solver in Julia.

@@ -18,7 +18,8 @@ export
     App, mkapp_convection, mkapp_wave, mkapp_euler, eulereval, mkapp_convection_diffusion,
     riemann_to_canonical, canonical_to_riemann,
     rk4, rk4!, rinvexpl, rldgexpl, getq,
-    localprob, elemmat_hdg, hdg_solve, hdg_postprocess, hdg_parsolve
+    localprob, elemmat_hdg, hdg_solve, hdg_postprocess, hdg_parsolve,
+    hdg_ns_step, hdg_ns_solve, hdg_cd_step, hdg_ns_postprocess
 
 include("Utils/Utils.jl")
 include("Meshes/Meshes.jl")

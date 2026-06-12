@@ -94,8 +94,12 @@ function koornwinder2d(x::AbstractMatrix{<:Real}, p::Int)
     
     # Copy x to avoid modifying the original array
     xc = copy(x)
-    # Adjust second coordinate (column 2 in Julia) to avoid singularities
-    xc[:, 2] .= min.(0.99999999, xc[:, 2])
+    # Adjust second coordinate (column 2 in Julia) to avoid the 0/0 in the
+    # collapsed-coordinate map at the top vertex (where 1 + x1 = 0, so e1
+    # evaluates to exactly -1 as required).  The offset perturbs the Jacobi
+    # factor q(x2) by O(eps), so it must be at roundoff level: the previous
+    # value of 1e-8 put an O(1e-8) error floor on all shape functions.
+    xc[:, 2] .= min.(1 - 1e-13, xc[:, 2])
     
     # Set up the evaluation coordinates e.
     # In Python, e[:,0] corresponds to the first column; in Julia, we use column 1.
