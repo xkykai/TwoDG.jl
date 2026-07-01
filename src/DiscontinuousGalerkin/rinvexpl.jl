@@ -34,6 +34,13 @@ function rinvexpl(master, mesh, app, u, time)
     fcurved = mesh.fcurved
     tcurved = mesh.tcurved
 
+    # Face contributions are computed in parallel but staged here and scattered
+    # serially below: scattering inside the threaded loops races when two faces
+    # of the same element are processed by different threads concurrently.
+    cnt_all = zeros(np1d, nc, nf)
+    perml_all = zeros(Int, np1d, nf)
+    permr_all = zeros(Int, np1d, ni)
+
     # Interior faces first
     Threads.@threads for i in 1:ni
         ipt = mesh.f[i, 1] + mesh.f[i, 2]
@@ -86,9 +93,10 @@ function rinvexpl(master, mesh, app, u, time)
 
         fng = app.finvi(ulg, urg, nl, plg, app.arg, time)
         cnt = sh1d * Diagonal(dws) * fng
-   
-        r[perml, :, el] .-= cnt
-        r[permr, :, er] .+= cnt
+
+        perml_all[:, i] .= perml
+        permr_all[:, i] .= permr
+        cnt_all[:, :, i] .= cnt
     end
 
     # # Boundary faces
@@ -136,8 +144,19 @@ function rinvexpl(master, mesh, app, u, time)
         
         fng = app.finvb(ulg, nl, app.bcm[ib], app.bcs[app.bcm[ib], :], plg, app.arg, time)
         cnt = sh1d * Diagonal(dws) * fng
-   
-        r[perml, :, el] .-= cnt
+
+        perml_all[:, i] .= perml
+        cnt_all[:, :, i] .= cnt
+    end
+
+    # Serial scatter of the staged face contributions (race-free)
+    @views for i in 1:nf
+        el = mesh.f[i, 3]
+        r[perml_all[:, i], :, el] .-= cnt_all[:, :, i]
+        if i <= ni
+            er = mesh.f[i, 4]
+            r[permr_all[:, i], :, er] .+= cnt_all[:, :, i]
+        end
     end
 
     # Volume integral

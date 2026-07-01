@@ -365,14 +365,18 @@ HDG GMRES solver with block Jacobi preconditioning.
         x = zeros(N)
     end
     
+    # b0 is the RHS of the (left-preconditioned) system actually iterated on:
+    # B A x = B b when preconditioning, A x = b otherwise. The residuals inside
+    # the loop must be measured against b0, not b, or the iteration silently
+    # solves B A x = b (wrong solution that still reports convergence).
     b0 = copy(b)
-    
+
     if preconditioner
         # Apply preconditioner to RHS
         apply_blockjacobi!(b0, B, b0)
     end
 
-    nrmb = norm(b)
+    nrmb = norm(b0)
     
     # Pre-allocate arrays for GMRES
     H = zeros(restart+1, restart)       # Hessenberg matrix
@@ -403,7 +407,7 @@ HDG GMRES solver with block Jacobi preconditioning.
             apply_blockjacobi!(d, B, d)
         end
 
-        r .= b .- d
+        r .= b0 .- d
         
         beta = norm(r)
         v[:, 1] .= r ./ beta  # First Krylov vector
@@ -481,12 +485,12 @@ HDG GMRES solver with block Jacobi preconditioning.
         end
     end
     
-    # Compute final residual for verification
+    # Compute final residual of the original (unpreconditioned) system
     rev ./= nrmb
     hdg_matvec!(d, A, x, f2f)
-    r = vec(b0) - vec(d)
-    final_residual = norm(r)
-    println("Final residual: $final_residual")
+    r = vec(b) - vec(d)
+    final_residual = norm(r) / norm(b)
+    println("Final relative residual (unpreconditioned): $final_residual")
 
     return x, flags, iter_count, rev
 end

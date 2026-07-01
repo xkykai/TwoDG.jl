@@ -252,6 +252,12 @@ function createnodes(mesh, fd=nothing)
         end
     end
 
+    # Meshes built before face connectivity exists (e.g. the intermediate mesh
+    # in mkmesh_trefftz) only need the high-order nodes
+    if mesh.f === nothing || mesh.t2f === nothing
+        return Mesh(mesh; dgnodes)
+    end
+
     nps = mesh.porder + 1
     # Create a mapping from local node numbers to global node numbers
     elcon = zeros(Int, nps, 3, nt)

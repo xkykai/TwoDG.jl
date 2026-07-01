@@ -30,7 +30,17 @@ function getq(master, mesh, app, u, time)
     sh1d = master.sh1d[:, 1, :] # Julia uses 1-based indexing
     perm = master.perm
     ni = findfirst(x -> x < 0, mesh.f[:, 4]) - 1  # First ni faces are interior, rest are boundary
-    
+    np1d = size(perm, 1)
+    nf = size(mesh.f, 1)
+
+    # Face contributions are staged here and scattered serially below:
+    # scattering inside the threaded loops races when two faces of the same
+    # element are processed by different threads concurrently.
+    cntx_all = zeros(np1d, nc, nf)
+    cnty_all = zeros(np1d, nc, nf)
+    perml_all = zeros(Int, np1d, nf)
+    permr_all = zeros(Int, np1d, ni)
+
     # Interior first
     Threads.@threads for i in 1:ni
         ipt = sum(mesh.f[i, 1:2])  # Sum of the two vertex indices forming this face
@@ -81,10 +91,10 @@ function getq(master, mesh, app, u, time)
         cntx = sh1d * Diagonal(dws .* nl[:, 1]) * û  # x-component of flux integral
         cnty = sh1d * Diagonal(dws .* nl[:, 2]) * û  # y-component of flux integral
 
-        q[perml, 1, :, el] .+= cntx  # Add to left element's x-gradient
-        q[perml, 2, :, el] .+= cnty  # Add to left element's y-gradient
-        q[permr, 1, :, er] .-= cntx  # Subtract from right element's x-gradient
-        q[permr, 2, :, er] .-= cnty  # Subtract from right element's y-gradient
+        perml_all[:, i] .= perml
+        permr_all[:, i] .= permr
+        cntx_all[:, :, i] .= cntx
+        cnty_all[:, :, i] .= cnty
     end
 
     # Now boundary
@@ -130,11 +140,24 @@ function getq(master, mesh, app, u, time)
 
         cntx = sh1d * Diagonal(master.gw1d .* dsdxi .* nl[:, 1]) * ub
         cnty = sh1d * Diagonal(master.gw1d .* dsdxi .* nl[:, 2]) * ub
-        
-        q[perml, 1, :, el] .+= cntx
-        q[perml, 2, :, el] .+= cnty
+
+        perml_all[:, i] .= perml
+        cntx_all[:, :, i] .= cntx
+        cnty_all[:, :, i] .= cnty
     end
-    
+
+    # Serial scatter of the staged face contributions (race-free)
+    @views for i in 1:nf
+        el = mesh.f[i, 3]
+        q[perml_all[:, i], 1, :, el] .+= cntx_all[:, :, i]
+        q[perml_all[:, i], 2, :, el] .+= cnty_all[:, :, i]
+        if i <= ni
+            er = mesh.f[i, 4]
+            q[permr_all[:, i], 1, :, er] .-= cntx_all[:, :, i]
+            q[permr_all[:, i], 2, :, er] .-= cnty_all[:, :, i]
+        end
+    end
+
     # Volume integral
     shap = master.shap[:, 1, :]
     shapxi = master.shap[:, 2, :]
@@ -229,6 +252,13 @@ function rldgexpl(master, mesh, app, u, time)
     perm = master.perm
     # Find index where boundary faces start (mesh.f[:, 4] < 0 indicates boundary face)
     ni = findfirst(x -> x < 0, mesh.f[:, 4]) - 1
+    nf = size(mesh.f, 1)
+
+    # Face contributions are staged here and scattered serially below (the
+    # in-loop scatter races when two faces of the same element run concurrently)
+    cnt_all = zeros(np1d, nc, nf)
+    perml_all = zeros(Int, np1d, nf)
+    permr_all = zeros(Int, np1d, ni)
 
     # Process interior faces first
     Threads.@threads for i in 1:ni
@@ -303,9 +333,9 @@ function rldgexpl(master, mesh, app, u, time)
         # Apply numerical flux to both elements (with opposite signs)
         cnt = sh1d * Diagonal(dws) * fng  # Integrate flux along face
 
-        ci = reshape(cnt, (np1d, nc))
-        r[perml, :, el] .-= ci  # Subtract from left element (outflow)
-        r[permr, :, er] .+= ci  # Add to right element (inflow)
+        perml_all[:, i] .= perml
+        permr_all[:, i] .= permr
+        cnt_all[:, :, i] .= reshape(cnt, (np1d, nc))
     end
 
     # Process boundary faces
@@ -358,8 +388,18 @@ function rldgexpl(master, mesh, app, u, time)
         
         # Apply boundary flux to element
         cnt = sh1d * Diagonal(dws) * fng
-        ci = reshape(cnt, (np1d, nc))
-        r[perml, :, el] .-= ci
+        perml_all[:, i] .= perml
+        cnt_all[:, :, i] .= reshape(cnt, (np1d, nc))
+    end
+
+    # Serial scatter of the staged face contributions (race-free)
+    @views for i in 1:nf
+        el = mesh.f[i, 3]
+        r[perml_all[:, i], :, el] .-= cnt_all[:, :, i]
+        if i <= ni
+            er = mesh.f[i, 4]
+            r[permr_all[:, i], :, er] .+= cnt_all[:, :, i]
+        end
     end
 
     # Volume integral (element contributions)
