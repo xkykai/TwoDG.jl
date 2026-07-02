@@ -58,7 +58,7 @@ for (i, porder) in enumerate(porders), (j, size) in enumerate(sizes)
 
     fig = scaplot(mesh, u[:, 1, :], show_mesh=true)
     display(fig)
-    l2_errors[i][j] = l2_error(mesh, u, poisson_solution)
+    l2_errors[i][j] = l2error(mesh, u, poisson_solution)
 end
 #%%
 fig = Figure()

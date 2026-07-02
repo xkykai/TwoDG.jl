@@ -1,14 +1,23 @@
 #-----------------------------------------------------------------------------
+#  Package extension: Makie implementations of TwoDG's plotting API
+#  (meshplot, scaplot, meshplot_curved). Loaded automatically when a Makie
+#  backend is in the environment (e.g. `using TwoDG, CairoMakie`).
+#
 #  Translated from Python mesh visualization functions
 #  Original by Per-Olof Persson and Bradley Froehle
 #-----------------------------------------------------------------------------
+module TwoDGMakieExt
 
 using LinearAlgebra
-using CairoMakie
-using GeometryBasics
-using Colors
+using Makie
+using Makie.Colors: RGB, RGBA
+using TwoDG.Plotting: Plotting
 using TwoDG.Masters: shape2d, uniformlocalpnts, localpnts
 using Statistics
+
+const GeometryBasics = Makie.GeometryBasics
+const Point2f = GeometryBasics.Point2f
+const Polygon = GeometryBasics.Polygon
 
 """
     SimplexCollection(p, t; linewidth=0.5, edgecolor=:black, facecolor=RGB(0.8, 0.9, 1.0))
@@ -78,9 +87,7 @@ Plot a simplicial mesh.
 - `nodes`: Draw markers at each node
 - `annotate`: "p" to annotate nodes, "t" to annotate simplices
 """
-function meshplot(mesh; nodes=false, annotate="")
-    println("Entered meshplot")
-    
+function Plotting.meshplot(mesh; nodes=false, annotate="")
     p = mesh.p
     t = mesh.t
 
@@ -126,7 +133,7 @@ Plot contours of a scalar field on a mesh.
 - `limits`: Optional [cmin, cmax] for thresholding
 - `show_mesh`: Boolean to plot mesh over contours
 """
-function scaplot(mesh, c; limits=nothing, show_mesh=false, figure_size=(800, 800), title="", cmap=:turbo)
+function Plotting.scaplot(mesh, c; limits=nothing, show_mesh=false, figure_size=(800, 800), title="", cmap=:turbo)
     # cmap = :plasma  # other options: :RdYlBu, :inferno, :viridis, :magma
     
     fig = Figure(size=figure_size)
@@ -137,9 +144,6 @@ function scaplot(mesh, c; limits=nothing, show_mesh=false, figure_size=(800, 800
     else
         cmin, cmax = limits
     end
-    
-    @info "cmin: $cmin"
-    @info "cmax: $cmax"
 
     # For each element in the mesh
     for i in 1:size(mesh.t, 1)
@@ -188,7 +192,7 @@ Plot a curved mesh of triangles.
 - `annotate`: "p" to annotate nodes, "t" to annotate simplices
 - `pplot`: Order of the polynomial used to display mesh
 """
-function meshplot_curved(mesh; nodes=false, annotate="", pplot=0, figure_size=(800, 800), title="")
+function Plotting.meshplot_curved(mesh; nodes=false, annotate="", pplot=0, figure_size=(800, 800), title="")
     p = mesh.p
     t = mesh.t
     
@@ -221,3 +225,5 @@ function meshplot_curved(mesh; nodes=false, annotate="", pplot=0, figure_size=(8
 
     return fig
 end
+
+end # module

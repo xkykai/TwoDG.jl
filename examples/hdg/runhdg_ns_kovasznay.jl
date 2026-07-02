@@ -65,16 +65,15 @@ for (k, porder) in enumerate(porders), (j, n) in enumerate(ns)
     result = hdg_ns_solve(master, mesh, ν, dbc; τ=1.0, maxiter=12, tol=1e-10, verbose=false)
     ustar = hdg_ns_postprocess(master, mesh, master1, mesh1, result)
 
-    # l2_error returns the squared L2 error
-    err_u[k][j] = sqrt(l2_error(mesh, result.u[:, 1, :], u1e) +
-                       l2_error(mesh, result.u[:, 2, :], u2e))
-    err_p[k][j] = sqrt(l2_error(mesh, result.p, pe))
-    err_L[k][j] = sqrt(l2_error(mesh, result.gradu[:, 1, :], L11e) +
-                       l2_error(mesh, result.gradu[:, 2, :], L12e) +
-                       l2_error(mesh, result.gradu[:, 3, :], L21e) +
-                       l2_error(mesh, result.gradu[:, 4, :], L22e))
-    err_us[k][j] = sqrt(l2_error(mesh1, ustar[:, 1, :], u1e) +
-                        l2_error(mesh1, ustar[:, 2, :], u2e))
+    err_u[k][j] = hypot(l2error(mesh, result.u[:, 1, :], u1e),
+                        l2error(mesh, result.u[:, 2, :], u2e))
+    err_p[k][j] = l2error(mesh, result.p, pe)
+    err_L[k][j] = sqrt(l2error(mesh, result.gradu[:, 1, :], L11e)^2 +
+                       l2error(mesh, result.gradu[:, 2, :], L12e)^2 +
+                       l2error(mesh, result.gradu[:, 3, :], L21e)^2 +
+                       l2error(mesh, result.gradu[:, 4, :], L22e)^2)
+    err_us[k][j] = hypot(l2error(mesh1, ustar[:, 1, :], u1e),
+                         l2error(mesh1, ustar[:, 2, :], u2e))
     @info "  ‖u-uh‖ = $(err_u[k][j]), ‖p-ph‖ = $(err_p[k][j]), ‖L-Lh‖ = $(err_L[k][j]), ‖u-u*‖ = $(err_us[k][j])"
 
     if porder == porders[end] && n == ns[end-1]

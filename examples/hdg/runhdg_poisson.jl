@@ -73,11 +73,11 @@ for i in eachindex(tauds_type), j in eachindex(ms), k in eachindex(porders)
     u, q, uh = hdg_solve(master, mesh, hdg_source, dbc, param)
     ustarh = hdg_postprocess(master, mesh, master1, mesh1, u, q ./ kappa)
 
-    l2_errors[i][k][j] = l2_error(mesh, u, exact)
-    l2_errors_postprocess[i][k][j] = l2_error(mesh1, ustarh, exact)
+    l2_errors[i][k][j] = l2error(mesh, u, exact)
+    l2_errors_postprocess[i][k][j] = l2error(mesh1, ustarh, exact)
 
-    l2_errors_qx[i][k][j] = l2_error(mesh, -q[:, 1, :], qx_exact)
-    l2_errors_qy[i][k][j] = l2_error(mesh, -q[:, 2, :], qy_exact)
+    l2_errors_qx[i][k][j] = l2error(mesh, -q[:, 1, :], qx_exact)
+    l2_errors_qy[i][k][j] = l2error(mesh, -q[:, 2, :], qy_exact)
 
     fig = scaplot(mesh1, ustarh[:, 1, :], show_mesh=true, title="u*")
     display(fig)

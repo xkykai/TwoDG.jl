@@ -1,4 +1,9 @@
+# NOTE: this example originally compared classical vs modified Gram-Schmidt
+# orthogonalization in the hand-rolled HDG GMRES. That solver has been
+# replaced by Krylov.jl (`hdg_parsolve` now wraps `hdg_gmres_ka`), so the
+# comparison here is preconditioned vs unpreconditioned GMRES instead.
 using TwoDG
+using BenchmarkTools
 using LinearAlgebra
 using CairoMakie
 BLAS.set_num_threads(1)
@@ -19,17 +24,17 @@ taud = 1
 c = [10000, 10000]
 restart = 800
 param = Dict(:kappa => kappa, :c => c, :taud => taud)
-preconditioner = false
 
-# Modified Gram-Schmidt
-u, q, uh, gmres_iter = hdg_parsolve(master, mesh, hdg_source, dbc, param; restart, ortho=1, preconditioner)
-fig = scaplot(mesh, u, show_mesh=true, title="u, Modified Gram-Schmidt")
-# save("output/hdg_cd_mgs.png", fig, px_per_unit=4)
+# Block-Jacobi preconditioned
+u, q, uh, gmres_iter = hdg_parsolve(master, mesh, hdg_source, dbc, param; restart)
+fig = scaplot(mesh, u[:, 1, :], show_mesh=true, title="u, preconditioned ($gmres_iter its)")
+# save("output/hdg_cd_precond.png", fig, px_per_unit=4)
 
-# Classical Gram-Schmidt
-u_c, q_c, uh_c, gmres_iter_c = hdg_parsolve(master, mesh, hdg_source, dbc, param; restart, ortho=0, preconditioner)
-fig = scaplot(mesh, u_c, show_mesh=true, title="u, Classical Gram-Schmidt")
-# save("output/hdg_cd_cgs.png", fig, px_per_unit=4)
+# Unpreconditioned
+u_c, q_c, uh_c, gmres_iter_c = hdg_parsolve(master, mesh, hdg_source, dbc, param;
+                                            restart, preconditioner=false)
+fig = scaplot(mesh, u_c[:, 1, :], show_mesh=true, title="u, unpreconditioned ($gmres_iter_c its)")
+# save("output/hdg_cd_noprecond.png", fig, px_per_unit=4)
 #%%
 porder = 5
 ngauss = 2 * porder
@@ -47,13 +52,10 @@ taud = 1
 c = [1000, 1000]
 restart = 100
 param = Dict(:kappa => kappa, :c => c, :taud => taud)
-preconditioner = false
 #%%
-# Modified Gram-Schmidt
-@info "Running Modified Gram-Schmidt"
-@benchmark hdg_parsolve(master, mesh, hdg_source, dbc, param; restart, ortho=1, preconditioner)
+@info "Preconditioned"
+@benchmark hdg_parsolve(master, mesh, hdg_source, dbc, param; restart)
 
-# Classical Gram-Schmidt
-@info "Running Classical Gram-Schmidt"
-@benchmark hdg_parsolve(master, mesh, hdg_source, dbc, param; restart, ortho=0, preconditioner)
+@info "Unpreconditioned"
+@benchmark hdg_parsolve(master, mesh, hdg_source, dbc, param; restart, preconditioner=false)
 #%%

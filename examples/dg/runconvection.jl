@@ -58,7 +58,7 @@ for (i, ngrid) in enumerate(ngrids), (j, p) in enumerate(ps)
         tm += nstep * dt  # Increment time
     end
     # Compute L2 error for the regular mesh
-    l2_errors[j][i] = l2_error(mesh, u, init)
+    l2_errors[j][i] = l2error(mesh, u, init)
 
     @info "Computing MSE for distorted mesh p = $(p) and size = $(ngrids[i])"
 
@@ -71,7 +71,7 @@ for (i, ngrid) in enumerate(ngrids), (j, p) in enumerate(ps)
         tm += nstep * dt  # Increment time
     end
     # Compute L2 error for the distorted mesh
-    l2_errors_distorted[j][i] = l2_error(mesh_distorted, u_distorted, init)
+    l2_errors_distorted[j][i] = l2error(mesh_distorted, u_distorted, init)
 end
 
 # Plotting error convergence for regular mesh

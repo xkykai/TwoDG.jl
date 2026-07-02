@@ -1,10 +1,13 @@
+# Package extension: NACA airfoil mesh generation via Gmsh. Loaded
+# automatically when both TwoDG and Gmsh are in the environment
+# (`using TwoDG, Gmsh`); `mkmesh_naca` errors with a load hint otherwise.
+module TwoDGGmshExt
+
 using TwoDG
-using CSV
-using DataFrames
-using CairoMakie
+using TwoDG.Meshes: Meshes, fixmesh, mkt2f, setbndnbrs, createnodes
 using LinearAlgebra
 using Gmsh
-    
+
 function naca0012(x, t=10)
     """Generate y-coordinates for NACA0012 airfoil at given x-coordinates"""
     y = 0.05 * t * (0.2969 * sqrt(x) - 0.1260 * x - 0.3516 * x^2 + 0.2843 * x^3 - 0.1015 * x^4)
@@ -201,7 +204,7 @@ function read_gmsh_mesh(filepath)
     # return nodeCoords, elementNodeTags
 end
 
-function mkmesh_naca(t_naca = 10, porder=2, name="naca0012", display_gmsh=false)
+function Meshes.mkmesh_naca(t_naca=10, porder=2, name="naca0012", display_gmsh=false)
     gmsh_naca(t_naca, name, display_gmsh)
     p, t = read_gmsh_mesh("$name.msh")
     p, t = fixmesh(p, t)
@@ -258,3 +261,5 @@ function mkmesh_naca(t_naca = 10, porder=2, name="naca0012", display_gmsh=false)
 
     return mesh
 end
+
+end # module

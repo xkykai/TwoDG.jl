@@ -25,7 +25,7 @@ for (i, c) in enumerate(cs)
     restart = 20
     uh, qh, uhath, gmres_iter = hdg_parsolve(master, mesh, hdg_source, dbc, param; restart)
     gmres_iters[i] = gmres_iter
-    fig = scaplot(mesh, uh, show_mesh=true, title="u, c = $c")
+    fig = scaplot(mesh, uh[:, 1, :], show_mesh=true, title="u, c = $c")
     # save("./output/hdgpar_uhat_c_$(c[1])_$(c[2]).png", fig, px_per_unit=4)
 end
 #%%

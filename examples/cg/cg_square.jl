@@ -46,7 +46,7 @@ for i in eachindex(ps), j in eachindex(ngrids)
     mesh = mkmesh_square(ngrid, ngrid, p, parity, nodetype)
     master = Master(mesh, 4*p)
     uh, energy = cg_solve(mesh, master, source, param)
-    L2_errors[i][j] = √(l2_error(mesh, uh, exact))
+    L2_errors[i][j] = l2error(mesh, uh, exact)
 end
 #%%
 fig = Figure()
