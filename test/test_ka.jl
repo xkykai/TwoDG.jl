@@ -93,6 +93,33 @@ end
         end
     end
 
+    @testset "wave, square mesh (far-field/reflect/incoming boundaries)" begin
+        mesh = mkmesh_square(7, 7, 3, 0, 1)
+        master = Master(mesh)
+        c, k = 1.5, [2.0, 1.0]
+        fwave_leg(c, k, p, t) = sin.(k[1] .* p[:, 1] .+ k[2] .* p[:, 2] .- c * hypot(k[1], k[2]) * t)
+        fwave_pt(c, k, x, t) = sin(k[1] * x[1] + k[2] * x[2] - c * hypot(k[1], k[2]) * t)
+
+        bcm, bcs = [1, 2, 3, 2], zeros(3, 3)
+        # legacy wave app ships with pg=false, but the incoming-wave BC needs
+        # face coordinates — rebuild it with pg=true (the KA path always has them)
+        app0 = mkapp_wave()
+        app = App(; nc=app0.nc, pg=true, arg=app0.arg, bcm, bcs,
+                  finvi=app0.finvi, finvb=app0.finvb, finvv=app0.finvv)
+        app.arg[:c] = c
+        app.arg[:k] = k
+        app.arg[:f] = fwave_leg
+        app_pt = mkapp_wave_pt(; c, k=SVector(k...), f=fwave_pt, bcm, bcs)
+
+        bump(x, y) = exp(-10 * ((x - 0.4)^2 + (y - 0.6)^2))
+        u = initu(mesh, app, [bump, (x, y) -> 0.0, (x, y) -> 0.5 * bump(x, y)])
+        t = 0.3
+
+        r_legacy = rinvexpl(master, mesh, app, u, t)
+        r_ka = rinvexpl_ka(DGContext(master, mesh), app_pt, u, t)
+        @test relerr(r_ka, r_legacy) < 1e-9
+    end
+
     @testset "rk4 time stepping parity (Euler, square)" begin
         γ = 1.4
         uinf = [1.0, 0.3, 0.05, 1.0 / (γ - 1) + 0.5 * (0.3^2 + 0.05^2)]

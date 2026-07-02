@@ -89,6 +89,40 @@ end
     @test norm(Float64.(x32) .- xp) / norm(xp) < 1e-3
 end
 
+@testset "HDG batched assembly + recovery (Phase 3b)" begin
+    source(p) = reshape(sin.(π .* p[:, 1]) .* p[:, 2], :, 1)
+    dbc(p) = 0.1 .* p[:, 1:1] .- 0.2 .* p[:, 2:2]
+    # taud ≠ kappa exercises the localprob (tau = κ + |c·n|) vs elemmat_hdg
+    # (tau = taud + |c·n|) distinction the batch must replicate
+    param = Dict(:kappa => 0.8, :c => [1.0, 0.5], :taud => 1.2)
+
+    # batched ae/fe match the legacy per-element assembly (straight + curved)
+    for mesh in (mkmesh_square(7, 7, 3, 0, 1), mkmesh_trefftz(8, 16, 3))
+        master = Master(mesh, 4 * (mesh.porder + 1))
+        loc = hdg_local_solves(HDGBatch(master, mesh, source, param))
+        ae_ref = similar(loc.ae)
+        fe_ref = similar(loc.fe)
+        for e in axes(mesh.dgnodes, 3)
+            a, f = elemmat_hdg(mesh.dgnodes[:, :, e], master, source, param)
+            ae_ref[:, :, e] .= a
+            fe_ref[:, e] .= f
+        end
+        @test norm(loc.ae .- ae_ref) / norm(ae_ref) < 1e-9
+        @test norm(loc.fe .- fe_ref) / norm(fe_ref) < 1e-9
+    end
+
+    # end-to-end: batched driver (assembly + GMRES + batched recovery) matches
+    # the legacy hdg_parsolve solution
+    mesh = mkmesh_square(9, 9, 3, 0, 1)
+    master = Master(mesh, 16)
+    u_b, q_b, _, _ = hdg_parsolve_batched(master, mesh, source, dbc, param;
+                                          tol=1e-10, restart=200)
+    u_leg, q_leg, _, _ = hdg_parsolve(master, mesh, source, dbc, param;
+                                      tol=1e-10, restart=200)
+    @test norm(u_b .- u_leg) / norm(u_leg) < 1e-8
+    @test norm(q_b .- q_leg) / norm(q_leg) < 1e-8
+end
+
 @testset "HDG incompressible Navier-Stokes (Kovasznay flow)" begin
     # Kovasznay flow at Re = 20 on (0,2) x (-0.5,1.5): an exact solution of
     # the homogeneous steady incompressible Navier-Stokes equations.

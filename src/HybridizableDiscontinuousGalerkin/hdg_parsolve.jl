@@ -174,7 +174,20 @@ function hdg_elemmats(master, mesh, source, dbc, param)
         fe[:, i] = fe_i
     end
 
-    # Apply Dirichlet boundary conditions by modifying local matrices/vectors
+    hdg_applydbc!(ae, fe, master, mesh, dbc)
+
+    return ae, fe
+end
+
+"""
+    hdg_applydbc!(ae, fe, master, mesh, dbc)
+
+Applies the strong Dirichlet boundary condition `dbc` to the boundary-face
+rows of the element matrices/vectors `ae`, `fe` in place.
+"""
+function hdg_applydbc!(ae, fe, master, mesh, dbc)
+    nps = mesh.porder + 1
+
     # Find first boundary face
     ni = findfirst(f -> f[4] < 0, eachrow(mesh.f))
 
