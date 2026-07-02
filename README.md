@@ -69,16 +69,26 @@ Whether you're studying wave propagation, compressible flows, or convection-diff
 ```julia
 using TwoDG
 
-# Generate a mesh for your domain
-mesh = squaremesh_rsquare(1.0, 5)  # 1x1 square, 5 elements per side
+# unit square, 8×8×2 elements of polynomial order 3
+mesh = mkmesh_square(9, 9, 3, 0, 1)
 
-# Solve a Poisson problem with HDG
-# (Check out examples in src/Apps/ for complete scripts)
+# steady Poisson problem, -Δu = f, u = 0 on the boundary, solved with HDG
+f(p) = 2π^2 .* sin.(π .* p[:, 1]) .* sin.(π .* p[:, 2])
+prob = HDGProblem(PoissonEquation(), mesh; bc = Dirichlet(0.0), source = f)
+sol  = solve(prob)                       # or solve(prob, Direct())
+
+l2error(sol, (x, y) -> sin(π * x) * sin(π * y))   # ~1e-6
+
+# plotting needs a Makie backend: `using CairoMakie`, then
+# scaplot(mesh, sol.u[:, 1, :], show_mesh = true)
 ```
+
+Time-dependent conservation laws use `DGProblem` + `RK4()` (with optional
+`ArrayT = CuArray` to run on a GPU); see `examples/`.
 
 ## Getting Started
 
-Explore the example scripts in `src/Apps/` to see the solvers in action:
+Explore the example scripts in `examples/` to see the solvers in action:
 - `runhdg_poisson.jl` - Poisson equation convergence studies
 - `runwavescattering.jl` - Wave scattering on circular domains
 - `runeulerchannel.jl` - Compressible Euler equations with shocks

@@ -19,6 +19,7 @@ docs/src/literated
 docs/Manifest.toml
 
 # Model output
+/output/
 *.dat
 *.data
 *.nc
@@ -59,6 +60,10 @@ docs/Manifest.toml
 # Jupyter Lab stuff and notebooks
 *.ipynb
 .ipynb_checkpoints
+
+# Python
+__pycache__/
+*.pyc
 
 # MacOS stuff
 *.DS_Store
