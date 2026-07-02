@@ -34,10 +34,9 @@ mesh.tcurved .= false  # Disable curved elements
 bcm = [2, 1, 2, 1]  # Boundary condition types for each side of the domain
 bcs = vcat(ui', 0.0 .* ui')  # Boundary condition values
 
-# Application setup for Euler equations
-app = mkapp_euler()
-app = App(app; bcm, bcs)
-app.arg[:gamma] = gam  # Set the specific heat ratio in the application
+# Application setup for Euler equations (pointwise flux convention)
+app = mkapp_euler_pt(; gamma=gam, bcm, bcs)
+ctx = DGContext(master, mesh)  # precomputed geometry for the KA residual path
 
 # Background flow properties
 background_rho = 1  # Background density
@@ -85,7 +84,7 @@ fig = scaplot(mesh, eulereval(u_canonical_J⁺, "Jp", gam), show_mesh=true, figu
 # Time-stepping loop for J⁺
 for i in 1:ncycl
     @info "$tm"  # Log the current time
-    rk4!(rinvexpl, master, mesh, app, u_canonical_J⁺, tm, Δt, nstep)  # Advance the solution using RK4
+    rk4_ka!(ctx, app, u_canonical_J⁺, tm, Δt, nstep)  # Advance the solution using RK4
     tm += nstep * Δt  # Update time
 end
 
@@ -116,7 +115,7 @@ fig = scaplot(mesh, eulereval(u_canonical_J⁻, "Jm", gam), show_mesh=true, figu
 # Time-stepping loop for J⁻
 for i in 1:ncycl
     @info "$tm"
-    rk4!(rinvexpl, master, mesh, app, u_canonical_J⁻, tm, Δt, nstep)
+    rk4_ka!(ctx, app, u_canonical_J⁻, tm, Δt, nstep)
     tm += nstep * Δt
 end
 
@@ -128,6 +127,7 @@ fig = scaplot(mesh, eulereval(u_canonical_J⁻, "Jm", gam), show_mesh=true, figu
 db = 0.2
 mesh_bump = mkmesh_square(m, n, porder, parity, nodetype)
 mesh_bump = mkmesh_duct(mesh_bump, db, dt, H)
+ctx_bump = DGContext(master, mesh_bump)
 
 # Initial conditions for bump geometry
 rho(x, y) = 1
@@ -146,7 +146,7 @@ ncycl = Int(ceil(time_total / Δt / nstep))
 # Time-stepping loop for bump geometry
 for i in 1:ncycl
     @info "$tm"
-    rk4!(rinvexpl, master, mesh_bump, app, u, tm, Δt, nstep)
+    rk4_ka!(ctx_bump, app, u, tm, Δt, nstep)
     tm += nstep * Δt
 end
 

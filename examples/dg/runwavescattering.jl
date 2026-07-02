@@ -1,6 +1,7 @@
 using TwoDG
 using TwoDG.Masters: shape1d
 using Statistics
+using StaticArrays
 using CairoMakie
 
 nodetype = 1
@@ -72,17 +73,13 @@ for porder in porders
     # Boundary condition setup
     bcm = [2, 3]  # Boundary condition markers
     bcs = zeros(3, 3)  # Boundary condition values
-    app = mkapp_wave()  # Create wave application
-    app = App(app; bcm, bcs)  # Apply boundary conditions
 
-    # Define the wave function
-    ub(c, k, p, time) = sin.(p[:,1] .* k[1] .+ p[:,2] .* k[2] .- c * sqrt(k[1]^2 + k[2]^2) * time)
+    # Incoming-wave function (pointwise convention: x::SVector{2}, scalar return)
+    ub(c, k, x, time) = sin(x[1] * k[1] + x[2] * k[2] - c * hypot(k[1], k[2]) * time)
 
-    # Set application parameters
-    app.pg = true
-    app.arg[:c] = c
-    app.arg[:k] = k
-    app.arg[:f] = ub
+    # Create wave application (pointwise flux convention)
+    app = mkapp_wave_pt(; c=Float64(c), k=SVector{2, Float64}(k...), f=ub, bcm, bcs)
+    ctx = DGContext(master, mesh)
 
     # Initialize solution arrays
     u = initu(mesh, app, [0, 0, 0])  # Initial solution
@@ -101,7 +98,7 @@ for porder in porders
             u .= ue
         end
 
-        rk4!(rinvexpl, master, mesh, app, u, tm, dt, nstep)  # Runge-Kutta time-stepping
+        rk4_ka!(ctx, app, u, tm, dt, nstep)  # Runge-Kutta time-stepping
 
         # Increment time
         tm += nstep * dt
@@ -114,7 +111,7 @@ for porder in porders
         ue[:, 1, :] .= -k[1] * ue[:, 3, :] / kmod
         ue[:, 2, :] .= -k[2] * ue[:, 3, :] / kmod
 
-        rk4!(rinvexpl, master, mesh, app, u, tm, dt, nstep)  # Runge-Kutta time-stepping
+        rk4_ka!(ctx, app, u, tm, dt, nstep)  # Runge-Kutta time-stepping
 
         iθ = 1
         for (i, face_num) in enumerate(indf_rad)

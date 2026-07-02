@@ -2,6 +2,7 @@ using TwoDG
 using CairoMakie
 using Statistics
 using LinearAlgebra
+using StaticArrays
 
 nodetype = 1
 
@@ -9,24 +10,13 @@ kappa = 1
 c11 = 10
 c11int = 0
 
-app = mkapp_convection_diffusion()
-app.pg = true
-
-function vf(p)
-    return zero(p)
-end
-
-function src(ug, args...)
-    return zero(ug) .+ 1
-end
+# unit source term (pointwise convention)
+src(u, x, param, time) = SVector(1.0)
 
 bcm = [1]
 bcs = zeros(1, 1)
-app = App(app; bcm, bcs, src)
-app.arg[:vf] = vf
-app.arg[:kappa] = kappa
-app.arg[:c11] = c11
-app.arg[:c11int] = c11int
+app = mkapp_convection_diffusion_pt(SVector(0.0, 0.0);
+                                    kappa, c11, c11int, bcm, bcs, src)
 
 
 time_total = 2
@@ -47,12 +37,13 @@ for (i, porder) in enumerate(porders), (j, size) in enumerate(sizes)
     @info "Computing MSE for p = $(porder) and size = $(size)"
     mesh = mkmesh_circle(size, porder, 1)
     master = Master(mesh, 4*porder)
+    ctx = DGContext(master, mesh)
     u = initu(mesh, app, [0])
 
     time = 0
     for i in 1:ncycl
         @info "time = $(time)"
-        rk4!(rldgexpl, master, mesh, app, u, time, dt, nstep)
+        rk4_ka!(rldgexpl!, ctx, app, u, time, dt, nstep)
         time += nstep * dt
     end
 

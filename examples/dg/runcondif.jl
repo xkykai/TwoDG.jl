@@ -1,4 +1,5 @@
 using TwoDG
+using StaticArrays
 using CairoMakie
 
 m = 21
@@ -17,18 +18,9 @@ g = 0.5*Re - sqrt(0.25*Re^2 + 4.0*π^2)
 bcm = [2, 2, 2, 1]
 bcs = zeros(2, 1)
 
-# Define the Kovasznay flow functions
-function xf(p)
-    return 1.0 .- exp.(g .* p[:,1]) .* cos.(2.0 .* π .* p[:,2])
-end
-
-function yf(p)
-    return 0.5 .* g .* exp.(g .* p[:,1]) .* sin.(2.0 .* π .* p[:,2]) ./ π
-end
-
-function vf(p)
-    return hcat(xf(p), yf(p))
-end
+# Kovasznay velocity field (pointwise convention: x::SVector{2} -> SVector{2})
+vf(x) = SVector(1.0 - exp(g * x[1]) * cos(2π * x[2]),
+                0.5 * g * exp(g * x[1]) * sin(2π * x[2]) / π)
 
 function gaus(x, y, s)
     return exp.(-((x .- 1.0).^2 .+ (y .- s).^2) ./ 0.25)
@@ -56,14 +48,8 @@ for (ip, porder) in enumerate(porders)
 
     master = Master(mesh, 3*porder)
 
-    app = mkapp_convection_diffusion()
-    app.pg = true
-
-    app = App(app; bcm, bcs)
-    app.arg[:vf] = vf
-    app.arg[:kappa] = kappa
-    app.arg[:c11] = c11
-    app.arg[:c11int] = c11int
+    app = mkapp_convection_diffusion_pt(vf; kappa, c11, c11int, bcm, bcs)
+    ctx = DGContext(master, mesh)
 
     elloc = findfirst(i -> sum((mesh.dgnodes[:, 1, i] .≈ 4) .& (mesh.dgnodes[:, 2, i] .≈ 0)) > 0, axes(mesh.dgnodes, 3))
     iploc = findfirst(i -> mesh.dgnodes[i, 1, elloc] ≈ 4 && mesh.dgnodes[i, 2, elloc] ≈ 0, axes(mesh.dgnodes, 1))
@@ -85,7 +71,7 @@ for (ip, porder) in enumerate(porders)
         save("./output/conv_diff_t$(round(time, sigdigits=3))_p$porder.png", fig, px_per_unit=8)
 
         for i in 1:ncycl
-            rk4!(rldgexpl, master, mesh, app, u, time, dt, nstep)
+            rk4_ka!(rldgexpl!, ctx, app, u, time, dt, nstep)
             time += nstep * dt
 
             u_locs_p[ip][i_uloc] = u[iploc, 1, elloc]
