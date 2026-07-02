@@ -14,7 +14,7 @@ mutable struct App{N, P, A, BM, BS, FII, FIB, FIV, FVI, FVB, FVV, FVUB, S}
     src::S
 end
 
-function App(; nc, pg=false, arg=Dict(), bcm=nothing, bcs=nothing, finvi=nothing, finvb=nothing, finvv=nothing, fvisi=nothing, fvisb=nothing, fvisv=nothing, fvisub=nothing, src=nothing)
+function App(; nc, pg=false, arg=(;), bcm=nothing, bcs=nothing, finvi=nothing, finvb=nothing, finvv=nothing, fvisi=nothing, fvisb=nothing, fvisv=nothing, fvisub=nothing, src=nothing)
     return App(nc, pg, arg, bcm, bcs, finvi, finvb, finvv, fvisi, fvisb, fvisv, fvisub, src)
 end
 

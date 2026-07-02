@@ -9,10 +9,8 @@ export
     mkapp_convection_diffusion_pt
 
 include("app.jl")
-include("convection.jl")
-include("wave.jl")
 include("euler.jl")
-include("convection_diffusion.jl")
 include("pointwise.jl")
+include("legacy_apps.jl")
 
 end
