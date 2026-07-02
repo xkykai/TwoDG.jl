@@ -61,7 +61,7 @@ using StaticArrays
         errs = map((5, 9)) do n
             mesh = mkmesh_square(n, n, p, 0, 1)
             u = initu(mesh, app, [exact])
-            sqrt(l2_error(mesh, u[:, 1, :], exact))
+            l2error(mesh, u[:, 1, :], exact)
         end
         rate = log2(errs[1] / errs[2])
         @test rate > p + 0.5

@@ -25,17 +25,16 @@ using LinearAlgebra
 
         u, q, uhat = hdg_solve(master, mesh, source, dbc, param)
         ustar = hdg_postprocess(master, mesh, master1, mesh1, u, q ./ param[:kappa])
-        push!(errs_u, sqrt(l2_error(mesh, u[:, 1, :], exact)))
-        push!(errs_ustar, sqrt(l2_error(mesh1, ustar[:, 1, :], exact)))
+        push!(errs_u, l2error(mesh, u[:, 1, :], exact))
+        push!(errs_ustar, l2error(mesh1, ustar[:, 1, :], exact))
     end
 
     # O(h^{p+1}) for u; postprocessing gains accuracy on every mesh
     @test log2(errs_u[1] / errs_u[2]) > porder + 0.5
     @test all(errs_ustar .< errs_u ./ 2)
 
-    # matrix-free block-Jacobi GMRES: same solution quality as the direct
-    # solve (the two paths pin boundary-touching trace endpoints differently,
-    # so they agree to discretization — not solver — accuracy), and the
+    # matrix-free block-Jacobi GMRES: direct LU and GMRES now assemble the
+    # identical trace system, so they agree to solver accuracy, and the
     # preconditioner must change the iteration count, not the answer
     mesh = mkmesh_square(5, 5, porder, 0, 1)
     master = Master(mesh, ngauss)
@@ -44,8 +43,8 @@ using LinearAlgebra
                                restart=200, tol=1e-10)
     upn, _, _, _ = hdg_parsolve(master, mesh, source, dbc, param;
                                 restart=200, tol=1e-10, preconditioner=false)
-    @test sqrt(l2_error(mesh, up, exact)) < 1.5 * sqrt(l2_error(mesh, u[:, 1, :], exact))
-    @test norm(vec(up) .- vec(upn)) / norm(upn) < 1e-8
+    @test norm(vec(up) .- vec(u)) / norm(vec(u)) < 1e-7
+    @test norm(vec(up) .- vec(upn)) / norm(vec(upn)) < 1e-8
 end
 
 @testset "HDG KA/Krylov trace solver (Phase 3)" begin
@@ -75,12 +74,13 @@ end
     xnp, _ = hdg_gmres_ka(sys; tol=1e-10, restart=200, preconditioner=false)
     @test norm(xp .- xnp) / norm(xnp) < 1e-6
 
-    # full driver matches the legacy handwritten-GMRES path
-    u_ka, q_ka, _, niter = hdg_parsolve_ka(master, mesh, source, dbc, param; tol=1e-10, restart=200)
-    u_leg, q_leg, _, _ = hdg_parsolve(master, mesh, source, dbc, param; tol=1e-10, restart=200)
+    # full iterative driver matches the direct (sparse LU) solve of the same
+    # trace system — a real assembly + solver consistency check
+    u_ka, q_ka, _, niter = hdg_parsolve(master, mesh, source, dbc, param; tol=1e-10, restart=200)
+    u_dir, q_dir, _ = hdg_solve(master, mesh, source, dbc, param)
     @test niter > 0
-    @test norm(u_ka .- u_leg) / norm(u_leg) < 1e-8
-    @test norm(q_ka .- q_leg) / norm(q_leg) < 1e-8
+    @test norm(u_ka .- u_dir) / norm(u_dir) < 1e-7
+    @test norm(q_ka .- q_dir) / norm(q_dir) < 1e-7
 
     # Float32 system solves and stays close to the Float64 solution
     sys32 = HDGSystem(ae, fe, mesh; T=Float32)
@@ -156,10 +156,9 @@ end
 
     result = hdg_ns_solve(master, mesh, ν, dbc; τ=1.0, maxiter=12, tol=1e-10, verbose=false)
 
-    # l2_error returns the squared L2 error
-    err_u = sqrt(l2_error(mesh, result.u[:, 1, :], u1e) +
-                 l2_error(mesh, result.u[:, 2, :], u2e))
-    err_p = sqrt(l2_error(mesh, result.p, pe))
+    err_u = hypot(l2error(mesh, result.u[:, 1, :], u1e),
+                  l2error(mesh, result.u[:, 2, :], u2e))
+    err_p = l2error(mesh, result.p, pe)
     @test err_u < 1e-2
     @test err_p < 1e-2
     # the recovered velocity gradient should be (discretely) divergence free
@@ -170,8 +169,8 @@ end
     # divergence-free postprocessing: u* is more accurate than u and its
     # pointwise divergence vanishes
     ustar = hdg_ns_postprocess(master, mesh, master1, mesh1, result)
-    err_us = sqrt(l2_error(mesh1, ustar[:, 1, :], u1e) +
-                  l2_error(mesh1, ustar[:, 2, :], u2e))
+    err_us = hypot(l2error(mesh1, ustar[:, 1, :], u1e),
+                   l2error(mesh1, ustar[:, 2, :], u2e))
     @test err_us < err_u / 2
     maxdiv = 0.0
     sh = master1.shap

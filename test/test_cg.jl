@@ -12,7 +12,7 @@ using Test
         mesh = mkmesh_square(9, 9, porder, 0, 1)
         master = Master(mesh, 4porder)
         uh, energy = cg_solve(mesh, master, source, param)
-        sqrt(l2_error(mesh, uh, exact))
+        l2error(mesh, uh, exact)
     end
 
     @test errs[1] < 3e-2

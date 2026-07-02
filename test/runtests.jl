@@ -8,4 +8,5 @@ using Test
     include("test_ka.jl")
     include("test_cg.jl")
     include("test_hdg.jl")
+    include("test_interface.jl")
 end
