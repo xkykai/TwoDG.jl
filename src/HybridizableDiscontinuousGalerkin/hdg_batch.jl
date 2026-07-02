@@ -352,7 +352,8 @@ assembly ([`hdg_local_solves`](@ref)) and local recovery
 face-block global assembly (`hdg_densesystem`) remain on the CPU. `kwargs` are
 forwarded to `hdg_gmres_ka`.
 
-Returns `(uh, qh, uhath, niter)` like `hdg_parsolve`.
+Returns `(uh, qh, uhath, niter)` with the same shapes as `hdg_parsolve`
+(`uh (npl, 1, nt)`, `qh (npl, 2, nt)`, `uhath (nps, nf)`).
 """
 function hdg_parsolve_batched(master, mesh, source, dbc, param;
                               ArrayT=Array, T::Type{<:AbstractFloat}=Float64,
@@ -368,10 +369,12 @@ function hdg_parsolve_batched(master, mesh, source, dbc, param;
     x, stats = hdg_gmres_ka(sys; kwargs...)
 
     uh_d, qx_d, qy_d = hdg_recover(batch, loc, x)
-    uh = Array(uh_d)
+    uh = Array{Float64}(undef, batch.npl, 1, batch.nt)
+    uh[:, 1, :] .= Array(uh_d)
     qh = Array{Float64}(undef, batch.npl, 2, batch.nt)
     qh[:, 1, :] .= Array(qx_d)
     qh[:, 2, :] .= Array(qy_d)
+    uhath = reshape(Float64.(Array(x)), mesh.porder + 1, :)
 
-    return uh, qh, Array(x), stats.niter
+    return uh, qh, uhath, stats.niter
 end

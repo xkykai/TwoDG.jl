@@ -144,22 +144,11 @@ function hdg_gmres_ka(sys::HDGSystem{T}; restart=80, tol=1e-6, maxit=2000,
 end
 
 """
-    hdg_parsolve_ka(master, mesh, source, dbc, param;
-                    ArrayT=Array, T=Float64, kwargs...)
+    hdg_parsolve_ka(master, mesh, source, dbc, param; kwargs...)
 
-GPU-capable counterpart of [`hdg_parsolve`](@ref): identical CPU element
-assembly and local recovery, but the trace system is solved with
-[`hdg_gmres_ka`](@ref) on the backend of `ArrayT` (e.g. `ArrayT=CuArray` with
-CUDA.jl loaded). `kwargs` are forwarded to `hdg_gmres_ka`.
-
-Returns `(uh, qh, uhath, niter)` like `hdg_parsolve`.
+Alias of [`hdg_parsolve`](@ref), kept for backwards compatibility:
+`hdg_parsolve` itself now solves the trace system with the KA/Krylov GMRES
+(`ArrayT=CuArray` for a GPU solve). Returns `(uh, qh, uhath, niter)`.
 """
-function hdg_parsolve_ka(master, mesh, source, dbc, param;
-                         ArrayT=Array, T::Type{<:AbstractFloat}=Float64, kwargs...)
-    ae, fe = hdg_elemmats(master, mesh, source, dbc, param)
-    sys = adapt(ArrayT, HDGSystem(ae, fe, mesh; T))
-    x, stats = hdg_gmres_ka(sys; kwargs...)
-    uhath = Array(x)
-    uh, qh = hdg_localrecovery(master, mesh, Float64.(uhath), source, param)
-    return uh, qh, uhath, stats.niter
-end
+hdg_parsolve_ka(master, mesh, source, dbc, param; kwargs...) =
+    hdg_parsolve(master, mesh, source, dbc, param; kwargs...)

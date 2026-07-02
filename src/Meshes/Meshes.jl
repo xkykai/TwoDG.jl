@@ -19,7 +19,17 @@ include("makemesh_circle.jl")
 include("makemesh_square.jl")
 include("makemesh_duct.jl")
 include("makemesh_trefftz.jl")
-include("makemesh_naca.jl")
 include("makemesh_lshape.jl")
+
+"""
+    mkmesh_naca(t_naca=10, porder=2, name="naca0012", display_gmsh=false)
+
+Generate a curved high-order mesh around a NACA 4-digit symmetric airfoil
+(thickness `t_naca` in percent of chord). Implemented in the `TwoDGGmshExt`
+package extension: it becomes available once Gmsh.jl is loaded
+(`using TwoDG, Gmsh`).
+"""
+mkmesh_naca(args...; kwargs...) =
+    error("mkmesh_naca requires Gmsh.jl. Load it first: `using Gmsh`.")
 
 end

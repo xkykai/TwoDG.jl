@@ -1,6 +1,5 @@
 using Jacobi
 using Polynomials
-using DSP
 
 """      
 koornwinder1d vandermonde matrix for legenedre polynomials in [0,1]
@@ -124,11 +123,9 @@ function koornwinder2d(x::AbstractMatrix{<:Real}, p::Int)
         pp = poly_jacobi(p_order, 0, 0)
         qp = poly_jacobi(q_order, 2 * p_order + 1, 0)
         
-        # Convolve qp with [-0.5, 0.5] p_order times.
-        # Note Polynomual convention is different between Python and Julia.
-        # In Python, the coefficients are in decreasing order, while in Julia, they are in increasing order.
+        # Multiply by the collapsed-coordinate factor ((1 - x) / 2)^p_order
         for j in 1:p_order
-            qp = Polynomial(reverse(conv([-0.5, 0.5], reverse(qp.coeffs))))
+            qp *= Polynomial([0.5, -0.5])
         end
         
         # Evaluate the polynomials at the mapped coordinates.
@@ -155,9 +152,9 @@ function koornwinder2d(x::AbstractMatrix{<:Real}, p::Int)
         pp = poly_jacobi(p_order, 0, 0)
         qp = poly_jacobi(q_order, 2 * p_order + 1, 0)
         for j in 1:p_order
-            qp = Polynomial(reverse(conv([-0.5, 0.5], reverse(qp.coeffs))))
+            qp *= Polynomial([0.5, -0.5])
         end
-        
+
         # Compute derivative polynomials.
         dpp = derivative(pp)
         dqp = derivative(qp)

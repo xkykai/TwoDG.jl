@@ -1,21 +1,32 @@
 """
-initu initialize vector of unknowns
- mesh:             mesh structure
- app:              application structure
- value[app.nc]:    list containing
-                   when value[i] is a float u[:,app.nc,:] = value[i]
-                   when value[i] is a function,
-                                u[:,app.nc,:] = value[i](mesh.dgnodes)
-u[npl,app.nc,nt]: scalar function to be plotted
+    interpolate(mesh, values)
+
+Nodal interpolation of initial/reference data onto the DG nodes. `values` is
+a collection with one entry per solution component; each entry is either a
+number (constant field) or a function `(x, y) -> value`. Returns
+`u (npl, nc, nt)` with `nc = length(values)`.
 """
-function initu(mesh, app, value)
-    u = zeros(size(mesh.dgnodes, 1), app.nc, size(mesh.dgnodes, 3))
-    for i in 1:app.nc
-        if isa(value[i], Number)
-            u[:,i,:] .= value[i]
+function interpolate(mesh, values)
+    nc = length(values)
+    u = zeros(size(mesh.dgnodes, 1), nc, size(mesh.dgnodes, 3))
+    for i in 1:nc
+        if isa(values[i], Number)
+            u[:, i, :] .= values[i]
         else
-            u[:,i,:] .= value[i].(mesh.dgnodes[:, 1, :], mesh.dgnodes[:, 2, :])
+            u[:, i, :] .= values[i].(mesh.dgnodes[:, 1, :], mesh.dgnodes[:, 2, :])
         end
     end
     return u
+end
+
+"""
+    initu(mesh, app, value)
+
+Initialize the vector of unknowns `u (npl, app.nc, nt)` from per-component
+constants or functions (see [`interpolate`](@ref), which this wraps).
+"""
+function initu(mesh, app, value)
+    length(value) == app.nc ||
+        throw(ArgumentError("expected $(app.nc) components, got $(length(value))"))
+    return interpolate(mesh, value)
 end

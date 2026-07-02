@@ -1,9 +1,9 @@
 module Utils
 
-export 
+export
     unique_rows,
     newton_raphson,
-    initu
+    initu, interpolate
 
 include("unique_rows.jl")
 include("rootfinding.jl")

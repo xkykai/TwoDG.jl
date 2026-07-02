@@ -1,6 +1,7 @@
 using LinearAlgebra
 using Adapt
 import KernelAbstractions
+using ..Geometry: RefTables, face_geometry!, element_geometry!
 
 """
     DGContext{T}(master, mesh; T=Float64)
@@ -66,12 +67,9 @@ function DGContext(master, mesh; T::Type{<:AbstractFloat}=Float64)
     npl = size(mesh.dgnodes, 1)
     perm = master.perm
     np1d = size(perm, 1)
-    gw1d, gwgh = master.gw1d, master.gwgh
-    ng1d, ng = length(gw1d), length(gwgh)
+    ng1d, ng = length(master.gw1d), length(master.gwgh)
 
-    sh1d = master.sh1d[:, 1, :]   # (np1d, ng1d) values
-    sh1dξ = master.sh1d[:, 2, :]  # (np1d, ng1d) reference derivatives
-    shap = master.shap[:, 1, :]   # (npl, ng) values
+    rt = RefTables(master)
 
     ni = something(findfirst(i -> f[i, 4] < 0, 1:nf), nf + 1) - 1
 
@@ -102,34 +100,13 @@ function DGContext(master, mesh; T::Type{<:AbstractFloat}=Float64)
         end
 
         coords = mesh.dgnodes[perml, :, el]   # (np1d, 2)
-        if mesh.fcurved[i]
-            for g in 1:ng1d
-                τ1 = dot(@view(sh1dξ[:, g]), @view(coords[:, 1]))
-                τ2 = dot(@view(sh1dξ[:, g]), @view(coords[:, 2]))
-                τn = sqrt(τ1^2 + τ2^2)
-                nlg[g, 1, i] = τ2 / τn
-                nlg[g, 2, i] = -τ1 / τn
-                dws[g, i] = gw1d[g] * τn
-            end
-        else
-            dx1 = p[f[i, 2], 1] - p[f[i, 1], 1]
-            dx2 = p[f[i, 2], 2] - p[f[i, 1], 2]
-            dsdxi = sqrt(dx1^2 + dx2^2)
-            for g in 1:ng1d
-                nlg[g, 1, i] = dx2 / dsdxi
-                nlg[g, 2, i] = -dx1 / dsdxi
-                dws[g, i] = gw1d[g] * dsdxi
-            end
-        end
-        pfg[:, :, i] .= sh1d' * coords
+        edge = mesh.fcurved[i] ? nothing :
+               (p[f[i, 2], 1] - p[f[i, 1], 1], p[f[i, 2], 2] - p[f[i, 1], 2])
+        face_geometry!(@view(nlg[:, :, i]), @view(dws[:, i]), @view(pfg[:, :, i]),
+                       rt, coords; edge)
     end
 
     # --- elements: geometry at 2D quadrature points + inverse mass ---
-    shapxi = master.shap[:, 2, :]
-    shapet = master.shap[:, 3, :]
-    shapxig = shapxi * Diagonal(gwgh)
-    shapetg = shapet * Diagonal(gwgh)
-
     shapx = zeros(npl, ng, nt)
     shapy = zeros(npl, ng, nt)
     wjac = zeros(ng, nt)
@@ -137,36 +114,16 @@ function DGContext(master, mesh; T::Type{<:AbstractFloat}=Float64)
     Minv = zeros(npl, npl, nt)
 
     for i in 1:nt
-        if !mesh.tcurved[i]
-            xxi = p[t[i, 2], 1] - p[t[i, 1], 1]
-            xet = p[t[i, 3], 1] - p[t[i, 1], 1]
-            yxi = p[t[i, 2], 2] - p[t[i, 1], 2]
-            yet = p[t[i, 3], 2] - p[t[i, 1], 2]
-            detJ = xxi * yet - xet * yxi
-            shapx[:, :, i] .= shapxig .* yet .- shapetg .* yxi
-            shapy[:, :, i] .= .-shapxig .* xet .+ shapetg .* xxi
-            wjac[:, i] .= gwgh .* detJ
-            M = master.mass .* detJ
-        else
-            coords = mesh.dgnodes[:, :, i]
-            for j in 1:ng
-                J = master.shap[:, 2:3, j]' * coords
-                invJ = inv(J)
-                dJ = det(J)
-                shap∇ = invJ * master.shap[:, 2:3, j]'
-                shapx[:, j, i] .= shap∇[1, :] .* gwgh[j] .* dJ
-                shapy[:, j, i] .= shap∇[2, :] .* gwgh[j] .* dJ
-                wjac[j, i] = gwgh[j] * dJ
-            end
-            M = shap * Diagonal(@view wjac[:, i]) * shap'
-        end
+        verts = mesh.tcurved[i] ? nothing : p[t[i, :], :]
+        M = element_geometry!(@view(shapx[:, :, i]), @view(shapy[:, :, i]),
+                              @view(wjac[:, i]), @view(pg[:, :, i]),
+                              rt, mesh.dgnodes[:, :, i]; verts)
         Minv[:, :, i] .= inv(M)
-        pg[:, :, i] .= shap' * mesh.dgnodes[:, :, i]
     end
 
     return DGContext(ni, nf, nt, npl, np1d, ng, ng1d,
                      facecon, f_el,
                      T.(nlg), T.(dws), T.(pfg),
                      T.(shapx), T.(shapy), T.(wjac), T.(pg), T.(Minv),
-                     T.(sh1d), T.(shap))
+                     T.(rt.sh1d), T.(rt.shap))
 end

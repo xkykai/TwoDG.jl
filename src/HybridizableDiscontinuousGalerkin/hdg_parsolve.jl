@@ -220,8 +220,9 @@ end
 """
     hdg_localrecovery(master, mesh, uhath, source, param)
 
-Recovers the element-local solution `uh (npl, nt)` and flux `qh (npl, 2, nt)`
-from the global trace vector `uhath` by solving the local problems (threaded).
+Recovers the element-local solution `uh (npl, 1, nt)` and flux
+`qh (npl, 2, nt)` from the global trace vector `uhath` by solving the local
+problems (threaded).
 """
 function hdg_localrecovery(master, mesh, uhath, source, param)
     nps = mesh.porder + 1
@@ -247,14 +248,14 @@ function hdg_localrecovery(master, mesh, uhath, source, param)
     end
 
     # Solve local problems to get uh and qh using the computed trace values
-    uh = zeros(npl, nt)
+    uh = zeros(npl, 1, nt)
     qh = zeros(npl, 2, nt)
 
     # Local problem computation in parallel
     @views Threads.@threads for i in 1:nt
         uhath_local = uhath[elcon[:, i]]  # Extract trace values for this element
         uh_i, qh_i = localprob(mesh.dgnodes[:, :, i], master, uhath_local, source, param)
-        uh[:, i] .= uh_i
+        uh[:, 1, i] .= uh_i
         qh[:, :, i] .= qh_i
     end
 
@@ -262,9 +263,15 @@ function hdg_localrecovery(master, mesh, uhath, source, param)
 end
 
 """
-    hdg_parsolve(master, mesh, source, dbc, param)
+    hdg_parsolve(master, mesh, source, dbc, param;
+                 ArrayT=Array, T=Float64, restart=80, tol=1e-6, maxit=2000,
+                 preconditioner=true, verbose=false)
 
-Solves the convection-diffusion equation using the HDG method.
+Solves the convection-diffusion equation using the HDG method with restarted,
+block-Jacobi-preconditioned GMRES (Krylov.jl) on the statically condensed
+trace system. The iteration runs on the KernelAbstractions backend of
+`ArrayT` (pass `ArrayT=CuArray` with CUDA.jl loaded for a GPU solve); element
+assembly and local recovery stay on the CPU.
 
 # Arguments
 - `master`: master structure
@@ -274,23 +281,28 @@ Solves the convection-diffusion equation using the HDG method.
 - `param`: dictionary with parameters:
   - `param[:kappa]`: diffusivity coefficient
   - `param[:c]`: convective velocity
+  - `param[:taud]`: stabilization parameter
 
 # Returns
-- `uh`: approximate scalar variable
-- `qh`: approximate flux
-- `uhath`: approximate trace
+- `uh (npl, 1, nt)`: approximate scalar variable
+- `qh (npl, 2, nt)`: approximate flux
+- `uhath (nps, nf)`: approximate trace
+- `niter`: number of GMRES iterations
 """
-@inline function hdg_parsolve(master, mesh, source, dbc, param; kwargs...)
+function hdg_parsolve(master, mesh, source, dbc, param;
+                      ArrayT=Array, T::Type{<:AbstractFloat}=Float64, kwargs...)
     nps = mesh.porder + 1
 
     ae, fe = hdg_elemmats(master, mesh, source, dbc, param)
+    sys = adapt(ArrayT, HDGSystem(ae, fe, mesh; T))
 
     # Solve global system for trace variable (uhath)
-    uhath, _, gmres_iter, _ = hdg_gmres(ae, fe, mesh.t2f, mesh.f, nps, f2f=mesh.f2f; kwargs...)
+    x, stats = hdg_gmres_ka(sys; kwargs...)
+    uhath = reshape(Float64.(Array(x)), nps, :)
 
-    uh, qh = hdg_localrecovery(master, mesh, uhath, source, param)
+    uh, qh = hdg_localrecovery(master, mesh, vec(uhath), source, param)
 
-    return uh, qh, uhath, gmres_iter
+    return uh, qh, uhath, stats.niter
 end
 
 """
@@ -357,178 +369,6 @@ end
         # Copy thread-local result to global result array
         result_2d[:, i] .= local_result
     end
-end
-
-"""
-    hdg_gmres(AE, FE, t2f, f, npf; 
-              x=nothing, restart=160, tol=1e-6, maxit=1000)
-
-HDG GMRES solver with block Jacobi preconditioning.
-
-# Arguments
-- `AE::Array`: Element matrices
-- `FE::Array`: Element vectors
-- `t2f::Array{Int}`: Element to face connectivity
-- `f::Array{Int}`: Face to element connectivity
-- `npf::Int`: Number of points per face
-- `x::Union{Array,Nothing}=nothing`: Initial guess (optional)
-- `restart::Int=160`: Restart parameter
-- `tol::Float64=1e-6`: Tolerance
-- `maxit::Int=1000`: Maximum iterations
-
-# Returns
-- `x::Array`: Solution vector
-- `flags::Int`: Flag indicating convergence status
-- `iter::Int`: Number of iterations
-- `rev::Array`: Residual history
-"""
-@inline function hdg_gmres(AE, FE, t2f, f, npf; x=nothing, restart=80, tol=1e-6, maxit=2000, f2f=nothing, ortho=1, preconditioner=true)
-    # Assemble the global system in dense format
-    A, b = hdg_densesystem(AE, FE, f, t2f, npf)
-
-    if preconditioner
-        # Compute the block Jacobi preconditioner
-        B = compute_blockjacobi(A)
-    end
-    
-    # Make face-to-face connectivities if not provided
-    if f2f === nothing
-        f2f = mkf2f(f, t2f)
-    end
-
-    N = length(b)
-    if isnothing(x)
-        x = zeros(N)
-    end
-    
-    # b0 is the RHS of the (left-preconditioned) system actually iterated on:
-    # B A x = B b when preconditioning, A x = b otherwise. The residuals inside
-    # the loop must be measured against b0, not b, or the iteration silently
-    # solves B A x = b (wrong solution that still reports convergence).
-    b0 = copy(b)
-
-    if preconditioner
-        # Apply preconditioner to RHS
-        apply_blockjacobi!(b0, B, b0)
-    end
-
-    nrmb = norm(b0)
-    
-    # Pre-allocate arrays for GMRES
-    H = zeros(restart+1, restart)       # Hessenberg matrix
-    v = zeros(N, restart+1)             # Krylov basis vectors
-    e1 = zeros(restart+1)
-    e1[1] = 1.0                         # First unit vector for residual
-    rev = zeros(restart)                # Residual history
-    cs = ones(restart+1)                # Cosines for Givens rotations
-    sn = zeros(restart+1)               # Sines for Givens rotations
-    H_col = zeros(restart+1)            # Temporary storage for column of H
-    
-    # Pre-allocate for matrix-vector product
-    d = zeros(N)
-    r = zeros(N)
-    
-    # Pre-allocate for solution update
-    y_full = zeros(restart)
-    
-    flags = 10  # Not converged by default
-    iter_count = 0
-    cycle = 0
-    
-    @views while true
-        # Compute residual: r = b - Ax
-        hdg_matvec!(d, A, x, f2f)
-        
-        if preconditioner
-            apply_blockjacobi!(d, B, d)
-        end
-
-        r .= b0 .- d
-        
-        beta = norm(r)
-        v[:, 1] .= r ./ beta  # First Krylov vector
-        res = beta
-        iter_count += 1
-        
-        if iter_count <= length(rev)
-            rev[iter_count] = res
-        end
-        
-        g = beta .* e1  # RHS for the minimization problem
-        y_length = 0
-
-        for j in 1:restart
-            # Matrix-vector product with current Krylov vector
-            hdg_matvec!(d, A, view(v, :, j), f2f)
-            
-            if preconditioner
-                apply_blockjacobi!(d, B, d)
-            end
-            
-            v[:, j+1] .= d
-            
-            # Arnoldi process to orthogonalize the new basis vector
-            arnoldi!(H, v, j, ortho)
-            H[j+1, j] = norm(view(v, :, j+1))
-
-            if H[j+1, j] != 0.0
-                v[:, j+1] ./= H[j+1, j]  # Normalize
-            else
-                break  # Linear dependence detected
-            end
-
-            # Extract column for Givens rotations
-            H_col[1:j+1] .= view(H, 1:(j+1), j)
-            
-            # Apply Givens rotations to transform H to upper triangular
-            givens_rotation!(H_col[1:j+1], g, cs, sn, j)
-            H[1:(j+1), j] .= H_col[1:j+1]
-
-            y_length = j
-
-            # Current residual norm estimate
-            res = abs(g[j+1])
-            iter_count += 1
-            
-            if iter_count <= length(rev)
-                rev[iter_count] = res
-            end
-            
-            # Check convergence
-            if res / nrmb <= tol
-                flags = 0  # Converged
-                break
-            end
-            
-            # Check maximum iterations
-            if iter_count >= maxit
-                flags = 1  # Max iterations reached
-                break
-            end
-        end
-        
-        # Solve the upper triangular system to get Krylov coefficients
-        y_view = view(y_full, 1:y_length)
-        back_solve!(y_view, view(H, 1:y_length, 1:y_length), view(g, 1:y_length))
-        
-        # Update solution: x = x + V*y
-        x .+= v[:, 1:y_length] * y_view
-        cycle += 1
-        
-        if flags < 10
-            println("gmres($restart) converges at $iter_count iterations with relative residual $(res/nrmb)")
-            break
-        end
-    end
-    
-    # Compute final residual of the original (unpreconditioned) system
-    rev ./= nrmb
-    hdg_matvec!(d, A, x, f2f)
-    r = vec(b) - vec(d)
-    final_residual = norm(r) / norm(b)
-    println("Final relative residual (unpreconditioned): $final_residual")
-
-    return x, flags, iter_count, rev
 end
 
 """
@@ -632,188 +472,3 @@ end
     end
 end
 
-"""
-    arnoldi(H, v, j, ortho=1)
-
-Performs the Arnoldi process to orthogonalize v[:, j+1] against previous basis vectors.
-
-# Arguments
-- `H::AbstractMatrix`: Hessenberg matrix
-- `v::AbstractMatrix`: Krylov subspace basis vectors
-- `j::Integer`: Current iteration
-- `ortho::Integer=1`: Orthogonalization method (1: MGS, 0: CGS)
-
-# Returns
-- `H::AbstractMatrix`: Updated Hessenberg matrix
-- `v::AbstractMatrix`: Updated basis vectors
-"""
-@inline function arnoldi(H::AbstractMatrix, v::AbstractMatrix, j::Integer, ortho::Integer=1)
-    if ortho == 1
-        # Modified Gram-Schmidt (MGS)
-        # Sequentially orthogonalize against each previous vector
-        for i in 1:j
-            H[i, j] = dot(v[:, j+1], v[:, i])
-            v[:, j+1] .= v[:, j+1] .- H[i, j] .* v[:, i]
-        end
-    else
-        # Classical Gram-Schmidt (CGS)
-        # Compute all projections at once
-        H[1:j, j] = v[:, 1:j]' * v[:, j+1]
-        # Orthogonalize against all previous vectors at once
-        v[:, j+1] = v[:, j+1] - v[:, 1:j] * H[1:j, j]
-    end
-
-    return H, v
-end
-
-"""
-    arnoldi!(H, v, j, ortho=1)
-
-Performs the Arnoldi process to orthogonalize v[:, j+1] against previous basis vectors in a mutating way.
-
-# Arguments
-- `H::AbstractMatrix`: Hessenberg matrix
-- `v::AbstractMatrix`: Krylov subspace basis vectors
-- `j::Integer`: Current iteration
-- `ortho::Integer=1`: Orthogonalization method (1: MGS, 0: CGS)
-"""
-@inline function arnoldi!(H::AbstractMatrix, v::AbstractMatrix, j::Integer, ortho::Integer=1)
-    @views if ortho == 1
-        # Modified Gram-Schmidt (MGS) - more stable but more sequential
-        # Sequentially orthogonalize against each previous vector
-        for i in 1:j
-            H[i, j] = v[:, j+1] ⋅ v[:, i]  # Project onto basis vector
-            v[:, j+1] .= v[:, j+1] .- H[i, j] .* v[:, i]  # Subtract projection
-        end
-    else
-        # Classical Gram-Schmidt (CGS) - less stable but more parallelizable
-        # Compute all projections at once
-        H[1:j, j] .= v[:, 1:j]' * v[:, j+1]
-        # Orthogonalize against all previous vectors at once
-        v[:, j+1] .= v[:, j+1] .- v[:, 1:j] * H[1:j, j]
-    end
-end
-
-"""
-    givens_rotation(H, s, cs, sn, i)
-
-Apply Givens rotation to the i-th column of H and update cs, sn, and s.
-This is a key component of the GMRES algorithm that transforms the Hessenberg
-matrix to upper triangular form via a series of plane rotations.
-
-# Arguments
-- `H`: Current column of the Hessenberg matrix
-- `s`: Residual vector
-- `cs`: Cosine values for rotations
-- `sn`: Sine values for rotations
-- `i`: Current iteration index
-
-# Returns
-- `H`: Updated Hessenberg matrix column
-- `s`: Updated residual vector
-- `cs`: Updated cosine values
-- `sn`: Updated sine values
-"""
-@inline function givens_rotation(H, s, cs, sn, i)
-    rotation_matrix = zeros(2, 2)
-    @views for k in 1:i-1
-        # Apply previous Givens rotations to current column
-        rotation_matrix[1, 1] = cs[k]
-        rotation_matrix[1, 2] = sn[k]
-        rotation_matrix[2, 1] = -sn[k]
-        rotation_matrix[2, 2] = cs[k]
-        H[k:k+1] = rotation_matrix * H[k:k+1]
-    end
-
-    # Compute new Givens rotation to eliminate H[i+1,i]
-    cs[i] = abs(H[i]) / sqrt(H[i]^2 + H[i+1]^2)
-    sn[i] = H[i+1] / H[i] * cs[i]
-    
-    # Apply new Givens rotation to H
-    H[i] = cs[i] * H[i] + sn[i] * H[i+1]
-    H[i+1] = 0.0  # Zero out the subdiagonal element
-
-    # Apply new Givens rotation to s (residual vector)
-    rotation_matrix[1, 1] = cs[i]
-    rotation_matrix[1, 2] = sn[i]
-    rotation_matrix[2, 1] = -sn[i]
-    rotation_matrix[2, 2] = cs[i]
-    s[i:i+1] = rotation_matrix * [s[i], 0]
-    return H, s, cs, sn
-end
-
-"""
-    givens_rotation(H, s, cs, sn, i)
-
-Apply Givens rotation to the i-th column of H and update cs, sn, and s.
-This is a key component of the GMRES algorithm that transforms the Hessenberg
-matrix to upper triangular form via a series of plane rotations.
-
-# Arguments
-- `H`: Current column of the Hessenberg matrix
-- `s`: Residual vector
-- `cs`: Cosine values for rotations
-- `sn`: Sine values for rotations
-- `i`: Current iteration index
-
-# Returns
-- `H`: Updated Hessenberg matrix column
-- `s`: Updated residual vector
-- `cs`: Updated cosine values
-- `sn`: Updated sine values
-"""
-@inline function givens_rotation!(H, s, cs, sn, i)
-    rotation_matrix = zeros(2, 2)
-    @views for k in 1:i-1
-        # Apply previous Givens rotations to current column
-        rotation_matrix[1, 1] = cs[k]
-        rotation_matrix[1, 2] = sn[k]
-        rotation_matrix[2, 1] = -sn[k]
-        rotation_matrix[2, 2] = cs[k]
-        H[k:k+1] = rotation_matrix * H[k:k+1]
-    end
-
-    # Compute new Givens rotation to eliminate H[i+1,i]
-    cs[i] = abs(H[i]) / sqrt(H[i]^2 + H[i+1]^2)
-    sn[i] = H[i+1] / H[i] * cs[i]
-    
-    # Apply new Givens rotation to H
-    H[i] = cs[i] * H[i] + sn[i] * H[i+1]
-    H[i+1] = 0.0  # Zero out the subdiagonal element
-
-    # Apply new Givens rotation to s (residual vector)
-    rotation_matrix[1, 1] = cs[i]
-    rotation_matrix[1, 2] = sn[i]
-    rotation_matrix[2, 1] = -sn[i]
-    rotation_matrix[2, 2] = cs[i]
-    s[i:i+1] = rotation_matrix * [s[i], 0]
-end
-
-"""
-    back_solve(H, s)
-
-Solves the upper triangular system Hy = s using back substitution.
-
-# Arguments
-- `H`: Upper triangular matrix (Hessenberg matrix after Givens rotations)
-- `s`: Right-hand side vector
-
-# Returns
-- `y`: Solution vector
-"""
-@inline function back_solve!(y::AbstractVector, H::AbstractMatrix, s::AbstractVector)
-    n = length(s)
-    
-    # Back substitution for upper triangular system Hy = s
-    for i in n:-1:1
-        y[i] = s[i]
-        
-        # Subtract known terms 
-        for j in i+1:n
-            y[i] -= H[i, j] * y[j]
-        end
-        
-        # Divide by diagonal
-        y[i] /= H[i, i]
-    end
-end

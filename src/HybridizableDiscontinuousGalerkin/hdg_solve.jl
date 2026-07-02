@@ -378,145 +378,52 @@ end
 """
     hdg_solve(master, mesh, source, dbc, param)
 
-Solves the convection-diffusion equation using the HDG method.
+Solves the convection-diffusion equation using the HDG method with a direct
+(sparse LU) solve of the statically condensed trace system. Builds exactly
+the same system as [`hdg_parsolve`](@ref) (element matrices via
+`hdg_elemmats`, strong Dirichlet rows on boundary faces), so the two solvers
+agree to solver — not just discretization — accuracy.
 
 # Arguments
 - `master`: Master element structure
 - `mesh`: Mesh structure
 - `source`: Source term function or nothing
 - `dbc`: Dirichlet boundary condition data
-- `param`: Dictionary with parameters `:kappa` (diffusivity) and `:c` (convective velocity)
+- `param`: Dictionary with parameters `:kappa` (diffusivity), `:c` (convective
+  velocity) and `:taud` (stabilization)
 
 # Returns
-- `uh`: Approximate scalar variable
-- `qh`: Approximate flux
-- `uhath`: Approximate trace
+- `uh (npl, 1, nt)`: Approximate scalar variable
+- `qh (npl, 2, nt)`: Approximate flux
+- `uhath (nps, nf)`: Approximate trace
 """
 function hdg_solve(master, mesh, source, dbc, param)
     nps = mesh.porder + 1
-    npl = size(mesh.dgnodes, 1)
     nt = size(mesh.t, 1)
     nf = size(mesh.f, 1)
 
-    # Initialize element matrices and force vectors
-    ae = zeros(3*nps, 3*nps, nt)  # Element matrices for each triangle
-    fe = zeros(3*nps, nt)         # Element force vectors for each triangle
+    # Element matrices/vectors with strong Dirichlet rows already applied —
+    # identical to the iterative path
+    ae, fe = hdg_elemmats(master, mesh, source, dbc, param)
 
-    elcon = mesh.elcon  # Element connectivity information (maps local DOFs to global DOFs)
+    elcon = mesh.elcon  # Element connectivity (maps local DOFs to global DOFs)
 
-    # Initialize global system
-    ℍ = zeros(nf * nps, nf * nps)  # Global system matrix (for uhat only, after static condensation)
-    ℝ = zeros(nf * nps)            # Global right-hand side vector
-
-    # Pre-allocate for multi-threading if needed
-    Threads.@threads for i in 1:nt  # Compute local matrices in parallel
-        # Get element nodes and compute element matrices
-        element_nodes = view(mesh.dgnodes, :, :, i)
-        a, f = elemmat_hdg(element_nodes, master, source, param)
-        ae[:,:,i] .= a
-        fe[:,i] .= f
-    end
-
-    # 1. First identify all boundary vertices
-    # This section identifies nodes on the domain boundary for applying boundary conditions
-    boundary_vertices = Dict()  # Maps vertex coordinates to global DOF indices
-    global_boundary_nodes = Dict()  # Maps global DOF indices to boundary values
-
-    is_boundary_nodes = zeros(Bool, nf * nps)  # Boolean flag for boundary nodes
-
-    ni = findfirst(i -> mesh.f[i, 4] < 0, 1:nf)  # Find first boundary face
-    
-    # Scan boundary faces to find all boundary vertices
-    for i in ni:nf  # ni is the start index of boundary faces
-        it = mesh.f[i, 3]  # Element containing this face
-        face_num = findfirst(x -> x == i, abs.(mesh.t2f[it, :]))
-        orientation = mesh.t2f[it, face_num] > 0 ? 1 : 2
-        perm = master.perm[:, face_num, orientation]
-        face_coords = mesh.dgnodes[perm, :, it]
-        
-        # Add first and last nodes of face (endpoints) to boundary vertices
-        boundary_vertices[face_coords[1, :]] = -mesh.f[i, 4]  # First node
-        boundary_vertices[face_coords[end, :]] = -mesh.f[i, 4]  # Last node
-
-        for j in 1:nps
-            global_node_num = (i-1)*nps + j
-            is_boundary_nodes[global_node_num] = true
-            global_boundary_nodes[global_node_num] = dbc(face_coords[j, :])[1]
-        end
-    end
-    
-    # 2. Now scan interior faces to find vertices that lie on boundary but aren't part of boundary faces
-    for i in 1:(ni-1)  # Interior faces
-        it = mesh.f[i, 3]  # Left element
-        
-        # Get coordinates of the face endpoints
-        face_num = findfirst(x -> x == i, abs.(mesh.t2f[it, :]))
-        orientation = mesh.t2f[it, face_num] > 0 ? 1 : 2
-        perm = master.perm[:, face_num, orientation]
-        face_coords = mesh.dgnodes[perm, :, it]
-
-        # Check if the face endpoints are in the boundary vertices
-        if haskey(boundary_vertices, face_coords[1, :])
-            global_node_num = (i-1)*nps + 1
-            is_boundary_nodes[global_node_num] = true
-            global_boundary_nodes[global_node_num] = dbc(face_coords[1, :])[1]
-        end
-
-        if haskey(boundary_vertices, face_coords[end, :])
-            global_node_num = i*nps
-            is_boundary_nodes[global_node_num] = true
-            global_boundary_nodes[global_node_num] = dbc(face_coords[end, :])[1]
-        end
-    end
-    
-    # Assemble the global system from element contributions
+    # Assemble the global system from element contributions. Boundary faces
+    # belong to a single element, so their identity rows/BC values pass
+    # through assembly unchanged.
+    ℍ = zeros(nf * nps, nf * nps)
+    ℝ = zeros(nf * nps)
     for i in 1:nt
-        global_inds = vec(elcon[:, :, i])  # Maps element DOFs to global DOFs
-        ℍ[global_inds, global_inds] .+= ae[:,:,i]  # Add element matrix to global matrix
-        ℝ[global_inds] .+= fe[:, i]                # Add element vector to global vector
+        global_inds = vec(elcon[:, :, i])
+        ℍ[global_inds, global_inds] .+= ae[:, :, i]
+        ℝ[global_inds] .+= fe[:, i]
     end
-
-    # Apply Dirichlet boundary conditions using the penalty method
-    ℍ[is_boundary_nodes, :] .= 0  # Zero out rows for boundary nodes
-    ℍ[:, is_boundary_nodes] .= 0  # Zero out columns for boundary nodes
-    ℍ[is_boundary_nodes, is_boundary_nodes] .= I(sum(is_boundary_nodes))  # Set diagonal to identity
-    
-    for i in keys(global_boundary_nodes)
-        ℝ[i] = global_boundary_nodes[i]  # Set RHS to boundary value
-    end
-
-    ℍ = sparse(ℍ)  # Convert to sparse matrix for efficient solving
 
     # Solve the global system for the hybrid variable uhat
-    uhath = reshape(ℍ \ ℝ, nps, nf)
-
-    # Initialize local solutions
-    uh = zeros(npl, 1, nt)  # Scalar solution u
-    qh = zeros(npl, 2, nt)  # Vector flux q
+    uhath = reshape(sparse(ℍ) \ ℝ, nps, nf)
 
     # Local recovery step: reconstruct element-local solutions from uhat
-    Threads.@threads for i in 1:nt
-        element_nodes = view(mesh.dgnodes, :, :, i)
-        t2f = mesh.t2f[i, :]  # Face indices for this element
-        û = zeros(nps, 3)     # Hybrid variable values on element faces
-        
-        # Extract appropriate hybrid variable values for this element
-        for (iface, face) in enumerate(t2f)
-            if face > 0
-                û[:, iface] .= uhath[:, face]  # Face orientation matches global orientation
-            else
-                û[:, iface] .= reverse(uhath[:, -face])  # Face orientation is reversed
-            end
-        end
-
-        # Solve the local problem to recover u and q
-        umf, qmf = localprob(element_nodes, master, vec(û), source, param)
-
-        # Store the local solutions
-        uh[:, 1, i] .= umf
-        qh[:, 1, i] .= qmf[:, 1]  # x-component of flux
-        qh[:, 2, i] .= qmf[:, 2]  # y-component of flux
-    end
+    uh, qh = hdg_localrecovery(master, mesh, vec(uhath), source, param)
 
     return uh, qh, uhath
 end
