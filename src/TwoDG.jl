@@ -23,6 +23,7 @@ export
     mkapp_convection_pt, mkapp_wave_pt, mkapp_euler_pt,
     mkapp_convection_diffusion_pt,
     localprob, elemmat_hdg, hdg_solve, hdg_postprocess, hdg_parsolve,
+    HDGSystem, hdg_gmres_ka, hdg_parsolve_ka,
     hdg_ns_step, hdg_ns_solve, hdg_cd_step, hdg_ns_postprocess
 
 include("Utils/Utils.jl")

@@ -154,39 +154,19 @@ Assembles the global system in dense format.
 end
 
 """
-    hdg_parsolve(master, mesh, source, dbc, param)
+    hdg_elemmats(master, mesh, source, dbc, param)
 
-Solves the convection-diffusion equation using the HDG method.
-
-# Arguments
-- `master`: master structure
-- `mesh`: mesh structure
-- `source`: source term
-- `dbc`: dirichlet data
-- `param`: dictionary with parameters:
-  - `param[:kappa]`: diffusivity coefficient
-  - `param[:c]`: convective velocity
-
-# Returns
-- `uh`: approximate scalar variable
-- `qh`: approximate flux
-- `uhath`: approximate trace
+Computes the HDG element matrices/vectors `ae (3nps, 3nps, nt)`, `fe (3nps, nt)`
+for all elements (threaded) and applies the strong Dirichlet boundary
+conditions `dbc` to the boundary-face rows.
 """
-@inline function hdg_parsolve(master, mesh, source, dbc, param; kwargs...)
-    # Get mesh dimensions
+function hdg_elemmats(master, mesh, source, dbc, param)
     nps = mesh.porder + 1
-    npl = size(mesh.dgnodes, 1)
     nt = size(mesh.t, 1)
-    nf = size(mesh.f, 1)
 
-    # Pre-allocate element matrices and vectors
     ae = zeros(3*nps, 3*nps, nt)
     fe = zeros(3*nps, nt)
 
-    # Get number of available threads
-    num_threads = Threads.nthreads()
-    println("Number of parallel workers: $num_threads")
-    
     # Compute local element matrices in parallel
     @views Threads.@threads for i in 1:nt
         ae_i, fe_i = elemmat_hdg(view(mesh.dgnodes, :, :, i), master, source, param)
@@ -197,32 +177,43 @@ Solves the convection-diffusion equation using the HDG method.
     # Apply Dirichlet boundary conditions by modifying local matrices/vectors
     # Find first boundary face
     ni = findfirst(f -> f[4] < 0, eachrow(mesh.f))
-    
+
     @views Threads.@threads for i in ni:size(mesh.f, 1)
         el = mesh.f[i, 3]  # Element index
         # Find local face number through point indices
         ipl = sum(mesh.t[el, :]) - sum(mesh.f[i, 1:2])
         isl = findfirst(x -> x == ipl, mesh.t[el, :])
-        
+
         # Get the nodes on this boundary face
         face_nodes = master.perm[:, isl, 1]  # Local indices of nodes on this face
-        
+
         # Extract physical coordinates of the face nodes
         face_coords = mesh.dgnodes[face_nodes, :, el]
-        
+
         # Evaluate the Dirichlet boundary condition at these coordinates
         bc_values = dbc(face_coords)
-        
+
         # Apply strong Dirichlet BC: clear row and set identity on diagonal
         ae[(isl-1)*nps+1:isl*nps, :, el] .= 0
         ae[(isl-1)*nps+1:isl*nps, (isl-1)*nps+1:isl*nps, el] = I(nps)
-        
+
         # Set RHS to boundary values
         fe[(isl-1)*nps+1:isl*nps, el] = bc_values
     end
 
-    # Solve global system for trace variable (uhath)
-    uhath, _, gmres_iter, _ = hdg_gmres(ae, fe, mesh.t2f, mesh.f, nps, f2f=mesh.f2f; kwargs...)
+    return ae, fe
+end
+
+"""
+    hdg_localrecovery(master, mesh, uhath, source, param)
+
+Recovers the element-local solution `uh (npl, nt)` and flux `qh (npl, 2, nt)`
+from the global trace vector `uhath` by solving the local problems (threaded).
+"""
+function hdg_localrecovery(master, mesh, uhath, source, param)
+    nps = mesh.porder + 1
+    npl = size(mesh.dgnodes, 1)
+    nt = size(mesh.t, 1)
 
     # Build connectivity array for mapping global trace DOFs to local elements
     elcon = zeros(Int, 3*nps, nt)
@@ -245,7 +236,7 @@ Solves the convection-diffusion equation using the HDG method.
     # Solve local problems to get uh and qh using the computed trace values
     uh = zeros(npl, nt)
     qh = zeros(npl, 2, nt)
-  
+
     # Local problem computation in parallel
     @views Threads.@threads for i in 1:nt
         uhath_local = uhath[elcon[:, i]]  # Extract trace values for this element
@@ -253,6 +244,38 @@ Solves the convection-diffusion equation using the HDG method.
         uh[:, i] .= uh_i
         qh[:, :, i] .= qh_i
     end
+
+    return uh, qh
+end
+
+"""
+    hdg_parsolve(master, mesh, source, dbc, param)
+
+Solves the convection-diffusion equation using the HDG method.
+
+# Arguments
+- `master`: master structure
+- `mesh`: mesh structure
+- `source`: source term
+- `dbc`: dirichlet data
+- `param`: dictionary with parameters:
+  - `param[:kappa]`: diffusivity coefficient
+  - `param[:c]`: convective velocity
+
+# Returns
+- `uh`: approximate scalar variable
+- `qh`: approximate flux
+- `uhath`: approximate trace
+"""
+@inline function hdg_parsolve(master, mesh, source, dbc, param; kwargs...)
+    nps = mesh.porder + 1
+
+    ae, fe = hdg_elemmats(master, mesh, source, dbc, param)
+
+    # Solve global system for trace variable (uhath)
+    uhath, _, gmres_iter, _ = hdg_gmres(ae, fe, mesh.t2f, mesh.f, nps, f2f=mesh.f2f; kwargs...)
+
+    uh, qh = hdg_localrecovery(master, mesh, uhath, source, param)
 
     return uh, qh, uhath, gmres_iter
 end
