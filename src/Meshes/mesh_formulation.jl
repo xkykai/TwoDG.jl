@@ -2,7 +2,7 @@ using ForwardDiff
 using LinearAlgebra
 using TwoDG.Utils: newton_raphson
 
-struct Mesh{P, T, F, TF, FC, TC, PO, PL, TL, DG, PCG, TCG, ELC, FTF}
+struct Mesh{P, T, F, TF, FC, TC, PO, PL, TL, DG, PCG, TCG, ELC, FTF, BN}
                      p :: P
                      t :: T
                      f :: F
@@ -17,15 +17,25 @@ struct Mesh{P, T, F, TF, FC, TC, PO, PL, TL, DG, PCG, TCG, ELC, FTF}
                    tcg :: TCG
                  elcon :: ELC
                    f2f :: FTF
+        boundary_names :: BN
 end
 
-function Mesh(; p, t, f=nothing, t2f=nothing, fcurved=nothing, tcurved=nothing, porder, plocal, tlocal, dgnodes=nothing, pcg=nothing, tcg=nothing, elcon=nothing, f2f=nothing)
-    return Mesh(p, t, f, t2f, fcurved, tcurved, porder, plocal, tlocal, dgnodes, pcg, tcg, elcon, f2f)
+function Mesh(; p, t, f=nothing, t2f=nothing, fcurved=nothing, tcurved=nothing, porder, plocal, tlocal, dgnodes=nothing, pcg=nothing, tcg=nothing, elcon=nothing, f2f=nothing, boundary_names=Symbol[])
+    return Mesh(p, t, f, t2f, fcurved, tcurved, porder, plocal, tlocal, dgnodes, pcg, tcg, elcon, f2f, boundary_names)
 end
 
-function Mesh(mesh::Mesh; dgnodes=nothing, pcg=nothing, tcg=nothing, elcon=nothing, f2f=nothing)
-    return Mesh(; mesh.p, mesh.t, mesh.f, mesh.t2f, mesh.fcurved, mesh.tcurved, mesh.porder, mesh.plocal, mesh.tlocal, dgnodes, pcg, tcg, elcon, f2f)
+function Mesh(mesh::Mesh; dgnodes=nothing, pcg=nothing, tcg=nothing, elcon=nothing, f2f=nothing, boundary_names=mesh.boundary_names)
+    return Mesh(; mesh.p, mesh.t, mesh.f, mesh.t2f, mesh.fcurved, mesh.tcurved, mesh.porder, mesh.plocal, mesh.tlocal, dgnodes, pcg, tcg, elcon, f2f, boundary_names)
 end
+
+"""
+    boundary_names(mesh) -> Vector{Symbol}
+
+Names of the mesh's boundary segments, in boundary-tag order (tag `k` is
+stored as `-k` in `mesh.f[:, 4]`). Empty when the generator did not attach
+names.
+"""
+boundary_names(mesh::Mesh) = mesh.boundary_names
 
 # Converts barycentric coordinates (λ) to Cartesian coordinates using vertices v₁, v₂, v₃
 # λ contains the coordinates [λ₂, λ₃], with λ₁ = 1-λ₂-λ₃ implied
