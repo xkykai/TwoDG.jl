@@ -50,6 +50,32 @@ end
         check_mesh_invariants(mesh)
     end
 
+    @testset "geometry/discretization stages (A2.5)" begin
+        geo = square_geometry(5, 4; parity=0)
+        @test geo isa MeshGeometry
+        @test geo.boundary_names == [:bottom, :right, :top, :left]
+
+        # discretize(geo, ...) is exactly the legacy one-shot generator
+        mesh = discretize(geo, 2; nodetype=1)
+        ref = mkmesh_square(5, 4, 2, 0, 1)
+        @test mesh.p == ref.p && mesh.t == ref.t
+        @test mesh.f == ref.f && mesh.t2f == ref.t2f
+        @test mesh.dgnodes == ref.dgnodes
+        @test mesh.pcg == ref.pcg && mesh.tcg == ref.tcg
+        @test boundary_names(mesh) == [:bottom, :right, :top, :left]
+
+        # names survive the staged reconstructions (createnodes/cgmesh)
+        @test boundary_names(mkmesh_lshape(3, 2)) == [:boundary]
+        @test boundary_names(mkmesh_trefftz(6, 12, 3)) == [:airfoil, :farfield]
+
+        # curved boundaries require distance functions
+        @test_throws ArgumentError MeshGeometry(geo.p, geo.t;
+            boundaries=(all=p -> trues(size(p, 1)),), curved=[:all])
+        @test_throws ArgumentError MeshGeometry(geo.p, geo.t;
+            boundaries=(all=p -> trues(size(p, 1)),), curved=[:missing],
+            fd=[p -> 0.0])
+    end
+
     @testset "uniform refinement" begin
         p, t = make_square_mesh(4, 4, 0)
         p2, t2 = uniref(p, t, 1)
