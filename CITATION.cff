@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "TwoDG.jl: high-order CG/DG/HDG solvers for 2D conservation laws in Julia"
+type: software
+authors:
+  - family-names: "Lee"
+    given-names: "Xin Kai"
+repository-code: "https://github.com/xkykai/TwoDG.jl"
+license: MIT
+keywords:
+  - "discontinuous Galerkin"
+  - "hybridizable discontinuous Galerkin"
+  - "finite element method"
+  - "GPU"
+  - "Julia"
+version: 0.1.0
+date-released: 2026-07-02
