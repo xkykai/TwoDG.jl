@@ -25,9 +25,10 @@ using StaticArrays
 using Adapt: adapt
 using ..Apps: mkapp_convection_pt, mkapp_convection_diffusion_pt,
               mkapp_wave_pt, mkapp_euler_pt
+using LinearAlgebra: norm
 using ..Masters: Master
 using ..Meshes: Mesh
-using ..Utils: initu
+using ..Utils: initu, interpolate
 using ..DiscontinuousGalerkin: DGContext, rinvexpl!, rldgexpl!, rk4_ka!,
                                RinvWorkspace, RldgWorkspace
 using ..HybridizableDiscontinuousGalerkin: hdg_solve, hdg_parsolve,
@@ -35,7 +36,7 @@ using ..HybridizableDiscontinuousGalerkin: hdg_solve, hdg_parsolve,
 using ..ContinuousGalerkin: cg_solve
 import ..ContinuousGalerkin: l2error
 
-export solve,
+export solve, semidiscretize, compute_dt,
     ConvectionEquation, ConvectionDiffusionEquation, WaveEquation,
     EulerEquations, PoissonEquation, nvariables,
     Dirichlet, Neumann, SlipWall, FarField, IncomingWave,
@@ -210,6 +211,30 @@ function lower_bcs(eq::AbstractEquation, bcs)
         seen[code] = true
     end
     return bcm, mat
+end
+
+"""
+    _ordered_bcs(bc, mesh)
+
+Boundary conditions may be given positionally (a vector/tuple indexed by
+boundary tag) or, when the mesh generator attached boundary names, as a
+`NamedTuple` keyed by those names, e.g. for `mkmesh_square`:
+`(bottom=Dirichlet(), right=Neumann(), top=Dirichlet(), left=Neumann())`.
+"""
+_ordered_bcs(bc, mesh) = bc
+function _ordered_bcs(bc::NamedTuple, mesh)
+    names = mesh.boundary_names
+    (names === nothing || isempty(names)) &&
+        throw(ArgumentError("this mesh carries no boundary names; pass the " *
+                            "boundary conditions as a vector ordered by boundary tag"))
+    unknown = setdiff(collect(keys(bc)), names)
+    isempty(unknown) ||
+        throw(ArgumentError("unknown boundary name(s) $(Tuple(unknown)); " *
+                            "this mesh's boundaries are $(Tuple(names))"))
+    missing_names = setdiff(names, collect(keys(bc)))
+    isempty(missing_names) ||
+        throw(ArgumentError("missing boundary condition(s) for $(Tuple(missing_names))"))
+    return [bc[name] for name in names]
 end
 
 # Dirichlet data for HDG/CG: accept a constant or a function (x, y) -> g and
@@ -396,6 +421,24 @@ _initial_state(u0::AbstractArray{<:Any, 3}, prob, app) = float(copy(u0))
 _initial_state(u0::Union{Tuple, AbstractVector}, prob, app) =
     initu(prob.mesh, app, u0)
 
+# Shared setup for the internal RK4 stepper and the SciML `semidiscretize`
+# bridge: lower BCs, build the pointwise app, the (possibly device-resident)
+# DGContext and initial state, and select the residual kernel.
+function _dg_setup(prob::DGProblem; ArrayT=Array, ngauss=nothing)
+    eq, mesh = prob.equation, prob.mesh
+    T = eltype(prob)
+    bcm, bcs = lower_bcs(eq, _ordered_bcs(prob.bc, mesh))
+    app = pointwise_app(eq; bcm, bcs, source=prob.source)
+
+    master = ngauss === nothing ? Master(mesh) : Master(mesh, ngauss)
+    ctx = adapt(ArrayT, DGContext(master, mesh; T))
+    u = adapt(ArrayT, T.(_initial_state(prob, app)))
+    app_d = adapt(ArrayT, app)
+
+    residual! = has_diffusion(eq) ? rldgexpl! : rinvexpl!
+    return ctx, app_d, u, residual!
+end
+
 CommonSolve.solve(prob::DGProblem; kwargs...) = solve(prob, RK4(); kwargs...)
 
 function CommonSolve.solve(prob::DGProblem, ::RK4;
@@ -407,20 +450,103 @@ function CommonSolve.solve(prob::DGProblem, ::RK4;
         nstep = round(Int, (tfinal - t0) / dt)
     end
 
-    eq, mesh = prob.equation, prob.mesh
     T = eltype(prob)
-    bcm, bcs = lower_bcs(eq, prob.bc)
-    app = pointwise_app(eq; bcm, bcs, source=prob.source)
-
-    master = ngauss === nothing ? Master(mesh) : Master(mesh, ngauss)
-    ctx = adapt(ArrayT, DGContext(master, mesh; T))
-    u = adapt(ArrayT, T.(_initial_state(prob, app)))
-    app_d = adapt(ArrayT, app)
-
-    residual! = has_diffusion(eq) ? rldgexpl! : rinvexpl!
+    ctx, app_d, u, residual! = _dg_setup(prob; ArrayT, ngauss)
     rk4_ka!(residual!, ctx, app_d, u, T(t0), T(dt), nstep)
 
     return DGSolution(Array(u), t0 + nstep * dt, prob)
+end
+
+"""
+    semidiscretize(prob::DGProblem, tspan; ArrayT=Array, ngauss=nothing) -> ODEProblem
+
+Spatial semidiscretization of `prob` as a SciML `ODEProblem`, so any
+OrdinaryDiffEq.jl time integrator (adaptive, SSP, IMEX, …) can drive the DG
+right-hand side. Requires SciMLBase to be loaded (it usually is, via any
+`using OrdinaryDiffEq...` package; otherwise `using SciMLBase`).
+
+```julia
+using TwoDG, OrdinaryDiffEqTsit5
+ode = semidiscretize(prob, (0.0, 1.0))
+sol = solve(ode, Tsit5())
+```
+"""
+function semidiscretize(prob::DGProblem, tspan; kwargs...)
+    ext = Base.get_extension(parentmodule(@__MODULE__), :TwoDGSciMLBaseExt)
+    ext === nothing &&
+        error("semidiscretize requires SciMLBase. Load it first, e.g. " *
+              "`using SciMLBase` or any OrdinaryDiffEq solver package.")
+    return ext._semidiscretize(prob, tspan; kwargs...)
+end
+
+# ------------------------------------------------------------- CFL time step
+
+"""
+    compute_dt(prob::DGProblem; cfl=0.3) -> dt
+
+CFL-limited explicit time step: over all elements,
+
+    dt = cfl * min 1 / ( λ (2p+1)/h + κ ((2p+1)/h)² )
+
+with `h` the inscribed-circle diameter, `p` the polynomial order, `λ` the
+maximum characteristic speed of the equation (evaluated from the initial
+state for [`EulerEquations`](@ref)), and `κ` the diffusivity (LDG diffusion
+limits the step quadratically). `cfl = 0.3` is a conservative default for
+the internal [`RK4`](@ref) stepper.
+"""
+function compute_dt(prob::DGProblem; cfl=0.3)
+    mesh = prob.mesh
+    pfac = 2 * mesh.porder + 1
+    λ = _max_wavespeed(prob.equation, prob)
+    κ = _diffusivity(prob.equation)
+    (λ > 0 || κ > 0) ||
+        throw(ArgumentError("equation has neither a propagation speed nor a diffusivity"))
+
+    dtmin = Inf
+    p, t = mesh.p, mesh.t
+    for it in axes(t, 1)
+        a = hypot(p[t[it, 2], 1] - p[t[it, 1], 1], p[t[it, 2], 2] - p[t[it, 1], 2])
+        b = hypot(p[t[it, 3], 1] - p[t[it, 2], 1], p[t[it, 3], 2] - p[t[it, 2], 2])
+        c = hypot(p[t[it, 1], 1] - p[t[it, 3], 1], p[t[it, 1], 2] - p[t[it, 3], 2])
+        s = (a + b + c) / 2
+        area = sqrt(max(s * (s - a) * (s - b) * (s - c), 0.0))
+        h = 4 * area / (a + b + c)          # inscribed-circle diameter
+        dtmin = min(dtmin, 1 / (λ * pfac / h + κ * (pfac / h)^2))
+    end
+    return cfl * dtmin
+end
+
+_diffusivity(::AbstractEquation) = 0.0
+_diffusivity(eq::ConvectionDiffusionEquation) = eq.κ
+_diffusivity(eq::PoissonEquation) = eq.κ
+
+_max_wavespeed(eq::ConvectionEquation, prob) = _max_velocity(eq.velocity, prob.mesh)
+_max_wavespeed(eq::ConvectionDiffusionEquation, prob) = _max_velocity(eq.velocity, prob.mesh)
+_max_wavespeed(eq::WaveEquation, prob) = abs(eq.c)
+_max_wavespeed(::PoissonEquation, prob) = 0.0
+
+function _max_wavespeed(eq::EulerEquations, prob)
+    u0 = prob.u0
+    u = u0 isa AbstractArray{<:Any, 3} ? u0 : interpolate(prob.mesh, u0)
+    γ = eq.γ
+    smax = 0.0
+    for it in axes(u, 3), i in axes(u, 1)
+        ρ, ρu, ρv, ρE = u[i, 1, it], u[i, 2, it], u[i, 3, it], u[i, 4, it]
+        vel = hypot(ρu, ρv) / ρ
+        pres = (γ - 1) * (ρE - 0.5 * (ρu^2 + ρv^2) / ρ)
+        smax = max(smax, vel + sqrt(γ * pres / ρ))
+    end
+    return smax
+end
+
+_max_velocity(v, mesh) = norm(_velocity(v))
+function _max_velocity(v::Function, mesh)
+    smax = 0.0
+    dg = mesh.dgnodes
+    for it in axes(dg, 3), i in axes(dg, 1)
+        smax = max(smax, norm(v(SVector(dg[i, 1, it], dg[i, 2, it]))))
+    end
+    return smax
 end
 
 CommonSolve.solve(prob::HDGProblem; kwargs...) = solve(prob, GMRES(); kwargs...)

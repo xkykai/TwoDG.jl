@@ -1,32 +1,32 @@
 using TwoDG
 
-function make_circle_nodes(p, t, porder, nodetype)
+"""
+    circle_geometry(p, t) -> MeshGeometry
+
+Geometry of the unit circle from a raw triangulation `(p, t)` (deduplicated
+with [`fixmesh`](@ref)). The single boundary is named `:boundary` and is
+curved: high-order nodes are projected onto the unit circle during
+[`discretize`](@ref).
+"""
+function circle_geometry(p, t)
     p, t = fixmesh(p, t)
-    
-    f, t2f = mkt2f(t)
-    
-    boundary(p) = sqrt.(sum(p.^2, dims=2)) .> 1 - 2e-2
-    bndexpr = [boundary]
-    
-    f = setbndnbrs(p, f, bndexpr)
-    
-    fcurved = f[:, 4] .< 0
-    tcurved = falses(size(t, 1))
-    tcurved[f[fcurved, 3]] .= true
-    
-    plocal, tlocal = localpnts(porder, nodetype)
-    
-    mesh = TwoDG.Mesh(; p, t, f, t2f, fcurved, tcurved, porder, plocal, tlocal)
 
+    boundaries = (boundary = p -> sqrt.(sum(p.^2, dims=2)) .> 1 - 2e-2,)
     fd_circle(p) = sqrt(sum(p.^2)) - 1
-    fds = [fd_circle]
-    
-    mesh = createnodes(mesh, fds)
-    mesh = cgmesh(mesh)
 
-    return mesh
+    return MeshGeometry(p, t; boundaries, curved=[:boundary], fd=[fd_circle])
 end
 
+make_circle_nodes(p, t, porder, nodetype) =
+    discretize(circle_geometry(p, t), porder; nodetype)
+
+"""
+    mkmesh_circle(siz=0.4, porder=3, nodetype=0; boundary_refinement=nothing) -> Mesh
+
+Unstructured curved mesh of the unit circle (element size `siz`), generated
+with distmesh via Python (see `make_circle_mesh`) and discretized at order
+`porder`.
+"""
 function mkmesh_circle(siz=0.4, porder=3, nodetype=0; boundary_refinement=nothing)
     p, t = make_circle_mesh(siz, boundary_refinement)
     return make_circle_nodes(p, t, porder, nodetype)

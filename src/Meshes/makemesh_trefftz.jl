@@ -43,7 +43,8 @@ function mkmesh_trefftz(m=15, n=30, porder=3, node_spacing_type=0, tparam=[0.1, 
     
     f = setbndnbrs(p_unique, f, bndexpr)
     
-    mesh = TwoDG.Mesh(; p=p_unique, t=t_unique, f, t2f, fcurved, tcurved, porder, plocal, tlocal, mesh.dgnodes)
+    mesh = TwoDG.Mesh(; p=p_unique, t=t_unique, f, t2f, fcurved, tcurved, porder, plocal, tlocal, mesh.dgnodes,
+                      boundary_names=[:airfoil, :farfield])
     
     # now do a K-T transformation
     x0 = tparam[1]

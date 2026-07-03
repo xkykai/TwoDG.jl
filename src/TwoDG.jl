@@ -2,6 +2,8 @@ module TwoDG
 
 export
     Mesh, Master,
+    MeshGeometry, discretize, boundary_names,
+    square_geometry, circle_geometry, lshape_geometry,
     unique_rows,
     make_circle_mesh, make_square_mesh,
     mkmesh_circle, make_circle_nodes, mkmesh_square, mkmesh_duct, mkmesh_trefftz, mkmesh_naca, mkmesh_lshape, mkmesh_distort!,
@@ -27,7 +29,7 @@ export
     HDGBatch, hdg_local_solves, hdg_recover, hdg_parsolve_batched,
     hdg_ns_step, hdg_ns_solve, hdg_cd_step, hdg_ns_postprocess,
     # high-level problem/solve API (Interface module)
-    solve,
+    solve, semidiscretize, compute_dt,
     ConvectionEquation, ConvectionDiffusionEquation, WaveEquation,
     EulerEquations, PoissonEquation, nvariables,
     Dirichlet, Neumann, SlipWall, FarField, IncomingWave,

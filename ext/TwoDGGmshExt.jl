@@ -236,7 +236,8 @@ function Meshes.mkmesh_naca(t_naca=10, porder=2, name="naca0012", display_gmsh=f
     
     plocal, tlocal = uniformlocalpnts(porder)
     
-    mesh = TwoDG.Mesh(; p, t, f, t2f, fcurved, tcurved, porder, plocal, tlocal)
+    mesh = TwoDG.Mesh(; p, t, f, t2f, fcurved, tcurved, porder, plocal, tlocal,
+                      boundary_names=[:airfoil, :left, :right, :bottom, :top])
 
     fd_left(p) = abs(p[1] + 3)
     fd_right(p) = abs(p[1] - 5)
