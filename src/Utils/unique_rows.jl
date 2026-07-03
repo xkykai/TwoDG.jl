@@ -1,5 +1,13 @@
 using LinearAlgebra
 
+"""
+    unique_rows(A; return_index=false, return_inverse=false)
+
+Sorted unique rows of the matrix `A`, like NumPy's `np.unique(A, axis=0)`.
+With `return_index=true` also returns the row indices `I` of the first
+occurrences (`B = A[I, :]`); with `return_inverse=true` also returns the
+inverse map `J` reconstructing `A` (`A = B[J, :]`).
+"""
 function unique_rows(A::AbstractMatrix{T}; return_index::Bool=false, return_inverse::Bool=false) where T
     # Input validation
     ndims(A) == 2 || throw(ArgumentError("array must be 2-dimensional"))

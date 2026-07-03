@@ -2,6 +2,13 @@ using TwoDG.Meshes: mkmesh_trefftz
 using TwoDG.Masters: Master, shape2d, get_local_face_nodes
 using Dierckx
 
+"""
+    trefftz_points(tparam=[0.1, 0.05, 1.98], np=120) -> (x, y, chord)
+
+Coordinates of `np` points on a Karman–Trefftz airfoil surface and its chord
+length. `tparam = [x0, y0, exponent]`: circle-center shifts and K–T exponent
+(`2` gives a Joukowski airfoil, trailing edge at `(exponent, 0)`).
+"""
 function trefftz_points(tparam=[0.1, 0.05, 1.98], np=120)
     # Extract parameters
     x0, y0, n = tparam
@@ -27,27 +34,18 @@ function trefftz_points(tparam=[0.1, 0.05, 1.98], np=120)
     return x, y, chord
 end
 
+"""
+    potential_trefftz(x, y; V=1.0, alpha=0.0, tparam=[0.1, 0.05, 1.98])
+        -> (psi, velx, vely, gamma)
+
+Analytic 2D potential-flow solution around a Karman–Trefftz airfoil,
+evaluated at the points `(x, y)`: stream function `psi`, velocity components
+`velx`/`vely`, and circulation `gamma` (lift force = `V * gamma`). `V` is
+the free-stream speed, `alpha` the angle of attack in degrees, and
+`tparam = [x0, y0, exponent]` the airfoil parameters (circle-center shifts,
+K–T exponent ≤ 2 with `2` giving a Joukowski airfoil).
+"""
 function potential_trefftz(x, y; V=1.0, alpha=0.0, tparam=[0.1, 0.05, 1.98])
-    """
-    potential_trefftz calculates the 2d potential flow for trefftz airfoil.
-    
-    Returns:
-        psi:       value of stream function at input points
-        velx:      x component of the velocity at input points
-        vely:      y component of the velocity at input points
-        gamma:     circultation. lift force= v*gamma
-    
-    Parameters:
-        x:         x coordinates of input points
-        y:         y coordinates of input points
-        V:         free stream velocity magnitude (default=1)
-        alpha:     angle of attack in degrees (default=0)
-        tparam:    trefftz foil parameters
-                  tparam[1] = left x-shift of circle center
-                              (trailing edge at (1,0)). (default=0.1)
-                  tparam[2] = y-shift of circle center. (default=0.05)
-                  tparam[3] = k-t exponent (=< 2) (2:jukowski). (default=1.98)
-    """
     # Extract parameters
     x0 = tparam[1]
     y0 = tparam[2]
@@ -179,6 +177,21 @@ function potential_trefftz(x, y; V=1.0, alpha=0.0, tparam=[0.1, 0.05, 1.98])
     return psi, velx, vely, Gamma
 end
 
+"""
+    trefftz(V∞, α, m=15, n=30, porder=3, node_spacing_type=0,
+            tparam=[0.1, 0.05, 1.98])
+
+Full Karman–Trefftz potential-flow study: build the curved airfoil mesh
+([`mkmesh_trefftz`](@ref)), evaluate the analytic stream function
+([`potential_trefftz`](@ref)), differentiate it for the velocity field, and
+integrate surface pressure for the aerodynamic coefficients.
+
+Returns the 20-tuple `(mesh, master, xs_foil, ys_foil, chord, ψ, vx, vy, Γ,
+CP, CF, Clift, Cdrag, CM, vx_analytical, vy_analytical, Γ_analytical,
+CP_analytical, CL, CL_analytical)` — numerical and analytic velocities,
+circulation, pressure/force/moment coefficients. See
+`examples/dg/runtrefftz.jl`.
+"""
 function trefftz(V∞, α, m=15, n=30, porder=3, node_spacing_type=0, tparam=[0.1, 0.05, 1.98])
     # Generate mesh for Trefftz airfoil with given parameters
     mesh = mkmesh_trefftz(m, n, porder, node_spacing_type, tparam)

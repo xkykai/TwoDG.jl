@@ -1,78 +1,41 @@
 using SparseArrays
 using LinearAlgebra
-using Statistics
 
+"""
+    cg_solve(mesh, master, source, param) -> (uh, energy)
+
+Solve the steady convection-diffusion(-reaction) equation with continuous
+Galerkin finite elements and homogeneous Dirichlet boundaries. `mesh` must
+carry the CG numbering (see `cgmesh`); `source(x, y)` is the source term;
+`param` is a named tuple `(; κ, c, s)` with diffusivity `κ`, convective
+velocity `c`, and reaction coefficient `s`.
+
+Element matrices are built batched ([`cg_element_system`](@ref)), assembled
+from triplets ([`cg_assemble`](@ref)), and factorized directly: Cholesky
+when the operator is SPD (no convection, `s ≥ 0`), sparse LU otherwise.
+For an iterative, GPU-capable solve see [`cg_parsolve`](@ref).
+
+Returns the solution `uh (npl, nt)` in DG (element-local) numbering, ready
+for `scaplot`, and the discrete energy `½ uᵀKu - uᵀF`.
+
+The high-level equivalent is `solve(CGProblem(equation, mesh; source))`.
+"""
 function cg_solve(mesh, master, source, param)
-    """
-    cg_solve solves the convection-diffusion equation using the cg method.
-    [uh,energy]=cg_solve(mesh,master,source,param)
- 
-        master:       master structure
-        mesh:         mesh structure
-        source:       source term
-        param:        kappa:   = diffusivity coefficient
-                        c      = convective velocity
-                        s      = source coefficient
-        u:            approximate scalar variable
-        uh:           approximate scalar variable with local numbering
-    """
-   
-    npl = size(mesh.plocal, 1)
-    nt = size(mesh.tcg, 1)
-    nn = size(mesh.pcg, 1)
-    
-    ae = Array{Float64}(undef, npl, npl, nt)
-    fe = Array{Float64}(undef, npl, nt)
-    
-    for i in 1:nt
-        A, F = elemmat_cg(mesh.pcg[mesh.tcg[i,:],:], master, source, param)
-        ae[:,:,i] .= A
-        fe[:,i] .= F
+    ae, fe, dirichlet, symmetric = cg_element_system(mesh, master, source, param)
+    K, F = cg_assemble(ae, fe, mesh.tcg, dirichlet)
+
+    u = if symmetric && param.s >= 0
+        cholesky(Symmetric(K)) \ F
+    else
+        K \ F
+    end
+    energy = 0.5 * dot(u, K, u) - dot(u, F)
+
+    # Output uh (DG format) to make it compatible with scaplot
+    uh = Matrix{eltype(u)}(undef, size(mesh.dgnodes, 1), size(mesh.dgnodes, 3))
+    for e in axes(mesh.tcg, 1)
+        uh[:, e] .= u[mesh.tcg[e, :]]
     end
 
-    # Dirichlet boundary conditions
-    bou = zeros(Int, size(mesh.pcg, 1))
-    ii = findall(x -> x < 0, mesh.f[:,4])  # Python's mesh.f[:,3] → Julia's mesh.f[:,4]
-    
-    for i in ii
-        el = mesh.f[i,3]  # Python's mesh.f[i,2] → Julia's mesh.f[i,3]
-        ipl = sum(mesh.t[el, :]) - sum(mesh.f[i, 1:2])
-        isl = findall(x -> x == ipl, mesh.t[el, :])
-        
-        # Vector-based assignment matching Python's behavior
-        bou[mesh.tcg[el, master.perm[:,isl,1]]] .= 1
-    end
-    
-    for i in 1:nt
-        for j in 1:npl
-            if bou[mesh.tcg[i,j]] == 1
-                ae[j, :, i] .= 0.0
-                ae[j, j, i] = 1.0
-                fe[j, i] = 0.0
-            end
-        end
-    end
-    
-    K = spzeros(nn, nn)
-    F = zeros(nn, 1)  # Make F a column vector to match Python
-    
-    for i in 1:nt
-        elem = mesh.tcg[i,:]
-        for j in 1:npl, k in 1:npl
-            K[elem[j], elem[k]] += ae[j, k, i]
-        end
-        F[elem, 1] .+= fe[:, i]  # Index into first column
-    end
-    
-    u = K \ F  # Julia's backslash operator
-    energy = 0.5 .* u' * K * u .- u' * F
-    
-    # Output uh (DG format) to make it compatible with scaplot
-    uh = Array{Float64}(undef, size(mesh.dgnodes, 1), size(mesh.dgnodes, 3))
-    
-    for i in 1:size(mesh.tcg, 1)
-        uh[:,i] .= u[mesh.tcg[i,:]]
-    end
-    
-    return uh, energy[1]
+    return uh, energy
 end

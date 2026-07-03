@@ -33,7 +33,7 @@ using ..DiscontinuousGalerkin: DGContext, rinvexpl!, rldgexpl!, rk4_ka!,
                                RinvWorkspace, RldgWorkspace
 using ..HybridizableDiscontinuousGalerkin: hdg_solve, hdg_parsolve,
                                            hdg_parsolve_batched
-using ..ContinuousGalerkin: cg_solve
+using ..ContinuousGalerkin: cg_solve, cg_parsolve
 import ..ContinuousGalerkin: l2error
 
 export solve, semidiscretize, compute_dt,
@@ -41,7 +41,7 @@ export solve, semidiscretize, compute_dt,
     EulerEquations, PoissonEquation, nvariables,
     Dirichlet, Neumann, SlipWall, FarField, IncomingWave,
     DGProblem, HDGProblem, CGProblem,
-    RK4, Direct, GMRES
+    RK4, Direct, GMRES, ConjugateGradient
 
 # --------------------------------------------------------------- equations
 
@@ -125,6 +125,14 @@ _velocity(v) = SVector{2, Float64}(v[1], v[2])
 
 # ------------------------------------------------------- boundary conditions
 
+"""
+Abstract supertype of the boundary-condition objects ([`Dirichlet`](@ref),
+[`Neumann`](@ref), [`SlipWall`](@ref), [`FarField`](@ref),
+[`IncomingWave`](@ref)). Problems take one per boundary (positionally by
+tag, or as a `NamedTuple` keyed by the mesh's boundary names); they lower to
+the kernels' compiled integer-code + data-row representation in
+[`lower_bcs`](@ref).
+"""
 abstract type BoundaryCondition end
 
 """
@@ -284,6 +292,20 @@ Base.@kwdef struct GMRES
     batched::Bool = true
 end
 
+"""
+    ConjugateGradient(; tol=1e-10, maxit=5000, preconditioner=true)
+
+Jacobi-preconditioned conjugate-gradient solve of the (SPD) CG stiffness
+system, matrix-free on any KA backend (`ArrayT=CuArray` runs the iteration
+on the GPU). Only valid for [`CGProblem`](@ref)s without convection; use
+[`GMRES`](@ref) otherwise.
+"""
+Base.@kwdef struct ConjugateGradient
+    tol::Float64 = 1e-10
+    maxit::Int = 5000
+    preconditioner::Bool = true
+end
+
 # ------------------------------------------------------------------ problems
 
 """
@@ -388,13 +410,15 @@ struct HDGSolution{U, Q, H, P}
 end
 
 """
-Solution of a [`CGProblem`](@ref): `u (npl, 1, nt)` (DG-numbered for plotting)
-and the discrete `energy`.
+Solution of a [`CGProblem`](@ref): `u (npl, 1, nt)` (DG-numbered for
+plotting), the discrete `energy`, and the Krylov iteration count (`0` for a
+direct solve).
 """
 struct CGSolution{U, E, P}
-    u      :: U
-    energy :: E
-    prob   :: P
+    u          :: U
+    energy     :: E
+    iterations :: Int
+    prob       :: P
 end
 
 const AnySolution = Union{DGSolution, HDGSolution, CGSolution}
@@ -572,12 +596,35 @@ end
 
 CommonSolve.solve(prob::CGProblem; kwargs...) = solve(prob, Direct(); kwargs...)
 
+_cg_master(prob, ngauss) =
+    ngauss === nothing ? Master(prob.mesh, 4 * prob.mesh.porder) : Master(prob.mesh, ngauss)
+
 function CommonSolve.solve(prob::CGProblem, ::Direct; ngauss=nothing)
-    mesh = prob.mesh
-    master = ngauss === nothing ? Master(mesh, 4 * mesh.porder) : Master(mesh, ngauss)
-    uh, energy = cg_solve(mesh, master, prob.source,
+    uh, energy = cg_solve(prob.mesh, _cg_master(prob, ngauss), prob.source,
                           cg_param(prob.equation, prob.reaction))
-    return CGSolution(reshape(uh, size(uh, 1), 1, size(uh, 2)), energy, prob)
+    return CGSolution(reshape(uh, size(uh, 1), 1, size(uh, 2)), energy, 0, prob)
+end
+
+function CommonSolve.solve(prob::CGProblem, alg::ConjugateGradient;
+                           ngauss=nothing, ArrayT=Array)
+    param = cg_param(prob.equation, prob.reaction)
+    iszero(param.c) ||
+        throw(ArgumentError("ConjugateGradient requires a symmetric operator " *
+                            "(no convection); use GMRES()"))
+    uh, energy, niter = cg_parsolve(prob.mesh, _cg_master(prob, ngauss),
+                                    prob.source, param; ArrayT,
+                                    tol=alg.tol, maxit=alg.maxit,
+                                    preconditioner=alg.preconditioner)
+    return CGSolution(reshape(uh, size(uh, 1), 1, size(uh, 2)), energy, niter, prob)
+end
+
+function CommonSolve.solve(prob::CGProblem, alg::GMRES; ngauss=nothing, ArrayT=Array)
+    uh, energy, niter = cg_parsolve(prob.mesh, _cg_master(prob, ngauss),
+                                    prob.source, cg_param(prob.equation, prob.reaction);
+                                    ArrayT, tol=alg.tol, maxit=alg.maxit,
+                                    restart=alg.restart,
+                                    preconditioner=alg.preconditioner)
+    return CGSolution(reshape(uh, size(uh, 1), 1, size(uh, 2)), energy, niter, prob)
 end
 
 end # module Interface

@@ -29,19 +29,14 @@ Solver-ready mesh of the unit square: `discretize(square_geometry(m, n; parity),
 mkmesh_square(m=2, n=2, porder=1, parity=0, nodetype=0) =
     discretize(square_geometry(m, n; parity), porder; nodetype)
 
+"""
+    mkmesh_distort!(mesh, wig=0.05)
+
+Distort a unit-square mesh (from [`mkmesh_square`](@ref)) in place with a
+smooth sinusoidal warp of amplitude `wig`, keeping the boundary fixed.
+Useful for testing solver accuracy on non-affine element mappings.
+"""
 function mkmesh_distort!(mesh, wig=0.05)
-    """
-    mkmesh_distort distorts a unit square mesh keeping boundaries unchanged
-
-    # Arguments
-    - `mesh`: mesh data structure
-        * input: mesh for the unit square created with mkmesh_square
-        * output: distorted mesh
-    - `wig`: amount of distortion (default: 0.05)
-
-    # Returns
-    - Distorted mesh
-    """
     # Computing distortion for mesh vertices
     dx = @. -wig * sin(2π * (mesh.p[:,2] - 0.5)) * cos(π * (mesh.p[:,1] - 0.5))
     dy = @. wig * sin(2π * (mesh.p[:,1] - 0.5)) * cos(π * (mesh.p[:,2] - 0.5))

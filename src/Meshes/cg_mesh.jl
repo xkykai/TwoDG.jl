@@ -1,3 +1,11 @@
+"""
+    cgmesh(mesh, ptol=2e-13) -> Mesh
+
+Build the continuous-Galerkin numbering of `mesh` by deduplicating the DG
+nodes shared between elements: fills `pcg` (unique node coordinates) and
+`tcg (nt, npl)` (element-to-CG-node connectivity). Required before
+`cg_solve`. Nodes closer than `ptol` (after rounding) are merged.
+"""
 function cgmesh(mesh, ptol=2e-13)
     # Reshape and rearrange mesh.dgnodes
     ph = reshape(permutedims(mesh.dgnodes, (3, 1, 2)), :, 2)

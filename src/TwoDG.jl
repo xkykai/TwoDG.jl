@@ -14,7 +14,7 @@ export
     gaussquad1d, gaussquad2d, newton_raphson,
     koornwinder1d, koornwinder2d,
     areacircle, trefftz_points, potential_trefftz, trefftz,
-    elemmat_cg, cg_solve,
+    elemmat_cg, cg_solve, cg_parsolve,
     grad_u, equilibrate, reconstruct,
     initu, interpolate, l2error, l2_error,
     App, mkapp_convection, mkapp_wave, mkapp_euler, eulereval, mkapp_convection_diffusion,
@@ -34,7 +34,7 @@ export
     EulerEquations, PoissonEquation, nvariables,
     Dirichlet, Neumann, SlipWall, FarField, IncomingWave,
     DGProblem, HDGProblem, CGProblem,
-    RK4, Direct, GMRES
+    RK4, Direct, GMRES, ConjugateGradient
 
 include("Utils/Utils.jl")
 include("Meshes/Meshes.jl")

@@ -16,6 +16,8 @@ deps/deps.jl
 docs/build
 docs/site
 docs/src/literated
+docs/src/tutorials
+docs/src/devdocs
 docs/Manifest.toml
 
 # Model output

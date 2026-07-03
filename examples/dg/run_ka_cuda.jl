@@ -197,3 +197,39 @@ rel_q = norm(q_gpu_b .- q_ref) / norm(q_ref)
 @printf "end-to-end GPU batched vs legacy CPU: u %.3e, q %.3e\n" rel_u rel_q
 @assert rel_u < 1e-7 && rel_q < 1e-7
 println("HDG batched on GPU: OK")
+
+# ==================== CG matrix-free solver (Phase 4) ====================
+println("\n-- CG matrix-free Krylov solver (Poisson) --")
+
+cg_source(x, y) = 2π^2 * sin(π * x) * sin(π * y)
+cg_param_p = (; κ=1.0, c=[0.0, 0.0], s=0.0)
+
+nc_, pc_ = 65, 3
+mesh_c = mkmesh_square(nc_, nc_, pc_, 0, 1)
+master_c = Master(mesh_c, 4pc_)
+@printf "CG mesh: %d elements, porder %d, %d CG nodes\n" size(mesh_c.t, 1) pc_ size(mesh_c.pcg, 1)
+
+# Float64: direct reference, then CPU-backend and GPU iterations
+uh_ref, energy_ref = cg_solve(mesh_c, master_c, cg_source, cg_param_p)
+uh_cpu, e_cpu, it_cpu = cg_parsolve(mesh_c, master_c, cg_source, cg_param_p; tol=1e-12)
+uh_gpu, e_gpu, it_gpu = cg_parsolve(mesh_c, master_c, cg_source, cg_param_p;
+                                    tol=1e-12, ArrayT=CuArray)
+rel_cpu = norm(uh_cpu .- uh_ref) / norm(uh_ref)
+rel_gpu = norm(uh_gpu .- uh_ref) / norm(uh_ref)
+@printf "Float64 vs direct: CPU %.3e (%d iters)   GPU %.3e (%d iters)\n" rel_cpu it_cpu rel_gpu it_gpu
+@assert rel_cpu < 1e-8 && rel_gpu < 1e-8 "CG iterative/direct mismatch"
+@assert isapprox(e_gpu, energy_ref; rtol=1e-8)
+
+# Float32 on the GPU (same loose expectations as the other solvers)
+uh32, e32, it32 = cg_parsolve(mesh_c, master_c, cg_source, cg_param_p;
+                              T=Float32, tol=1e-6, ArrayT=CuArray)
+rel32c = norm(Float64.(uh32) .- uh_ref) / norm(uh_ref)
+@printf "Float32 GPU vs Float64 direct: %.3e (%d iters)\n" rel32c it32
+@assert rel32c < 1e-3
+
+# timing: whole solve (assembly is CPU either way; the iteration is the payload)
+t_ccpu = @elapsed cg_parsolve(mesh_c, master_c, cg_source, cg_param_p; tol=1e-12)
+t_cgpu = @elapsed cg_parsolve(mesh_c, master_c, cg_source, cg_param_p; tol=1e-12, ArrayT=CuArray)
+t_cdir = @elapsed cg_solve(mesh_c, master_c, cg_source, cg_param_p)
+@printf "CG solve: direct %.3f s   iterative CPU %.3f s   iterative GPU %.3f s (%.1fx vs CPU)\n" t_cdir t_ccpu t_cgpu t_ccpu / t_cgpu
+println("CG on GPU: OK")

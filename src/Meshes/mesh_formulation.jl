@@ -2,6 +2,42 @@ using ForwardDiff
 using LinearAlgebra
 using TwoDG.Utils: newton_raphson
 
+"""
+    Mesh
+
+Solver-ready triangular mesh: vertex geometry, DG connectivity, and
+high-order (possibly curved) nodes. Built by the `mkmesh_*` generators or by
+[`discretize`](@ref)ing a [`MeshGeometry`](@ref); most fields are `nothing`
+until the corresponding construction stage has run.
+
+# Fields and conventions
+- `p :: (np, 2)` — vertex coordinates.
+- `t :: (nt, 3)` — triangles as vertex indices, counterclockwise.
+- `f :: (nf, 4)` — faces: `f[i, 1:2]` are the endpoint vertices, `f[i, 3]`
+  the element to the left, `f[i, 4]` the element to the right **or**
+  `-k` when face `i` lies on boundary `k` (see [`boundary_names`](@ref)).
+  Interior faces are listed first, then boundary faces grouped by tag.
+- `t2f :: (nt, 3)` — element-to-face map; local face `j` of element `it` is
+  `abs(t2f[it, j])`, and the sign records whether the face's stored direction
+  matches the element's counterclockwise traversal (`+`) or opposes it (`-`).
+- `fcurved :: (nf,)`, `tcurved :: (nt,)` — flags marking faces/elements that
+  touch a curved boundary (their high-order nodes are projected during
+  [`createnodes`](@ref)).
+- `porder` — polynomial order of the elements.
+- `plocal :: (npl, 3)`, `tlocal` — master-element node positions
+  (barycentric) and their triangulation, `npl = (porder+1)(porder+2)/2`.
+- `dgnodes :: (npl, 2, nt)` — coordinates of the high-order DG nodes of each
+  element (isoparametric on curved elements).
+- `pcg`, `tcg` — deduplicated continuous (CG) node coordinates and
+  connectivity, filled by [`cgmesh`](@ref).
+- `elcon :: (porder+1, 3, nt)` — element-to-global trace-node connectivity
+  used by HDG: global numbering of the face nodes of each local face, already
+  orientation-corrected via the sign of `t2f`.
+- `f2f :: (nf, 5)` — face-to-face connectivity ([`mkf2f`](@ref)), used by the
+  block-Jacobi preconditioner.
+- `boundary_names :: Vector{Symbol}` — names of the boundary tags, in tag
+  order (empty when the generator did not attach names).
+"""
 struct Mesh{P, T, F, TF, FC, TC, PO, PL, TL, DG, PCG, TCG, ELC, FTF, BN}
                      p :: P
                      t :: T
@@ -199,16 +235,18 @@ function project_vertex_to_boundary!(mesh::Mesh, distance_functions::Union{Nothi
 end
 
 """
-createdgnodes computes the coordinates of the dg nodes.
-dgnodes=createnodes(mesh,fd)
+    createnodes(mesh, fd=nothing) -> Mesh
 
-   mesh:      mesh data structure
-   fd:        distance function d(x,y)
-   dgnodes:   triangle indices (nplx2xnt). the nodes on 
-              the curved boundaries are projected to the
-              true boundary using the distance function fd
+Compute the high-order DG node coordinates `dgnodes (npl, 2, nt)` of `mesh`
+by mapping the master-element nodes (`mesh.plocal`) into each triangle. When
+`fd` is a vector of signed-distance functions (one per boundary tag), nodes
+on curved boundary edges are projected onto the true boundary, making those
+elements isoparametric.
+
+Also fills the HDG trace connectivity `elcon` and the face-to-face map `f2f`
+when the mesh already has face connectivity ([`mkt2f`](@ref)). Returns a new
+[`Mesh`](@ref) with the extra fields populated.
 """
-# Creates high-order nodes for a finite element mesh, handling curved boundaries
 function createnodes(mesh, fd=nothing)
     npl = size(mesh.plocal, 1)
     nt = size(mesh.t, 1)

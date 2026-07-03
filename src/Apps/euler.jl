@@ -103,6 +103,14 @@ function eulereval(u::Array{T,3}, str, gam::T) where T<:AbstractFloat
     return sca
 end
 
+"""
+    riemann_to_canonical(v, s, J⁺, J⁻, γ) -> (ρ, ρu₁, ρu₂, ρE)
+
+Convert the 1D Riemann-invariant variables — tangential velocity `v`, entropy
+`s = p/ρ^γ`, and invariants `J± = u ± 2c/(γ-1)` — to conserved Euler
+variables. Inverse of [`canonical_to_riemann`](@ref); used to prescribe
+characteristic far-field states.
+"""
 function riemann_to_canonical(v, s, J⁺, J⁻, γ)
     c = (γ - 1) / 4 * (J⁺ - J⁻)
     ρu₁ = (J⁺ + J⁻) / 2
@@ -113,6 +121,13 @@ function riemann_to_canonical(v, s, J⁺, J⁻, γ)
     return ρ, ρu₁, ρu₂, ρE
 end
 
+"""
+    canonical_to_riemann(ρ, ρu₁, ρu₂, ρE, γ) -> (v, s, J⁺, J⁻)
+
+Convert conserved Euler variables to the 1D Riemann-invariant variables:
+tangential velocity `v`, entropy `s = p/ρ^γ`, and invariants
+`J± = u ± 2c/(γ-1)`. See [`riemann_to_canonical`](@ref).
+"""
 function canonical_to_riemann(ρ, ρu₁, ρu₂, ρE, γ)
     p = (γ - 1) * (ρE - 0.5 * (ρu₁^2 + ρu₂^2) / ρ)
     v = ρu₂ / ρ

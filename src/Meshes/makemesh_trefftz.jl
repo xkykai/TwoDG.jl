@@ -1,5 +1,16 @@
 using TwoDG
 
+"""
+    mkmesh_trefftz(m=15, n=30, porder=3, node_spacing_type=0,
+                   tparam=[0.1, 0.05, 1.98]) -> Mesh
+
+Curved O-mesh around a Trefftz (Karman–Trefftz) airfoil, built by conformally
+mapping an `m × n` structured rectangle through `exp` and the K–T transform.
+`tparam = [x0, y0, exponent]` are the airfoil parameters: circle-center
+shifts `x0`/`y0` and K–T exponent (`2` gives a Joukowski airfoil). Boundary
+tag 1 (`:airfoil`) is the airfoil surface, tag 2 (`:farfield`) the outer
+circle. See also [`trefftz`](@ref) for the potential-flow driver.
+"""
 function mkmesh_trefftz(m=15, n=30, porder=3, node_spacing_type=0, tparam=[0.1, 0.05, 1.98])
     n = 2 * Int(ceil(n / 2))
     

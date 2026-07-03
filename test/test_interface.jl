@@ -153,8 +153,22 @@ using OrdinaryDiffEqTsit5: Tsit5
         exact(x, y) = sin(π * x) * sin(π * y)
         source(x, y) = 2π^2 * exact(x, y)
         mesh = mkmesh_square(9, 9, 3, 0, 1)
-        sol = solve(CGProblem(PoissonEquation(), mesh; source))
+        prob = CGProblem(PoissonEquation(), mesh; source)
+        sol = solve(prob)
         @test l2error(sol, exact) < 1e-4
         @test isfinite(sol.energy)
+        @test sol.iterations == 0   # direct solve
+
+        # matrix-free iterative paths reproduce the direct solve
+        sol_cg = solve(prob, ConjugateGradient(tol=1e-12))
+        @test sol_cg.iterations > 0
+        @test norm(sol_cg.u .- sol.u) / norm(sol.u) < 1e-8
+        @test sol_cg.energy ≈ sol.energy rtol = 1e-8
+
+        cd = CGProblem(ConvectionDiffusionEquation([1.0, 0.5], 1.0), mesh; source)
+        @test_throws ArgumentError solve(cd, ConjugateGradient())
+        sol_g = solve(cd, GMRES(tol=1e-12))
+        sol_d = solve(cd, Direct())
+        @test norm(sol_g.u .- sol_d.u) / norm(sol_d.u) < 1e-8
     end
 end

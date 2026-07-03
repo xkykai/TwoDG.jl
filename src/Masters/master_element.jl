@@ -1,6 +1,35 @@
 using LinearAlgebra
 using TwoDG.Meshes: Mesh
 
+"""
+    Master(mesh::Mesh, pgauss=nothing)
+
+Master (reference) element for `mesh`: tabulated shape functions, quadrature
+rules, and the local orderings the solvers need. `pgauss` is the polynomial
+degree integrated exactly by the quadrature rules (default `4porder`).
+
+# Fields and conventions
+- `porder` — polynomial order; `npl = (porder+1)(porder+2)/2` nodes.
+- `plocal :: (npl, 3)` — node positions in barycentric coordinates.
+- `corner :: (3,)` — indices of the three vertex nodes in `plocal`.
+- `perm :: (porder+1, 3, 2)` — face-node orderings: `perm[:, j, 1]` lists the
+  nodes on local face `j` traversed counterclockwise, `perm[:, j, 2]` the
+  same nodes reversed (used when a neighboring element sees the shared face
+  with opposite orientation — the sign of `mesh.t2f`).
+- `ploc1d :: (porder+1, 2)` — 1D node positions on a face.
+- `gp1d`, `gw1d` — 1D (face) quadrature points and weights on ``[0, 1]``.
+- `gpts`, `gwgh` — 2D (volume) quadrature points and weights on the
+  reference triangle.
+- `sh1d :: (porder+1, 2, ng1d)` — 1D shape functions (`[:, 1, :]`) and their
+  derivatives (`[:, 2, :]`) at the face quadrature points.
+- `shap :: (npl, 3, ng2d)` — 2D shape functions (`[:, 1, :]`) and their
+  ``ξ``/``η`` derivatives (`[:, 2, :]` / `[:, 3, :]`) at the volume
+  quadrature points.
+- `mass :: (npl, npl)` — reference-element mass matrix.
+- `conv :: (npl, npl, 2)` — reference convection matrices
+  (``∫ φᵢ ∂φⱼ/∂ξ`` and ``∫ φᵢ ∂φⱼ/∂η``).
+- `ma1d :: (porder+1, porder+1)` — 1D face mass matrix.
+"""
 struct Master{PO, PL, C, PE, PLO, GP, GPT, GW, GWG, SH, SHA, M, CV, MA}
     porder :: PO
     plocal :: PL
@@ -207,6 +236,14 @@ function shape2d(porder, plocal, pts)
     return nfs
 end
 
+"""
+    get_local_face_nodes(mesh, master, face_number, flip_face_direction=false)
+
+Local (element) indices of the `porder+1` nodes lying on global face
+`face_number` of the element to its left (`mesh.f[face_number, 3]`), in
+counterclockwise face order — or reversed with `flip_face_direction=true`,
+which matches how the right element sees the same face (`master.perm[..., 2]`).
+"""
 function get_local_face_nodes(mesh, master, face_number, flip_face_direction=false)
     # Get the triangle index that contains this face
     it = mesh.f[face_number, 3]

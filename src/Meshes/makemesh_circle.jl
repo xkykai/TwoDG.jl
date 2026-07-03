@@ -17,6 +17,14 @@ function circle_geometry(p, t)
     return MeshGeometry(p, t; boundaries, curved=[:boundary], fd=[fd_circle])
 end
 
+"""
+    make_circle_nodes(p, t, porder, nodetype) -> Mesh
+
+Discretize a raw unit-circle triangulation `(p, t)` (e.g. from
+[`make_circle_mesh`](@ref)) at order `porder`, projecting the high-order
+boundary nodes onto the unit circle. Equivalent to
+`discretize(circle_geometry(p, t), porder; nodetype)`.
+"""
 make_circle_nodes(p, t, porder, nodetype) =
     discretize(circle_geometry(p, t), porder; nodetype)
 
