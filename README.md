@@ -4,7 +4,15 @@
 [![codecov](https://codecov.io/gh/xkykai/TwoDG.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/xkykai/TwoDG.jl)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A high-performance Julia framework for solving 2D partial differential equations using advanced finite element methods: high-order (hybridizable) discontinuous Galerkin solvers with a single `solve` entry point, running on CPU or GPU from the same code.
+A high-performance Julia framework for solving 2D partial differential equations with high-order Galerkin methods — continuous, discontinuous, and hybridizable discontinuous — behind a single `solve` entry point, running on CPU or GPU from the same code.
+
+## Why TwoDG?
+
+- **Hybridizable DG (HDG) as a first-class solver.** Implicit high-order solves where the globally coupled unknowns live only on element faces: static condensation shrinks the system dramatically, the trace system is solved directly or with preconditioned Krylov iterations, and a cheap local postprocessing step recovers a solution that converges one order *faster* than the polynomial degree suggests (k+2 superconvergence). This extends all the way to steady and unsteady incompressible Navier–Stokes with an exactly divergence-free postprocessed velocity — capabilities usually confined to research codes.
+- **GPU-resident implicit and explicit solvers.** Not just the explicit DG time loop: the batched HDG assembly and recovery also run through KernelAbstractions, so the same code executes on CPU threads or a CUDA GPU (`ArrayT = CuArray`), with no per-backend forks. The batched assembly path is orders of magnitude faster than element-by-element assembly even on the CPU.
+- **High-order curved triangles.** Simplex elements with isoparametric curved boundaries at arbitrary polynomial order, so p-refinement on circles, airfoils, and mapped geometries keeps its design accuracy — no accuracy cliff at curved walls.
+- **Three methods, one API.** CG, explicit (L)DG, and implicit HDG share the same meshes, equations, and boundary conditions, which makes head-to-head method comparison on the *same* problem a few lines of code — and makes the package a natural companion for a finite element methods course.
+- **Numerics you can hand a precision or a stepper.** Element type is parametric (`T = Float32` runs the whole loop in single precision, on GPU too), and `semidiscretize` hands the semidiscrete system to the SciML ecosystem when you want adaptive or specialized time integrators instead of the built-in RK4.
 
 ## Installation
 
@@ -46,36 +54,18 @@ Julia 1.10 or newer is required. Plotting (`scaplot`, `meshplot`) activates when
 </p>
 
 
-## Overview
-
-TwoDG.jl provides a unified implementation of three powerful discretization schemes for 2D PDEs:
-
-- **Continuous Galerkin (CG)** - Traditional continuous finite elements
-- **Discontinuous Galerkin (DG)** - High-order explicit time-stepping methods
-- **Hybridizable Discontinuous Galerkin (HDG)** - Efficient implicit solvers with static condensation and parallel capabilities
-
-Whether you're studying wave propagation, compressible flows, or convection-diffusion phenomena, TwoDG.jl offers the numerical tools to tackle these problems with arbitrary polynomial orders and sophisticated error analysis.
-
-## Key Features
-
-- **Multiple PDE Types**: Poisson, convection-diffusion, wave equations, Euler equations, and the incompressible Navier-Stokes equations (with optional Boussinesq buoyancy)
-- **High-Order Accuracy**: Arbitrary polynomial order support (p-refinement) with Koornwinder orthogonal basis
-- **Efficient HDG**: Static condensation dramatically reduces system size compared to standard DG
-- **CPU/GPU Portability**: KernelAbstractions-based DG residuals and batched HDG assembly run unchanged on CPU threads or CUDA GPUs (`ArrayT = CuArray`)
-- **Rich Mesh Support**: Built-in generators for squares, circles, L-shapes, NACA airfoils, and more, with named boundary tags
-- **SciML Interop**: `semidiscretize(prob, tspan)` hands the DG right-hand side to any OrdinaryDiffEq.jl integrator; `compute_dt` picks a CFL-limited explicit step
-- **Comprehensive Examples**: Convergence studies, wave scattering, channel flows, and transport problems
-
 ## Supported Features
 
 | | Equations | Time / solver | Backends |
 |---|---|---|---|
-| **DG / LDG** (explicit) | convection, convection-diffusion (LDG), first-order wave system, compressible Euler (Roe flux) | internal `RK4()`, or any OrdinaryDiffEq stepper via `semidiscretize` | CPU + GPU (KernelAbstractions) |
-| **HDG** (implicit, static condensation) | Poisson, steady convection-diffusion | `Direct()` sparse LU, `GMRES()` (Krylov.jl, block-Jacobi preconditioned, batched assembly) | CPU + GPU trace solve |
+| **DG / LDG** (explicit) | convection, convection-diffusion (LDG), first-order wave system, compressible Euler (Roe flux) | internal `RK4()`, or any OrdinaryDiffEq stepper via `semidiscretize` | CPU + GPU (whole time loop) |
+| **HDG** (implicit, static condensation) | Poisson, steady convection-diffusion | `Direct()` sparse LU, `GMRES()` (Krylov.jl, block-Jacobi preconditioned, batched assembly) | `GMRES()`: CPU + GPU (assembly, Krylov solve, recovery); `Direct()`: CPU |
 | **HDG Navier-Stokes** | steady/unsteady incompressible NS, Boussinesq buoyancy; superconvergent H(div) postprocessing | Newton + direct/GMRES (driver-level API, see `examples/hdg/`) | CPU (threaded) |
-| **CG** | Poisson, convection-diffusion-reaction | `Direct()` | CPU |
+| **CG** | Poisson, convection-diffusion-reaction | `Direct()` sparse LU | CPU |
 
-Meshes: structured square/L-shape, unstructured circle (distmesh), cos²-bump duct, Trefftz airfoil (conformal map), NACA 4-digit via Gmsh (package extension). All support curved isoparametric elements at arbitrary `porder`; generators attach named boundary tags (`boundary_names(mesh)`). A `MeshGeometry` + `discretize(geo, porder)` two-stage API separates geometry from discretization.
+GPU execution goes through KernelAbstractions: pass `ArrayT = CuArray` (with CUDA.jl loaded) and the DG time loop — or the HDG batched local solves, condensed trace system (Krylov iterations included), and solution recovery — runs on the device. The sparse direct paths (`Direct()`, CG) factorize on the CPU.
+
+Meshes: structured square/L-shape, unstructured circle (distmesh), cos²-bump duct, Trefftz airfoil (conformal map), NACA 4-digit via Gmsh (package extension). All support curved isoparametric elements at arbitrary polynomial order (Koornwinder orthogonal basis); generators attach named boundary tags (`boundary_names(mesh)`). A `MeshGeometry` + `discretize(geo, porder)` two-stage API separates geometry from discretization.
 
 Element type is parametric (`T = Float32` runs the whole DG loop in single precision, on GPU too). Postprocessing: `l2error`, HDG local postprocessing (`p+2` superconvergence), Makie plotting via extension.
 
