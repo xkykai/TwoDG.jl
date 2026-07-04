@@ -33,28 +33,25 @@ for (i, ngrid) in enumerate(ngrids), (j, p) in enumerate(ps)
     mesh_distorted = deepcopy(mesh)
     mkmesh_distort!(mesh_distorted)  # Apply distortion to the mesh
 
-    # Boundary conditions
-    bcm = ones(Int64, 4)  # Boundary condition markers
-    bcs = zeros(1, 1)  # Boundary condition values
-
-    # Velocity field (pointwise convention): rigid rotation about (0.5, 0.5)
+    # Velocity field: rigid rotation about (0.5, 0.5)
     vf(x) = SVector(-x[2] + 0.5, x[1] - 0.5)
 
-    # Create application object for convection problem
-    app = mkapp_convection_pt(vf; bcm, bcs)
+    # Physics: convection equation + zero far-field data on all 4 boundaries
+    phys = DGPhysics(ConvectionEquation(vf);
+                     boundary_conditions=ntuple(_ -> FarField(SVector(0.0)), 4))
 
     # Initial condition function
     init(x, y) = exp(-120 * ((x - 0.6)^2 + (y - 0.5)^2))
 
     # Initialize solution on the regular mesh
-    u = initu(mesh, app, [init])
+    u = initu(mesh, 1, [init])
     ctx = DGContext(master, mesh)
     @info "Computing MSE for p = $(p) and size = $(ngrids[i])"
 
     tm = 0.  # Initialize time
     for i in 1:niter
         # Update the solution using the RK4 time-stepping method
-        rk4_ka!(ctx, app, u, tm, dt, nstep)
+        rk4_ka!(ctx, phys, u, tm, dt, nstep)
         tm += nstep * dt  # Increment time
     end
     # Compute L2 error for the regular mesh
@@ -63,12 +60,12 @@ for (i, ngrid) in enumerate(ngrids), (j, p) in enumerate(ps)
     @info "Computing MSE for distorted mesh p = $(p) and size = $(ngrids[i])"
 
     # Initialize solution on the distorted mesh
-    u_distorted = initu(mesh_distorted, app, [init])
+    u_distorted = initu(mesh_distorted, 1, [init])
     ctx_distorted = DGContext(master, mesh_distorted)
     tm = 0.  # Reset time
     for i in 1:niter
         # Update the solution using the RK4 time-stepping method
-        rk4_ka!(ctx_distorted, app, u_distorted, tm, dt, nstep)
+        rk4_ka!(ctx_distorted, phys, u_distorted, tm, dt, nstep)
         tm += nstep * dt  # Increment time
     end
     # Compute L2 error for the distorted mesh

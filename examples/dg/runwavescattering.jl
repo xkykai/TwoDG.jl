@@ -71,18 +71,19 @@ for porder in porders
     θs[θs .< 0] .+= 2π  # Adjust angles to be in the range [0, 2π]
 
     # Boundary condition setup
-    bcm = [2, 3]  # Boundary condition markers
-    bcs = zeros(3, 3)  # Boundary condition values
+    # boundary conditions by tag:
+    bc = (SlipWall(), IncomingWave())  # tag 1 = scatterer, tag 2 = incoming wave
 
     # Incoming-wave function (pointwise convention: x::SVector{2}, scalar return)
     ub(c, k, x, time) = sin(x[1] * k[1] + x[2] * k[2] - c * hypot(k[1], k[2]) * time)
 
     # Create wave application (pointwise flux convention)
-    app = mkapp_wave_pt(; c=Float64(c), k=SVector{2, Float64}(k...), f=ub, bcm, bcs)
+    phys = DGPhysics(WaveEquation(Float64(c); k=SVector{2, Float64}(k...), f=ub);
+                     boundary_conditions=bc)
     ctx = DGContext(master, mesh)
 
     # Initialize solution arrays
-    u = initu(mesh, app, [0, 0, 0])  # Initial solution
+    u = initu(mesh, 3, [0, 0, 0])  # Initial solution
     ue = zeros(size(u))  # Exact solution
 
     @info "Initializing the solution..."
@@ -98,7 +99,7 @@ for porder in porders
             u .= ue
         end
 
-        rk4_ka!(ctx, app, u, tm, dt, nstep)  # Runge-Kutta time-stepping
+        rk4_ka!(ctx, phys, u, tm, dt, nstep)  # Runge-Kutta time-stepping
 
         # Increment time
         tm += nstep * dt
@@ -111,7 +112,7 @@ for porder in porders
         ue[:, 1, :] .= -k[1] * ue[:, 3, :] / kmod
         ue[:, 2, :] .= -k[2] * ue[:, 3, :] / kmod
 
-        rk4_ka!(ctx, app, u, tm, dt, nstep)  # Runge-Kutta time-stepping
+        rk4_ka!(ctx, phys, u, tm, dt, nstep)  # Runge-Kutta time-stepping
 
         iθ = 1
         for (i, face_num) in enumerate(indf_rad)

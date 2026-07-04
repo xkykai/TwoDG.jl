@@ -32,11 +32,10 @@ mesh.fcurved .= false  # Disable curved faces
 mesh.tcurved .= false  # Disable curved elements
 
 # Boundary conditions
-bcm = [2, 1, 2, 1]  # Boundary condition types for each side of the domain
-bcs = vcat(ui', 0.0 .* ui')  # Boundary condition values
+bc = (SlipWall(), FarField(ui), SlipWall(), FarField(ui))  # walls bottom/top, far field left/right
 
 # Application setup for Euler equations (pointwise flux convention)
-app = mkapp_euler_pt(; gamma=gam, bcm, bcs)
+phys = DGPhysics(EulerEquations(γ=gam); boundary_conditions=bc)
 ctx = DGContext(master, mesh)  # precomputed geometry for the KA residual path
 
 # Background flow properties
@@ -63,7 +62,7 @@ riemann_initJ⁻_wave(x, y) = background_riemann[4] + plane_wave(x, y)  # J⁻ w
 riemann_initJ⁻(x, y) = background_riemann[4]  # J⁻ without wave perturbation
 
 # Initialize the solution for J⁺
-u_riemann_J⁺ = initu(mesh, app, [riemann_initv, riemann_inits, riemann_initJ⁺_wave, riemann_initJ⁻])
+u_riemann_J⁺ = initu(mesh, 4, [riemann_initv, riemann_inits, riemann_initJ⁺_wave, riemann_initJ⁻])
 u_canonical_J⁺ = similar(u_riemann_J⁺)  # Allocate memory for the canonical variables
 
 # Convert Riemann invariants to canonical variables
@@ -85,7 +84,7 @@ fig = scaplot(mesh, eulereval(u_canonical_J⁺, "Jp", gam), show_mesh=true, figu
 # Time-stepping loop for J⁺
 for i in 1:ncycl
     @info "$tm"  # Log the current time
-    rk4_ka!(ctx, app, u_canonical_J⁺, tm, Δt, nstep)  # Advance the solution using RK4
+    rk4_ka!(ctx, phys, u_canonical_J⁺, tm, Δt, nstep)  # Advance the solution using RK4
     tm += nstep * Δt  # Update time
 end
 
@@ -94,7 +93,7 @@ fig = scaplot(mesh, eulereval(u_canonical_J⁺, "Jp", gam), show_mesh=true, figu
 # save("./output/Jp_t$(tm).png", fig, px_per_unit=8)
 
 # Initialize the solution for J⁻
-u_riemann_J⁻ = initu(mesh, app, [riemann_initv, riemann_inits, riemann_initJ⁺, riemann_initJ⁻_wave])
+u_riemann_J⁻ = initu(mesh, 4, [riemann_initv, riemann_inits, riemann_initJ⁺, riemann_initJ⁻_wave])
 u_canonical_J⁻ = similar(u_riemann_J⁻)
 
 # Convert Riemann invariants to canonical variables for J⁻
@@ -116,7 +115,7 @@ fig = scaplot(mesh, eulereval(u_canonical_J⁻, "Jm", gam), show_mesh=true, figu
 # Time-stepping loop for J⁻
 for i in 1:ncycl
     @info "$tm"
-    rk4_ka!(ctx, app, u_canonical_J⁻, tm, Δt, nstep)
+    rk4_ka!(ctx, phys, u_canonical_J⁻, tm, Δt, nstep)
     tm += nstep * Δt
 end
 
@@ -135,7 +134,7 @@ rho(x, y) = 1
 ru(x, y) = rho(x, y) * ui[2] / ui[1]
 rv(x, y) = rho(x, y) * ui[3] / ui[1]
 rE(x, y) = 0.5 * (ru(x, y)^2 + rv(x, y)^2) / rho(x, y) + pinf / (gam - 1)
-u = initu(mesh_bump, app, [rho, ru, rv, rE])
+u = initu(mesh_bump, 4, [rho, ru, rv, rE])
 
 # Time-stepping parameters for bump geometry
 Δt = 1e-3
@@ -151,7 +150,7 @@ for i in 1:ncycl
         file["$i"] = u
     end
 
-    rk4_ka!(ctx_bump, app, u, tm, Δt, nstep)
+    rk4_ka!(ctx_bump, phys, u, tm, Δt, nstep)
 
     tm += nstep * Δt
 end

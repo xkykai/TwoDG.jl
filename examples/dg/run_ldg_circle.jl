@@ -10,13 +10,13 @@ kappa = 1
 c11 = 10
 c11int = 0
 
-# unit source term (pointwise convention)
-src(u, x, param, time) = SVector(1.0)
+# unit source term (pointwise convention: (u, x, t) -> SVector)
+src(u, x, time) = SVector(1.0)
 
-bcm = [1]
-bcs = zeros(1, 1)
-app = mkapp_convection_diffusion_pt(SVector(0.0, 0.0);
-                                    kappa, c11, c11int, bcm, bcs, src)
+# pure diffusion with homogeneous Dirichlet on the (single) circle boundary
+phys = DGPhysics(ConvectionDiffusionEquation(SVector(0.0, 0.0), kappa);
+                 boundary_conditions=(Dirichlet(0.0),), source=src,
+                 stabilization=LDGStabilization(c11, c11int))
 
 
 time_total = 2
@@ -38,12 +38,12 @@ for (i, porder) in enumerate(porders), (j, size) in enumerate(sizes)
     mesh = mkmesh_circle(size, porder, 1)
     master = Master(mesh, 4*porder)
     ctx = DGContext(master, mesh)
-    u = initu(mesh, app, [0])
+    u = initu(mesh, 1, [0])
 
     time = 0
     for i in 1:ncycl
         @info "time = $(time)"
-        rk4_ka!(rldgexpl!, ctx, app, u, time, dt, nstep)
+        rk4_ka!(viscous_residual!, ctx, phys, u, time, dt, nstep)
         time += nstep * dt
     end
 

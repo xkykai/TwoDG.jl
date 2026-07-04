@@ -37,7 +37,7 @@ Julia 1.10 or newer is required. Plotting (`scaplot`, `meshplot`) activates when
 <p align="center">
   <img src="figures/hdg_ns_boussinesq_ra1e7.gif" height="420" />
   <br>
-  <em>Natural convection in a differentially heated cavity at Ra = 10⁷ (incompressible nonhydrostatic Navier-Stokes equations with the Boussinesq approximation), <strong>computed on the GPU</strong> with the implicit HDG solver (k = 3, wall-clustered curved elements): the batched element assembly, local solves, and recovery run on the device through KernelAbstractions. The hot-wall Nusselt number matches the Le Quéré benchmark.</em>
+  <em>Natural convection in a differentially heated cavity at Ra = 10⁷ (incompressible nonhydrostatic Navier-Stokes equations with the Boussinesq approximation), <strong>computed on the GPU</strong> with the implicit HDG solver (k = 3, wall-clustered curved elements): the batched element assembly, local solves, and recovery run on the device through KernelAbstractions. The hot-wall Nusselt number agrees with the Le Quéré benchmark to within 4% on this showcase-sized mesh.</em>
 </p>
 
 <p align="center">

@@ -25,19 +25,19 @@ n, porder = 33, 3
 mesh = mkmesh_square(n, n, porder, 0, 1)
 master = Master(mesh)
 
-app = mkapp_euler_pt(; gamma=γ, bcm=fill(1, 4), bcs=reshape(uinf, 1, 4))
+phys = DGPhysics(EulerEquations(γ=γ); boundary_conditions=ntuple(_ -> FarField(uinf), 4))
 
 ρ(x, y) = 1.0 + 0.1 * exp(-30 * ((x - 0.5)^2 + (y - 0.5)^2))
-u0 = initu(mesh, app, [ρ,
+u0 = initu(mesh, 4, [ρ,
                        (x, y) -> 0.3 * ρ(x, y),
                        (x, y) -> 0.05 * ρ(x, y),
                        (x, y) -> 1.0 / (γ - 1) + 0.5 * (0.3^2 + 0.05^2) * ρ(x, y)])
 
 # ---- correctness: Float64 GPU must match Float64 CPU to roundoff ----
 ctx64 = DGContext(master, mesh)
-app_gpu = adapt(CuArray, app)
-r64_cpu = rinvexpl_ka(ctx64, app, u0, 0.0)
-r64_gpu = rinvexpl_ka(adapt(CuArray, ctx64), app_gpu, CuArray(u0), 0.0)
+phys_gpu = adapt(CuArray, phys)
+r64_cpu = rinvexpl_ka(ctx64, phys, u0, 0.0)
+r64_gpu = rinvexpl_ka(adapt(CuArray, ctx64), phys_gpu, CuArray(u0), 0.0)
 rel64 = norm(Array(r64_gpu) .- r64_cpu) / norm(r64_cpu)
 @printf "Float64 GPU vs CPU residual relative difference: %.3e\n" rel64
 @assert rel64 < 1e-10 "GPU/CPU mismatch in Float64 — kernel bug"
@@ -47,11 +47,11 @@ rel64 = norm(Array(r64_gpu) .- r64_cpu) / norm(r64_cpu)
 # conditioning, so only a loose check is meaningful ----
 ctx_cpu = DGContext(master, mesh; T=Float32)
 u32 = Float32.(u0)
-r_cpu = rinvexpl_ka(ctx_cpu, app, u32, 0.0f0)
+r_cpu = rinvexpl_ka(ctx_cpu, phys, u32, 0.0f0)
 
 ctx_gpu = adapt(CuArray, ctx_cpu)
 u_gpu = CuArray(u32)
-r_gpu = rinvexpl_ka(ctx_gpu, app_gpu, u_gpu, 0.0f0)
+r_gpu = rinvexpl_ka(ctx_gpu, phys_gpu, u_gpu, 0.0f0)
 
 rel32_gpu = norm(Float64.(Array(r_gpu)) .- r64_cpu) / norm(r64_cpu)
 rel32_cpu = norm(Float64.(r_cpu) .- r64_cpu) / norm(r64_cpu)
@@ -61,18 +61,18 @@ rel32_cpu = norm(Float64.(r_cpu) .- r64_cpu) / norm(r64_cpu)
 
 # ---- timing: repeated residual evaluations with preallocated workspace ----
 nrep = 50
-ws_cpu = RinvWorkspace(ctx_cpu, app.nc)
+ws_cpu = RinvWorkspace(ctx_cpu, 4)
 rr_cpu = similar(u32)
-rinvexpl!(rr_cpu, ctx_cpu, app, u32, 0.0f0; ws=ws_cpu)  # warmup
+rinvexpl!(rr_cpu, ctx_cpu, phys, u32, 0.0f0; ws=ws_cpu)  # warmup
 t_cpu = @elapsed for _ in 1:nrep
-    rinvexpl!(rr_cpu, ctx_cpu, app, u32, 0.0f0; ws=ws_cpu)
+    rinvexpl!(rr_cpu, ctx_cpu, phys, u32, 0.0f0; ws=ws_cpu)
 end
 
-ws_gpu = RinvWorkspace(ctx_gpu, app.nc)
+ws_gpu = RinvWorkspace(ctx_gpu, 4)
 rr_gpu = similar(u_gpu)
-rinvexpl!(rr_gpu, ctx_gpu, app_gpu, u_gpu, 0.0f0; ws=ws_gpu)  # warmup
+rinvexpl!(rr_gpu, ctx_gpu, phys_gpu, u_gpu, 0.0f0; ws=ws_gpu)  # warmup
 t_gpu = @elapsed for _ in 1:nrep
-    rinvexpl!(rr_gpu, ctx_gpu, app_gpu, u_gpu, 0.0f0; ws=ws_gpu)
+    rinvexpl!(rr_gpu, ctx_gpu, phys_gpu, u_gpu, 0.0f0; ws=ws_gpu)
 end
 
 nt = size(mesh.t, 1)
@@ -81,49 +81,49 @@ nt = size(mesh.t, 1)
 
 # ---- a few RK4 steps on the GPU ----
 uu = copy(u_gpu)
-rk4_ka!(ctx_gpu, app_gpu, uu, 0.0f0, 1f-4, 20; ws=ws_gpu)
+rk4_ka!(ctx_gpu, phys_gpu, uu, 0.0f0, 1f-4, 20; ws=ws_gpu)
 @assert all(isfinite, Array(uu))
 println("RK4 on GPU: OK")
 
 # ============================ LDG viscous path ============================
 println("\n-- LDG viscous path (convection-diffusion) --")
 
-appv = mkapp_convection_diffusion_pt(x -> SVector(-x[2], x[1]);
-                                     kappa=0.01, c11=10.0, c11int=0.5,
-                                     bcm=[1, 2, 1, 2], bcs=zeros(2, 1))
-appv_gpu = adapt(CuArray, appv)
-uv0 = initu(mesh, appv, [(x, y) -> exp(-4 * ((x - 0.5)^2 + (y - 0.5)^2))])
+physv = DGPhysics(ConvectionDiffusionEquation(x -> SVector(-x[2], x[1]), 0.01);
+                  boundary_conditions=(Dirichlet(0.0), Neumann(), Dirichlet(0.0), Neumann()),
+                  stabilization=LDGStabilization(10.0, 0.5))
+physv_gpu = adapt(CuArray, physv)
+uv0 = initu(mesh, 1, [(x, y) -> exp(-4 * ((x - 0.5)^2 + (y - 0.5)^2))])
 
 # Float64 GPU vs CPU parity (gradient and residual)
-qv_cpu = getq_ka(ctx64, appv, uv0, 0.0)
-qv_gpu = getq_ka(adapt(CuArray, ctx64), appv_gpu, CuArray(uv0), 0.0)
+qv_cpu = getq_ka(ctx64, physv, uv0, 0.0)
+qv_gpu = getq_ka(adapt(CuArray, ctx64), physv_gpu, CuArray(uv0), 0.0)
 relq = norm(Array(qv_gpu) .- qv_cpu) / norm(qv_cpu)
-rv_cpu = rldgexpl_ka(ctx64, appv, uv0, 0.0)
-rv_gpu = rldgexpl_ka(adapt(CuArray, ctx64), appv_gpu, CuArray(uv0), 0.0)
+rv_cpu = rldgexpl_ka(ctx64, physv, uv0, 0.0)
+rv_gpu = rldgexpl_ka(adapt(CuArray, ctx64), physv_gpu, CuArray(uv0), 0.0)
 relv = norm(Array(rv_gpu) .- rv_cpu) / norm(rv_cpu)
 @printf "Float64 GPU vs CPU: getq %.3e, rldgexpl %.3e\n" relq relv
 @assert relq < 1e-10 && relv < 1e-10 "LDG GPU/CPU mismatch in Float64 — kernel bug"
 
 # Float32 timing, CPU KA backend vs GPU
 uv32 = Float32.(uv0)
-wsv_cpu = RldgWorkspace(ctx_cpu, appv.nc)
+wsv_cpu = RldgWorkspace(ctx_cpu, 1)
 rrv_cpu = similar(uv32)
-rldgexpl!(rrv_cpu, ctx_cpu, appv, uv32, 0.0f0; ws=wsv_cpu)  # warmup
+rldgexpl!(rrv_cpu, ctx_cpu, physv, uv32, 0.0f0; ws=wsv_cpu)  # warmup
 tv_cpu = @elapsed for _ in 1:nrep
-    rldgexpl!(rrv_cpu, ctx_cpu, appv, uv32, 0.0f0; ws=wsv_cpu)
+    rldgexpl!(rrv_cpu, ctx_cpu, physv, uv32, 0.0f0; ws=wsv_cpu)
 end
 
-wsv_gpu = RldgWorkspace(ctx_gpu, appv.nc)
+wsv_gpu = RldgWorkspace(ctx_gpu, 1)
 uv_gpu = CuArray(uv32)
 rrv_gpu = similar(uv_gpu)
-rldgexpl!(rrv_gpu, ctx_gpu, appv_gpu, uv_gpu, 0.0f0; ws=wsv_gpu)  # warmup
+rldgexpl!(rrv_gpu, ctx_gpu, physv_gpu, uv_gpu, 0.0f0; ws=wsv_gpu)  # warmup
 tv_gpu = @elapsed for _ in 1:nrep
-    rldgexpl!(rrv_gpu, ctx_gpu, appv_gpu, uv_gpu, 0.0f0; ws=wsv_gpu)
+    rldgexpl!(rrv_gpu, ctx_gpu, physv_gpu, uv_gpu, 0.0f0; ws=wsv_gpu)
 end
 @printf "LDG residual, %d evals: CPU %.3f s   GPU %.3f s   speedup: %.1fx\n" nrep tv_cpu tv_gpu tv_cpu / tv_gpu
 
 # a few viscous RK4 steps on the GPU
-rk4_ka!(rldgexpl!, ctx_gpu, appv_gpu, uv_gpu, 0.0f0, 1f-4, 20; ws=wsv_gpu)
+rk4_ka!(rldgexpl!, ctx_gpu, physv_gpu, uv_gpu, 0.0f0, 1f-4, 20; ws=wsv_gpu)
 @assert all(isfinite, Array(uv_gpu))
 println("LDG RK4 on GPU: OK")
 
