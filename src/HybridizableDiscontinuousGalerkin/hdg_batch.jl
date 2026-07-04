@@ -24,7 +24,8 @@ using KernelAbstractions
 using KernelAbstractions: @kernel, @index, @Const
 using Adapt
 using LinearAlgebra
-using TwoDG.DiscontinuousGalerkin: DGContext
+using SparseArrays
+using TwoDG.Geometry: GeometricFactors, SideGeometry
 
 """
     HDGBatch(master, mesh, source, param; T=Float64)
@@ -82,11 +83,10 @@ function HDGBatch(master, mesh, source, param; T::Type{<:AbstractFloat}=Float64)
     npl = size(mesh.dgnodes, 1)
     nt = size(mesh.t, 1)
 
-    ctx = DGContext(master, mesh)   # canonical volume geometry (Float64)
-    shap = ctx.shap                 # (npl, ng)
-    sh1d = master.sh1d[:, 1, :]     # (nps, ng1d)
-    sh1dξ = master.sh1d[:, 2, :]
-    gw1d = master.gw1d
+    ctx = GeometricFactors(master, mesh)   # canonical volume geometry (Float64)
+    side = SideGeometry(master, mesh)      # face metrics in element orientation
+    shap = ctx.shap                        # (npl, ng)
+    sh1d = master.sh1d[:, 1, :]            # (nps, ng1d)
     perm = master.perm[:, :, 1]
 
     MinvM = zeros(npl, npl, nt)
@@ -102,8 +102,6 @@ function HDGBatch(master, mesh, source, param; T::Type{<:AbstractFloat}=Float64)
     Ru = zeros(ndf, npl, nt)
 
     @views Threads.@threads for e in 1:nt
-        dg = mesh.dgnodes[:, :, e]
-
         MinvM[:, :, e] .= kappa .* ctx.Minv[:, :, e]
         Cx[:, :, e] .= shap * ctx.shapx[:, :, e]'
         Cy[:, :, e] .= shap * ctx.shapy[:, :, e]'
@@ -116,13 +114,10 @@ function HDGBatch(master, mesh, source, param; T::Type{<:AbstractFloat}=Float64)
 
         for s in 1:3
             ps = perm[:, s]
-            xxi = sh1dξ' * dg[ps, 1]
-            yxi = sh1dξ' * dg[ps, 2]
-            dsdxi = sqrt.(xxi .^ 2 .+ yxi .^ 2)
-            nl1 = yxi ./ dsdxi
-            nl2 = .-xxi ./ dsdxi
+            nl1 = side.nl[:, 1, s, e]
+            nl2 = side.nl[:, 2, s, e]
+            sw = side.sw[:, s, e]
             cnl = c[1] .* nl1 .+ c[2] .* nl2
-            sw = gw1d .* dsdxi
             tau_loc = kappa .+ abs.(cnl)      # localprob's tau (taud = kappa)
             tau_ae = taud_ae .+ abs.(cnl)     # elemmat_hdg's tau
 
@@ -368,6 +363,68 @@ function hdg_parsolve_batched(master, mesh, source, dbc, param;
     sys = adapt(ArrayT, HDGSystem(ae, fe, mesh; T))
     x, stats = hdg_gmres_ka(sys; kwargs...)
 
+    return _hdg_batched_solution(batch, loc, x, mesh)..., stats.niter
+end
+
+"""
+    hdg_direct_batched(master, mesh, source, dbc, param; T=Float64)
+
+Direct (sparse LU/Cholesky-free) counterpart of [`hdg_parsolve_batched`](@ref):
+the *same* batched element assembly ([`hdg_local_solves`](@ref)) and local
+recovery, with the condensed trace system assembled to a `SparseMatrixCSC`
+and factorized instead of solved iteratively — the Direct/GMRES choice is an
+algorithm choice over one assembly engine, not a separate code path.
+
+Returns `(uh, qh, uhath)` with the same shapes as `hdg_parsolve_batched`.
+"""
+function hdg_direct_batched(master, mesh, source, dbc, param;
+                            T::Type{<:AbstractFloat}=Float64)
+    batch = HDGBatch(master, mesh, source, param; T)
+    loc = hdg_local_solves(batch)
+
+    ae = Float64.(Array(loc.ae))
+    fe = Float64.(Array(loc.fe))
+    hdg_applydbc!(ae, fe, master, mesh, dbc)
+
+    K, F = hdg_trace_system(ae, fe, batch.elcon)
+    x = K \ F
+
+    return _hdg_batched_solution(batch, loc, T.(x), mesh)
+end
+
+"""
+    hdg_trace_system(ae, fe, elcon) -> (K, F)
+
+Assemble the global condensed trace system from the element trace blocks
+`ae (ndf, ndf, nt)`, `fe (ndf, nt)` via the orientation-resolved trace
+connectivity `elcon (ndf, nt)`: triplet-based sparse assembly (duplicate
+entries sum, exactly like the matrix-free face matvec).
+"""
+function hdg_trace_system(ae::AbstractArray{Tv, 3}, fe, elcon) where {Tv}
+    ndf, _, nt = size(ae)
+    n = maximum(elcon)
+
+    Iv = Vector{Int}(undef, ndf * ndf * nt)
+    Jv = Vector{Int}(undef, ndf * ndf * nt)
+    Vv = Vector{Tv}(undef, ndf * ndf * nt)
+    idx = 1
+    for e in 1:nt, j in 1:ndf, i in 1:ndf
+        Iv[idx] = elcon[i, e]
+        Jv[idx] = elcon[j, e]
+        Vv[idx] = ae[i, j, e]
+        idx += 1
+    end
+    K = sparse(Iv, Jv, Vv, n, n)
+
+    F = zeros(Tv, n)
+    for e in 1:nt, i in 1:ndf
+        F[elcon[i, e]] += fe[i, e]
+    end
+    return K, F
+end
+
+# recover (uh, qh, uhath) in the standard output shapes from the trace vector
+function _hdg_batched_solution(batch, loc, x, mesh)
     uh_d, qx_d, qy_d = hdg_recover(batch, loc, x)
     uh = Array{Float64}(undef, batch.npl, 1, batch.nt)
     uh[:, 1, :] .= Array(uh_d)
@@ -375,6 +432,5 @@ function hdg_parsolve_batched(master, mesh, source, dbc, param;
     qh[:, 1, :] .= Array(qx_d)
     qh[:, 2, :] .= Array(qy_d)
     uhath = reshape(Float64.(Array(x)), mesh.porder + 1, :)
-
-    return uh, qh, uhath, stats.niter
+    return uh, qh, uhath
 end
