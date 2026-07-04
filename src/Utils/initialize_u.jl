@@ -20,13 +20,14 @@ function interpolate(mesh, values)
 end
 
 """
-    initu(mesh, app, value)
+    initu(mesh, nc::Integer, value)
 
-Initialize the vector of unknowns `u (npl, app.nc, nt)` from per-component
-constants or functions (see [`interpolate`](@ref), which this wraps).
+Initialize the vector of unknowns `u (npl, nc, nt)` from per-component
+constants or functions (see [`interpolate`](@ref), which this wraps). Pass
+`nvariables(equation)` for `nc`.
 """
-function initu(mesh, app, value)
-    length(value) == app.nc ||
-        throw(ArgumentError("expected $(app.nc) components, got $(length(value))"))
+function initu(mesh, nc::Integer, value)
+    length(value) == nc ||
+        throw(ArgumentError("expected $nc components, got $(length(value))"))
     return interpolate(mesh, value)
 end

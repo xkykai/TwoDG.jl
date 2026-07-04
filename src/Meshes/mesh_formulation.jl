@@ -7,8 +7,11 @@ using TwoDG.Utils: newton_raphson
 
 Solver-ready triangular mesh: vertex geometry, DG connectivity, and
 high-order (possibly curved) nodes. Built by the `mkmesh_*` generators or by
-[`discretize`](@ref)ing a [`MeshGeometry`](@ref); most fields are `nothing`
-until the corresponding construction stage has run.
+[`discretize`](@ref)ing a [`MeshGeometry`](@ref); every mesh those return has
+`p`–`f2f` fully populated (`pcg`/`tcg` are filled by [`cgmesh`](@ref), which
+`discretize` runs for you). The keyword constructor's `nothing` defaults are
+construction-internal staging only — solver code must never receive a mesh
+with `nothing` fields.
 
 # Fields and conventions
 - `p :: (np, 2)` — vertex coordinates.
@@ -256,6 +259,29 @@ function mkelcon(t2f, porder)
 end
 
 """
+    straight_dgnodes(p, t, plocal) -> dgnodes (npl, 2, nt)
+
+Map the master-element nodes `plocal` (barycentric, `(npl, 3)`) affinely into
+every triangle of `(p, t)`. This is the straight-element part of
+[`createnodes`](@ref); use it when the high-order nodes will be transformed
+analytically afterwards (e.g. [`mkmesh_trefftz`](@ref)'s conformal maps).
+"""
+function straight_dgnodes(p, t, plocal)
+    npl = size(plocal, 1)
+    nt = size(t, 1)
+    dgnodes = zeros(eltype(p), npl, 2, nt)
+    for it in 1:nt
+        v₁ = p[t[it, 1], :]
+        v₂ = p[t[it, 2], :]
+        v₃ = p[t[it, 3], :]
+        for ipl in 1:npl
+            dgnodes[ipl, :, it] .= barycentric_to_cartesian(plocal[ipl, 2:3], v₁, v₂, v₃)
+        end
+    end
+    return dgnodes
+end
+
+"""
     createnodes(mesh, fd=nothing) -> Mesh
 
 Compute the high-order DG node coordinates `dgnodes (npl, 2, nt)` of `mesh`
@@ -319,12 +345,6 @@ function createnodes(mesh, fd=nothing)
                 dgnodes[ipl, :, it] .= x
             end
         end
-    end
-
-    # Meshes built before face connectivity exists (e.g. the intermediate mesh
-    # in mkmesh_trefftz) only need the high-order nodes
-    if mesh.f === nothing || mesh.t2f === nothing
-        return Mesh(mesh; dgnodes)
     end
 
     elcon = mkelcon(mesh.t2f, mesh.porder)
