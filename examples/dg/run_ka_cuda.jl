@@ -233,3 +233,48 @@ t_cgpu = @elapsed cg_parsolve(mesh_c, master_c, cg_source, cg_param_p; tol=1e-12
 t_cdir = @elapsed cg_solve(mesh_c, master_c, cg_source, cg_param_p)
 @printf "CG solve: direct %.3f s   iterative CPU %.3f s   iterative GPU %.3f s (%.1fx vs CPU)\n" t_cdir t_ccpu t_cgpu t_ccpu / t_cgpu
 println("CG on GPU: OK")
+
+# ============ HDG Navier-Stokes + scalar transport (Phase 5) ============
+println("\n-- HDG incompressible NS + temperature (heated cavity blocks) --")
+
+Ra_, Pr_ = 1e4, 0.71
+ν_ns = sqrt(Pr_ / Ra_)
+κ_ns = 1 / sqrt(Ra_ * Pr_)
+nn_, pn_ = 33, 3
+mesh_n = mkmesh_square(nn_, nn_, pn_, 0, 1)
+master_n = Master(mesh_n, 3 * (pn_ + 1))
+npl_n, nt_n = size(mesh_n.dgnodes, 1), size(mesh_n.t, 1)
+@printf "NS mesh: %d elements, porder %d, %d trace+pressure dofs\n" nt_n pn_ 2 * (pn_ + 1) * size(mesh_n.f, 1) + nt_n
+
+dbc_ns(p) = [0.0, 0.0]
+tbc_ns(p, tag) = tag == 4 ? (:d, 0.5) : tag == 2 ? (:d, -0.5) : (:n, 0.0)
+θ0_ns = [0.5 - mesh_n.dgnodes[k, 1, it] for k in 1:npl_n, it in 1:nt_n]
+src_ns = zeros(npl_n, 2, nt_n)
+src_ns[:, 2, :] .= θ0_ns
+dtinv_ns = 4.0
+
+# legacy CPU reference (one Newton step / one transport step)
+t_leg = @elapsed ref = hdg_ns_step(master_n, mesh_n, ν_ns, dbc_ns;
+                                   τ=1.0, source=src_ns, dtinv=dtinv_ns)
+t_legcd = @elapsed refθ = hdg_cd_step(master_n, mesh_n, κ_ns, tbc_ns;
+                                      τ=1.0, u=ref.u, Λ=ref.Λ, θold=θ0_ns, dtinv=dtinv_ns)
+
+for (label, AT) in (("CPU backend", Array), ("GPU", CuArray))
+    b1 = hdg_ns_step_batched(master_n, mesh_n, ν_ns, dbc_ns;
+                             τ=1.0, source=src_ns, dtinv=dtinv_ns, ArrayT=AT)
+    ns_rel_u = norm(b1.u .- ref.u) / norm(ref.u)
+    ns_rel_Λ = norm(b1.Λ .- ref.Λ) / norm(ref.Λ)
+    # warm second Newton step reuses pattern + numeric refactorization
+    t_ns = @elapsed b2 = hdg_ns_step_batched(master_n, mesh_n, ν_ns, dbc_ns;
+                                             τ=1.0, source=src_ns, u=b1.u, Λ=b1.Λ,
+                                             uold=b1.u, dtinv=dtinv_ns, cache=b1.cache)
+    c1 = hdg_cd_step_batched(master_n, mesh_n, κ_ns, tbc_ns;
+                             τ=1.0, u=b1.u, Λ=b1.Λ, θold=θ0_ns, dtinv=dtinv_ns, ArrayT=AT)
+    ns_rel_θ = norm(c1.θ .- refθ.θ) / norm(refθ.θ)
+    t_cd = @elapsed hdg_cd_step_batched(master_n, mesh_n, κ_ns, tbc_ns;
+                                        τ=1.0, u=b1.u, Λ=b1.Λ, θold=θ0_ns,
+                                        dtinv=dtinv_ns, cache=c1.cache)
+    @printf "%s: NS parity u %.3e Λ %.3e, θ parity %.3e | NS step %.2f s (legacy %.2f s), θ step %.2f s (legacy %.2f s)\n" label ns_rel_u ns_rel_Λ ns_rel_θ t_ns t_leg t_cd t_legcd
+    @assert ns_rel_u < 1e-7 && ns_rel_Λ < 1e-7 && ns_rel_θ < 1e-10
+end
+println("HDG NS/CD batched on GPU: OK")

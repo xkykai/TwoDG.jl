@@ -185,3 +185,150 @@ end
     end
     @test maxdiv < 1e-7
 end
+
+@testset "HDG NS/CD batched assembly + drivers (Phase 5)" begin
+    relerr(a, b) = norm(a .- b) / max(norm(b), eps())
+
+    # Kovasznay boundary data (nontrivial Dirichlet trace)
+    Re = 20.0
+    ν = 1 / Re
+    λk = Re / 2 - sqrt(Re^2 / 4 + 4π^2)
+    dbc(p) = [1 - exp(λk * p[1]) * cos(2π * p[2]),
+              λk / (2π) * exp(λk * p[1]) * sin(2π * p[2])]
+
+    # on the airfoil domain the Kovasznay data is meaningless and the first
+    # Newton iterate blows up (|u| ~ 1e8, λ²-sized matrix entries ~1e16, so a
+    # roundoff-level comparison is impossible) — use freestream data there
+    @testset "NS step parity ($name)" for (name, mesh, ν, dbc) in
+            (("square", mkmesh_square(7, 7, 2, 0, 1), ν, dbc),
+             ("curved trefftz", mkmesh_trefftz(8, 16, 2), 0.05, p -> [1.0, 0.0]))
+        porder = mesh.porder
+        master = Master(mesh, 3 * (porder + 1))
+        npl, nt = size(mesh.dgnodes, 1), size(mesh.t, 1)
+
+        # zero-state step (fresh cache, Dirichlet projection path); p/ρ/L are
+        # measured against the velocity scale — for freestream data they are
+        # analytically zero, so a self-relative error is noise over noise
+        s1 = hdg_ns_step(master, mesh, ν, dbc; τ=1.0)
+        b1 = hdg_ns_step_batched(master, mesh, ν, dbc; τ=1.0)
+        scale = norm(s1.u)
+        @test relerr(b1.u, s1.u) < 1e-8
+        @test norm(b1.p .- s1.p) / scale < 1e-8
+        @test relerr(b1.Λ, s1.Λ) < 1e-8
+        @test norm(b1.gradu .- s1.gradu) / scale < 1e-7
+        @test norm(b1.ρ .- s1.ρ) / scale < 1e-8
+
+        # nonzero linearization state + array source + backward Euler,
+        # exercising the cached pattern and numeric refactorization (lu!)
+        src = zeros(npl, 2, nt)
+        src[:, 2, :] .= sin.(mesh.dgnodes[:, 1, :])
+        dtinv = 2.0
+        s2 = hdg_ns_step(master, mesh, ν, dbc; τ=1.0, source=src,
+                         u=s1.u, Λ=s1.Λ, uold=s1.u, dtinv)
+        b2 = hdg_ns_step_batched(master, mesh, ν, dbc; τ=1.0, source=src,
+                                 u=s1.u, Λ=s1.Λ, uold=s1.u, dtinv,
+                                 cache=b1.cache)
+        @test relerr(b2.u, s2.u) < 1e-8
+        @test relerr(b2.p, s2.p) < 1e-8
+        @test relerr(b2.Λ, s2.Λ) < 1e-8
+        @test relerr(b2.gradu, s2.gradu) < 1e-7
+
+        # function source (quadrature-point evaluation path)
+        ffun(p) = [p[2], -p[1]]
+        s3 = hdg_ns_step(master, mesh, ν, dbc; τ=1.0, source=ffun,
+                         u=s1.u, Λ=s1.Λ)
+        b3 = hdg_ns_step_batched(master, mesh, ν, dbc; τ=1.0, source=ffun,
+                                 u=s1.u, Λ=s1.Λ, cache=b1.cache)
+        @test relerr(b3.u, s3.u) < 1e-8
+        @test relerr(b3.Λ, s3.Λ) < 1e-8
+    end
+
+    @testset "CD step parity" begin
+        mesh = mkmesh_square(7, 7, 2, 0, 1)
+        master = Master(mesh, 3 * (mesh.porder + 1))
+        npl, nt = size(mesh.dgnodes, 1), size(mesh.t, 1)
+        κ = 0.05
+        # Boussinesq-style mixed BCs: hot/cold Dirichlet walls + insulated
+        tbc(p, tag) = tag == 4 ? (:d, 0.5) : tag == 2 ? (:d, -0.5) : (:n, 0.0)
+
+        ns = hdg_ns_step(master, mesh, ν, dbc; τ=1.0)   # convecting field
+        θold = [0.5 - mesh.dgnodes[k, 1, it] for k in 1:npl, it in 1:nt]
+
+        s1 = hdg_cd_step(master, mesh, κ, tbc; τ=1.0, u=ns.u, Λ=ns.Λ,
+                         θold, dtinv=4.0)
+        b1 = hdg_cd_step_batched(master, mesh, κ, tbc; τ=1.0, u=ns.u, Λ=ns.Λ,
+                                 θold, dtinv=4.0)
+        @test relerr(b1.θ, s1.θ) < 1e-8
+        @test relerr(b1.q, s1.q) < 1e-7
+        @test relerr(b1.Θ, s1.Θ) < 1e-8
+
+        # cache reuse at a new state + array source
+        src = cos.(mesh.dgnodes[:, 2, :])
+        s2 = hdg_cd_step(master, mesh, κ, tbc; τ=1.0, u=ns.u, Λ=ns.Λ,
+                         θold=s1.θ, dtinv=4.0, source=src)
+        b2 = hdg_cd_step_batched(master, mesh, κ, tbc; τ=1.0, u=ns.u, Λ=ns.Λ,
+                                 θold=b1.θ, dtinv=4.0, source=src,
+                                 cache=b1.cache)
+        @test relerr(b2.θ, s2.θ) < 1e-8
+        @test relerr(b2.Θ, s2.Θ) < 1e-8
+    end
+
+    @testset "Boussinesq mini-cavity trajectory" begin
+        # 5 operator-splitting steps of the heated cavity on both paths
+        Ra, Pr = 1e3, 0.71
+        νb = sqrt(Pr / Ra)
+        κb = 1 / sqrt(Ra * Pr)
+        mesh = mkmesh_square(7, 7, 2, 0, 1)
+        master = Master(mesh, 3 * (mesh.porder + 1))
+        npl, nt = size(mesh.dgnodes, 1), size(mesh.t, 1)
+        nps, nf = mesh.porder + 1, size(mesh.f, 1)
+        dbc0(p) = [0.0, 0.0]
+        tbc(p, tag) = tag == 4 ? (:d, 0.5) : tag == 2 ? (:d, -0.5) : (:n, 0.0)
+        dtinv = 1 / 0.5
+
+        θl = [0.5 - mesh.dgnodes[k, 1, it] for k in 1:npl, it in 1:nt]
+        ul = zeros(npl, 2, nt)
+        Λl = zeros(2 * nps * nf)
+        θb, ub, Λb = copy(θl), copy(ul), copy(Λl)
+        nscache = nothing
+        cdcache = nothing
+        for step in 1:5
+            θres = hdg_cd_step(master, mesh, κb, tbc; τ=1.0, u=ul, Λ=Λl,
+                               θold=θl, dtinv)
+            θl = θres.θ
+            srcl = zeros(npl, 2, nt)
+            srcl[:, 2, :] .= θl
+            uoldl = copy(ul)
+            for inner in 1:2
+                resl = hdg_ns_step(master, mesh, νb, dbc0; τ=1.0, source=srcl,
+                                   u=ul, Λ=Λl, uold=uoldl, dtinv)
+                ul, Λl = resl.u, resl.Λ
+            end
+
+            θresb = hdg_cd_step_batched(master, mesh, κb, tbc; τ=1.0, u=ub,
+                                        Λ=Λb, θold=θb, dtinv, cache=cdcache)
+            θb = θresb.θ
+            cdcache = θresb.cache
+            srcb = zeros(npl, 2, nt)
+            srcb[:, 2, :] .= θb
+            uoldb = copy(ub)
+            for inner in 1:2
+                resb = hdg_ns_step_batched(master, mesh, νb, dbc0; τ=1.0,
+                                           source=srcb, u=ub, Λ=Λb,
+                                           uold=uoldb, dtinv, cache=nscache)
+                ub, Λb = resb.u, resb.Λ
+                nscache = resb.cache
+            end
+        end
+        @test relerr(θb, θl) < 1e-7
+        @test relerr(ub, ul) < 1e-7
+    end
+
+    @testset "Float32 sanity" begin
+        mesh = mkmesh_square(7, 7, 2, 0, 1)
+        master = Master(mesh, 3 * (mesh.porder + 1))
+        s = hdg_ns_step(master, mesh, ν, dbc; τ=1.0)
+        b = hdg_ns_step_batched(master, mesh, ν, dbc; τ=1.0, T=Float32)
+        @test relerr(b.u, s.u) < 1e-2
+    end
+end

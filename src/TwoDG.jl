@@ -28,6 +28,8 @@ export
     HDGSystem, hdg_gmres_ka, hdg_parsolve_ka,
     HDGBatch, hdg_local_solves, hdg_recover, hdg_parsolve_batched,
     hdg_ns_step, hdg_ns_solve, hdg_cd_step, hdg_ns_postprocess,
+    HDGNSBatch, HDGCDBatch, HDGNSCache, HDGCDCache,
+    hdg_ns_step_batched, hdg_cd_step_batched,
     # high-level problem/solve API (Interface module)
     solve, semidiscretize, compute_dt,
     ConvectionEquation, ConvectionDiffusionEquation, WaveEquation,

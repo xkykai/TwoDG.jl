@@ -235,6 +235,27 @@ function project_vertex_to_boundary!(mesh::Mesh, distance_functions::Union{Nothi
 end
 
 """
+    mkelcon(t2f, porder)
+
+Element-to-global trace-node connectivity `elcon (porder+1, 3, nt)` from the
+signed element-to-face map `t2f`: face `f` owns trace nodes
+`(|f|-1)*(porder+1)+1 : |f|*(porder+1)`, reversed when the element sees the
+face with negative orientation.
+"""
+function mkelcon(t2f, porder)
+    nps = porder + 1
+    nt = size(t2f, 1)
+    elcon = zeros(Int, nps, 3, nt)
+    for it in 1:nt
+        for (iface, face) in enumerate(t2f[it, :])
+            global_face_nums = 1 + (abs(face) - 1) * nps : abs(face) * nps
+            elcon[:, iface, it] .= face > 0 ? global_face_nums : reverse(global_face_nums)
+        end
+    end
+    return elcon
+end
+
+"""
     createnodes(mesh, fd=nothing) -> Mesh
 
 Compute the high-order DG node coordinates `dgnodes (npl, 2, nt)` of `mesh`
@@ -306,17 +327,7 @@ function createnodes(mesh, fd=nothing)
         return Mesh(mesh; dgnodes)
     end
 
-    nps = mesh.porder + 1
-    # Create a mapping from local node numbers to global node numbers
-    elcon = zeros(Int, nps, 3, nt)
-    for it in axes(mesh.t, 1)
-        t2f = mesh.t2f[it, :]
-        for (iface, face) in enumerate(t2f)
-            global_face_nums = 1 + (abs(face) - 1) * nps : abs(face) * nps
-            elcon[:, iface, it] .= face > 0 ? global_face_nums : reverse(global_face_nums)
-        end
-    end
-
+    elcon = mkelcon(mesh.t2f, mesh.porder)
     f2f = mkf2f(mesh.f, mesh.t2f)
     
     # Create and return a new mesh with the same structure but using the computed high-order nodes
