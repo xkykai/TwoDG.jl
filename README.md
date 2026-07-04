@@ -35,17 +35,16 @@ Julia 1.10 or newer is required. Plotting (`scaplot`, `meshplot`) activates when
 </p>
 
 <p align="center">
+  <img src="figures/hdg_ns_boussinesq_ra1e7.gif" height="420" />
+  <br>
+  <em>Natural convection in a differentially heated cavity at Ra = 10⁷ (incompressible nonhydrostatic Navier-Stokes equations with the Boussinesq approximation), <strong>computed on the GPU</strong> with the implicit HDG solver (k = 3, wall-clustered curved elements): the batched element assembly, local solves, and recovery run on the device through KernelAbstractions. The hot-wall Nusselt number matches the Le Quéré benchmark.</em>
+</p>
+
+<p align="center">
   <img src="figures/cp_trefftz_10.png" height="350" />
   <img src="figures/hdg_convdiff_ustar_size_0.2_k_1_c_10_10_p_4.png" height="350" />
   <br>
   <em>Pressure coefficient of a potential flow solution (left) and convection-diffusion solution on an unstructured mesh with Hybridizable Discontinuous Galerkin (HDG) (right)</em>
-</p>
-
-<p align="center">
-  <img src="figures/hdg_ns_boussinesq_temperature.png" height="350" />
-  <img src="figures/hdg_ns_boussinesq_speed.png" height="350" />
-  <br>
-  <em>Natural convection in a differentially heated cavity at Ra = 10⁴ (incompressible nonhydrostatic Navier-Stokes equations with the Boussinesq approximation, HDG k = 3): temperature (left) and speed (right). The steady hot-wall Nusselt number matches the de Vahl Davis benchmark.</em>
 </p>
 
 <p align="center">
@@ -126,5 +125,6 @@ Explore the example scripts in `examples/` to see the solvers in action:
 - `runconvection.jl` - Pure convection with DG explicit time-stepping
 - `runhdg_ns_kovasznay.jl` - Steady incompressible Navier-Stokes verification (Kovasznay flow, optimal k+1 convergence)
 - `runhdg_ns_boussinesq.jl` - Natural convection in a heated cavity (incompressible nonhydrostatic Navier-Stokes with the Boussinesq approximation, validated against the de Vahl Davis benchmark)
+- `runhdg_ns_boussinesq_animation.jl` - The Ra = 10⁷ cavity animation from the gallery above, run with the GPU-accelerated batched HDG solvers (`hdg_ns_step_batched`/`hdg_cd_step_batched`)
 
 Perfect for researchers in numerical analysis, students learning finite element methods, or anyone needing a flexible high-order PDE solver in Julia.
