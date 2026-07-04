@@ -1,7 +1,7 @@
 module Masters
 
-export 
-    Master,
+export
+    ReferenceElement, Master,
     uniformlocalpnts, localpnts, localpnts1d,
     shape1d, shape2d,
     get_local_face_nodes,

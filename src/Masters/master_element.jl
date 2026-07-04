@@ -2,16 +2,24 @@ using LinearAlgebra
 using TwoDG.Meshes: Mesh
 
 """
-    Master(mesh::Mesh, pgauss=nothing)
+    ReferenceElement(porder; pgauss=max(4porder, 1), nodetype=0)
+    ReferenceElement(plocal, porder; pgauss=max(4porder, 1))
+    ReferenceElement(mesh::Mesh, pgauss=nothing)
 
-Master (reference) element for `mesh`: tabulated shape functions, quadrature
-rules, and the local orderings the solvers need. `pgauss` is the polynomial
-degree integrated exactly by the quadrature rules (default `4porder`).
+Reference (master) triangle of polynomial order `porder`: tabulated shape
+functions, quadrature rules, and the local node orderings the solvers need.
+The element is mesh-independent; the `Mesh` convenience constructor just reads
+`mesh.porder`/`mesh.plocal` so the element's nodes match the mesh's `dgnodes`.
+
+`pgauss` is the polynomial degree integrated exactly by the quadrature rules;
+`nodetype` selects the node distribution (`0` uniform, `1`/`2` extended
+Chebyshev, see [`localpnts`](@ref)); `plocal` may be passed directly to use a
+custom node set.
 
 # Fields and conventions
 - `porder` — polynomial order; `npl = (porder+1)(porder+2)/2` nodes.
 - `plocal :: (npl, 3)` — node positions in barycentric coordinates.
-- `corner :: (3,)` — indices of the three vertex nodes in `plocal`.
+- `corner :: NTuple{3, Int}` — indices of the three vertex nodes in `plocal`.
 - `perm :: (porder+1, 3, 2)` — face-node orderings: `perm[:, j, 1]` lists the
   nodes on local face `j` traversed counterclockwise, `perm[:, j, 2]` the
   same nodes reversed (used when a neighboring element sees the shared face
@@ -30,68 +38,85 @@ degree integrated exactly by the quadrature rules (default `4porder`).
   (``∫ φᵢ ∂φⱼ/∂ξ`` and ``∫ φᵢ ∂φⱼ/∂η``).
 - `ma1d :: (porder+1, porder+1)` — 1D face mass matrix.
 """
-struct Master{PO, PL, C, PE, PLO, GP, GPT, GW, GWG, SH, SHA, M, CV, MA}
-    porder :: PO
-    plocal :: PL
-    corner :: C
-      perm :: PE
-    ploc1d :: PLO
-      gp1d :: GP
-      gpts :: GPT
-      gw1d :: GW
-      gwgh :: GWG
-      sh1d :: SH
-      shap :: SHA
-      mass :: M
-      conv :: CV
-      ma1d :: MA
+struct ReferenceElement{T <: AbstractFloat}
+    porder :: Int
+    plocal :: Matrix{T}
+    corner :: NTuple{3, Int}
+      perm :: Array{Int, 3}
+    ploc1d :: Matrix{T}
+      gp1d :: Vector{T}
+      gpts :: Matrix{T}
+      gw1d :: Vector{T}
+      gwgh :: Vector{T}
+      sh1d :: Array{T, 3}
+      shap :: Array{T, 3}
+      mass :: Matrix{T}
+      conv :: Array{T, 3}
+      ma1d :: Matrix{T}
 end
 
-function Master(mesh::Mesh, pgauss=nothing)
-    master = Master(mesh.porder, mesh.plocal, zeros(Int, 3), zeros(Int, mesh.porder+1, 3, 2), 
-                    nothing, nothing, nothing, nothing, nothing, nothing, nothing, nothing, nothing, nothing)
-    
-    # Find indices of corner nodes (vertices) of the reference triangle
-    # A corner node has a coordinate equal to 1 in one of the barycentric coordinates
-    for i in 1:3
-        master.corner[i] = findfirst(x -> x > 1-1e-6, master.plocal[:, i])
+function ReferenceElement(plocal::AbstractMatrix{<:Real}, porder::Integer;
+                          pgauss::Integer=max(4porder, 1))
+    T = float(eltype(plocal))
+    plocal = Matrix{T}(plocal)
+    npl = size(plocal, 1)
+    npl == (porder + 1) * (porder + 2) ÷ 2 ||
+        throw(ArgumentError("plocal has $npl nodes; order $porder needs $((porder + 1) * (porder + 2) ÷ 2)"))
+
+    # vertex nodes: the ones with a barycentric coordinate equal to 1
+    corner = ntuple(3) do i
+        c = findfirst(>(1 - 1e-6), @view plocal[:, i])
+        c === nothing && throw(ArgumentError("plocal has no vertex node for corner $i"))
+        c
     end
-    
-    aux = [1, 2, 3, 1, 2]
-    ploc1d = nothing
-    
+
+    # face j is the edge where barycentric coordinate j vanishes; traverse it
+    # counterclockwise (sheet 1), and reversed (sheet 2) for the neighboring
+    # element that sees the shared face with opposite orientation
+    perm = zeros(Int, porder + 1, 3, 2)
+    aux = (1, 2, 3, 1, 2)
+    ploc1d = Matrix{T}(undef, porder + 1, 2)
     for i in 1:3
-        ii = findall(x -> x < 1e-6, master.plocal[:, i])
-        jj = sortperm(master.plocal[ii, aux[i+2]])
-        master.perm[:, i, 1] = ii[jj]
-        
+        onface = findall(<(1e-6), @view plocal[:, i])
+        order = sortperm(plocal[onface, aux[i + 2]])
+        perm[:, i, 1] .= onface[order]
         if i == 3
-            ploc1d = master.plocal[ii[jj], 1:2]
+            ploc1d .= plocal[onface[order], 1:2]
         end
     end
-    
-    master.perm[:,:,2] = reverse(master.perm[:,:,1], dims=1)
-    
-    if pgauss isa Nothing
-        pgauss = max(4*mesh.porder, 1)
-    end
+    perm[:, :, 2] .= reverse(@view(perm[:, :, 1]), dims=1)
 
-    gp1d, gw1d = gaussquad1d(pgauss)  # 1D quadrature points and weights
-    gpts, gwgh = gaussquad2d(pgauss)  # 2D quadrature points and weights
+    gp1d, gw1d = gaussquad1d(pgauss)   # 1D (face) quadrature
+    gpts, gwgh = gaussquad2d(pgauss)   # 2D (volume) quadrature
 
-    sh1d = shape1d(master.porder, ploc1d, gp1d)
-    shap = shape2d(master.porder, master.plocal, gpts)
+    sh1d = shape1d(porder, ploc1d, Vector{T}(gp1d))
+    shap = shape2d(porder, plocal, gpts)
 
-    npl = size(master.plocal, 1)
-    conv = zeros(npl, npl, 2)
     mass = shap[:, 1, :] * Diagonal(gwgh) * shap[:, 1, :]'
+    conv = Array{T}(undef, npl, npl, 2)
     conv[:, :, 1] .= shap[:, 1, :] * Diagonal(gwgh) * shap[:, 2, :]'
     conv[:, :, 2] .= shap[:, 1, :] * Diagonal(gwgh) * shap[:, 3, :]'
-
     ma1d = sh1d[:, 1, :] * Diagonal(gw1d) * sh1d[:, 1, :]'
-    
-    return Master(master.porder, master.plocal, master.corner, master.perm, ploc1d, gp1d, gpts, gw1d, gwgh, sh1d, shap, mass, conv, ma1d)
+
+    return ReferenceElement{T}(Int(porder), plocal, corner, perm, ploc1d,
+                               Vector{T}(gp1d), Matrix{T}(gpts), Vector{T}(gw1d),
+                               Vector{T}(gwgh), sh1d, shap, mass, conv, ma1d)
 end
+
+ReferenceElement(porder::Integer; nodetype::Integer=0, pgauss::Integer=max(4porder, 1)) =
+    ReferenceElement(first(localpnts(porder, nodetype)), porder; pgauss)
+
+ReferenceElement(mesh::Mesh, pgauss=nothing) =
+    ReferenceElement(mesh.plocal, mesh.porder;
+                     pgauss=pgauss === nothing ? max(4 * mesh.porder, 1) : pgauss)
+
+"""
+    Master
+
+Deprecated alias for [`ReferenceElement`](@ref); will be removed one release
+after the rename (see NEWS.md).
+"""
+const Master = ReferenceElement
 
 """
 uniformlocalpnts 2-d mesh generator for the master element.
