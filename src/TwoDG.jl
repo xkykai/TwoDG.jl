@@ -1,7 +1,8 @@
 module TwoDG
 
 export
-    Mesh, Master,
+    # meshes + reference element
+    Mesh, ReferenceElement, Master,
     MeshGeometry, discretize, boundary_names,
     square_geometry, circle_geometry, lshape_geometry,
     unique_rows,
@@ -14,27 +15,39 @@ export
     gaussquad1d, gaussquad2d, newton_raphson,
     koornwinder1d, koornwinder2d,
     areacircle, trefftz_points, potential_trefftz, trefftz,
+    # geometry cache
+    GeometricFactors, SideGeometry,
+    # physics: equations, numerical fluxes, boundary conditions (the
+    # extension contract — implement these methods on your own types)
+    AbstractEquation,
+    ConvectionEquation, ConvectionDiffusionEquation, WaveEquation,
+    EulerEquations, PoissonEquation,
+    nvariables, varnames, flux, normal_flux, max_abs_speed, has_diffusion,
+    viscous_flux, viscous_numerical_flux, boundary_viscous_flux,
+    BoundaryCondition, Dirichlet, Neumann, SlipWall, FarField, IncomingWave,
+    boundary_flux, boundary_state, boundary_trace,
+    RoeFlux, LaxFriedrichs, default_numerical_flux,
+    LDGStabilization, default_stabilization,
+    density, velocity, pressure, soundspeed, mach, entropy, derived_field,
+    eulereval, riemann_to_canonical, canonical_to_riemann,
+    # CG
     elemmat_cg, cg_solve, cg_parsolve,
     grad_u, equilibrate, reconstruct,
-    initu, interpolate, l2error, l2_error,
-    App, mkapp_convection, mkapp_wave, mkapp_euler, eulereval, mkapp_convection_diffusion,
-    riemann_to_canonical, canonical_to_riemann,
-    rk4, rk4!, rinvexpl, rldgexpl, getq,
-    DGContext, RinvWorkspace, rinvexpl!, rinvexpl_ka, rk4_ka!,
+    initu, interpolate, l2error,
+    # DG (KernelAbstractions path)
+    DGContext, DGPhysics, RinvWorkspace, rinvexpl!, rinvexpl_ka, rk4_ka!,
     RldgWorkspace, getq!, getq_ka, rldgexpl!, rldgexpl_ka,
-    mkapp_convection_pt, mkapp_wave_pt, mkapp_euler_pt,
-    mkapp_convection_diffusion_pt,
+    inviscid_residual!, viscous_residual!, compute_gradient!,
+    # HDG
     localprob, elemmat_hdg, hdg_solve, hdg_postprocess, hdg_parsolve,
     HDGSystem, hdg_gmres_ka, hdg_parsolve_ka,
     HDGBatch, hdg_local_solves, hdg_recover, hdg_parsolve_batched,
+    hdg_direct_batched, hdg_trace_system,
     hdg_ns_step, hdg_ns_solve, hdg_cd_step, hdg_ns_postprocess,
     HDGNSBatch, HDGCDBatch, HDGNSCache, HDGCDCache,
     hdg_ns_step_batched, hdg_cd_step_batched,
     # high-level problem/solve API (Interface module)
     solve, semidiscretize, compute_dt,
-    ConvectionEquation, ConvectionDiffusionEquation, WaveEquation,
-    EulerEquations, PoissonEquation, nvariables,
-    Dirichlet, Neumann, SlipWall, FarField, IncomingWave,
     DGProblem, HDGProblem, CGProblem,
     RK4, Direct, GMRES, ConjugateGradient
 
@@ -42,11 +55,11 @@ include("Utils/Utils.jl")
 include("Meshes/Meshes.jl")
 include("Masters/Masters.jl")
 include("Geometry/Geometry.jl")
+include("Equations/Equations.jl")
 include("Drivers/Drivers.jl")
 include("Plotting/Plotting.jl")
 include("ContinuousGalerkin/ContinuousGalerkin.jl")
 include("DiscontinuousGalerkin/DiscontinuousGalerkin.jl")
-include("Apps/Apps.jl")
 include("HybridizableDiscontinuousGalerkin/HybridizableDiscontinuousGalerkin.jl")
 include("Interface/Interface.jl")
 
@@ -55,11 +68,11 @@ using .Masters
 using .Meshes
 using .Utils
 using .Geometry
+using .Equations
 using .Plotting
 using .ContinuousGalerkin
 using .DiscontinuousGalerkin
 using .HybridizableDiscontinuousGalerkin
-using .Apps
 using .Interface
 
 end

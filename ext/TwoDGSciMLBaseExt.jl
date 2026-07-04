@@ -7,18 +7,20 @@ module TwoDGSciMLBaseExt
 using TwoDG
 using TwoDG.Interface: DGProblem, _dg_setup
 using TwoDG.DiscontinuousGalerkin: rinvexpl!, rldgexpl!, RinvWorkspace, RldgWorkspace
+using TwoDG.Equations: nvariables
 import SciMLBase
 
 # The DG residual is already M⁻¹-applied, so it is du/dt directly. The
 # workspace is preallocated once and closed over via the ODE parameters;
 # kernels never allocate inside the RHS.
 function _semidiscretize(prob::DGProblem, tspan; ArrayT=Array, ngauss=nothing)
-    ctx, app, u0, residual! = _dg_setup(prob; ArrayT, ngauss)
-    ws = residual! === rldgexpl! ? RldgWorkspace(ctx, app.nc) : RinvWorkspace(ctx, app.nc)
-    params = (; ctx, app, ws, residual!)
+    ctx, phys, u0, residual! = _dg_setup(prob; ArrayT, ngauss)
+    nc = nvariables(phys)
+    ws = residual! === rldgexpl! ? RldgWorkspace(ctx, nc) : RinvWorkspace(ctx, nc)
+    params = (; ctx, phys, ws, residual!)
 
     function dg_rhs!(du, u, p, t)
-        p.residual!(du, p.ctx, p.app, u, t; ws=p.ws)
+        p.residual!(du, p.ctx, p.phys, u, t; ws=p.ws)
         return nothing
     end
 
