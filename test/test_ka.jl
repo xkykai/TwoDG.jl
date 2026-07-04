@@ -1,6 +1,5 @@
-# The KernelAbstractions residual path (DGContext + pointwise fluxes) is the
-# only DG implementation since the legacy matrix-flux path was retired
-# (roadmap A2.2). Where the old suite checked parity against the legacy code,
+# The KernelAbstractions residual path (DGContext + DGPhysics) is the only DG
+# implementation. Where the old suite checked parity against the legacy code,
 # this one validates against exact/manufactured solutions and pins the
 # (formerly parity-validated) flux implementations with golden regression
 # values.
@@ -25,6 +24,24 @@ function euler_ic(γ)
     return [ρ, ρu, ρv, ρE]
 end
 
+# --- user-defined physics for the extension-contract testset (top level:
+# structs cannot be defined inside a @testset block). Burgers' equation, a
+# frozen-ghost-state BC, and a central numerical flux, built from exported
+# methods only.
+struct BurgersEquation <: TwoDG.AbstractEquation end
+TwoDG.nvariables(::BurgersEquation) = 1
+TwoDG.flux(::BurgersEquation, u::SVector{1, T}, x, t) where {T} =
+    (u .* u ./ 2, u .* u ./ 2)
+TwoDG.max_abs_speed(::BurgersEquation, u::SVector{1}, n, x, t) =
+    abs(u[1] * (n[1] + n[2]))
+
+struct FrozenBC <: TwoDG.BoundaryCondition end
+TwoDG.boundary_state(::FrozenBC, eq, uL, n, x, t) = one.(uL)
+
+struct CentralFlux end
+(::CentralFlux)(eq, uL, uR, n, x, t) =
+    (TwoDG.normal_flux(eq, uL, n, x, t) + TwoDG.normal_flux(eq, uR, n, x, t)) / 2
+
 @testset "KernelAbstractions residual path" begin
     @testset "convection: exact translation, O(h^{p+1}) convergence" begin
         # u_t + ∇·(v u) = 0 with constant v transports the profile unchanged:
@@ -40,9 +57,10 @@ end
         errs = map((9, 13)) do n
             mesh = mkmesh_square(n, n, porder, 0, 1)
             master = Master(mesh)
-            app = mkapp_convection_pt(v; bcm=fill(1, 4), bcs=zeros(1, 1))
-            u = initu(mesh, app, [u0])
-            rk4_ka!(DGContext(master, mesh), app, u, 0.0, dt, nstep)
+            phys = DGPhysics(ConvectionEquation(v);
+                             boundary_conditions=ntuple(_ -> FarField(SVector(0.0)), 4))
+            u = initu(mesh, 1, [u0])
+            rk4_ka!(DGContext(master, mesh), phys, u, 0.0, dt, nstep)
             l2error(mesh, u[:, 1, :], exact)
         end
         @test errs[2] < 2e-3
@@ -62,12 +80,12 @@ end
         errs = map((5, 9)) do n
             mesh = mkmesh_square(n, n, porder, 0, 1)
             master = Master(mesh)
-            app = mkapp_convection_diffusion_pt(SVector(0.0, 0.0);
-                                                kappa=κ, c11=10.0, c11int=0.0,
-                                                bcm=fill(1, 4), bcs=zeros(1, 1))
-            u = initu(mesh, app, [u0])
+            phys = DGPhysics(ConvectionDiffusionEquation(SVector(0.0, 0.0), κ);
+                             boundary_conditions=ntuple(_ -> Dirichlet(0.0), 4),
+                             stabilization=LDGStabilization(10.0, 0.0))
+            u = initu(mesh, 1, [u0])
             ctx = DGContext(master, mesh)
-            rk4_ka!(rldgexpl!, ctx, app, u, 0.0, dt, nstep)
+            rk4_ka!(rldgexpl!, ctx, phys, u, 0.0, dt, nstep)
             l2error(mesh, u[:, 1, :], exact)
         end
         @test errs[2] < 5e-4
@@ -84,65 +102,62 @@ end
         mesh = mkmesh_trefftz(8, 16, 3)   # curved: exercises isoparametric geometry
         master = Master(mesh)
 
-        app = mkapp_euler_pt(; gamma=γ, bcm=[1, 1], bcs=reshape(uinf, 1, 4))
-        u = initu(mesh, app, euler_ic(γ))
-        r = rinvexpl_ka(DGContext(master, mesh), app, u, 0.0)
+        phys = DGPhysics(EulerEquations(γ=γ);
+                         boundary_conditions=(FarField(uinf), FarField(uinf)))
+        u = initu(mesh, 4, euler_ic(γ))
+        r = rinvexpl_ka(DGContext(master, mesh), phys, u, 0.0)
         @test norm(r) ≈ GOLDEN_EULER_TREFFTZ rtol = 1e-9
 
         mesh = mkmesh_square(7, 7, 3, 0, 1)
         master = Master(mesh)
         c, k = 1.5, SVector(2.0, 1.0)
         fwave(c, k, x, t) = sin(k[1] * x[1] + k[2] * x[2] - c * hypot(k[1], k[2]) * t)
-        app = mkapp_wave_pt(; c, k, f=fwave, bcm=[1, 2, 3, 2], bcs=zeros(3, 3))
+        phys = DGPhysics(WaveEquation(c; k, f=fwave);
+                         boundary_conditions=(FarField(SVector(0.0, 0.0, 0.0)),
+                                              SlipWall(), IncomingWave(), SlipWall()))
         bump(x, y) = exp(-10 * ((x - 0.4)^2 + (y - 0.6)^2))
-        u = initu(mesh, app, [bump, (x, y) -> 0.0, (x, y) -> 0.5 * bump(x, y)])
-        r = rinvexpl_ka(DGContext(master, mesh), app, u, 0.3)
+        u = initu(mesh, 3, [bump, (x, y) -> 0.0, (x, y) -> 0.5 * bump(x, y)])
+        r = rinvexpl_ka(DGContext(master, mesh), phys, u, 0.3)
         @test norm(r) ≈ GOLDEN_WAVE_SQUARE rtol = 1e-9
     end
 
-    @testset "legacy-signature shims drive rk4 unchanged (Euler)" begin
-        γ = 1.4
-        uinf = [1.0, 0.3, 0.05, 1.0 / (γ - 1) + 0.5 * (0.3^2 + 0.05^2)]
-        mesh = mkmesh_square(7, 7, 2, 0, 1)
-        master = Master(mesh)
-        app = mkapp_euler_pt(; gamma=γ, bcm=fill(1, 4), bcs=reshape(uinf, 1, 4))
-        u0 = initu(mesh, app, euler_ic(γ))
-        dt, nstep = 1e-3, 5
+    @testset "user-defined equation, flux, and BC (extension contract)" begin
+        # Burgers' equation defined *outside* the package using only exported
+        # methods (types at the top of this file) — the acid test that the
+        # physics surface is open. A constant state must be preserved through
+        # the full residual path.
+        mesh = mkmesh_square(5, 5, 2, 0, 1)
+        phys = DGPhysics(BurgersEquation();
+                         boundary_conditions=ntuple(_ -> FrozenBC(), 4),
+                         numerical_flux=LaxFriedrichs())
+        u = initu(mesh, 1, [1.0])
+        r = rinvexpl_ka(DGContext(Master(mesh), mesh), phys, u, 0.0)
+        @test norm(r) / norm(u) < 1e-10          # free-stream preservation
 
-        u_shim = rk4(rinvexpl, master, mesh, app, copy(u0), 0.0, dt, nstep)
-        u_ka = rk4_ka!(DGContext(master, mesh), app, copy(u0), 0.0, dt, nstep)
-        @test relerr(u_shim, u_ka) < 1e-13
+        phys_c = DGPhysics(BurgersEquation();
+                           boundary_conditions=ntuple(_ -> FrozenBC(), 4),
+                           numerical_flux=CentralFlux())
+        r_c = rinvexpl_ka(DGContext(Master(mesh), mesh), phys_c, u, 0.0)
+        @test norm(r_c) / norm(u) < 1e-10
     end
 
-    @testset "LDG viscous path: rk4 shim + Float32 (convection-diffusion)" begin
+    @testset "LDG viscous path: curved mesh + Float32 (convection-diffusion)" begin
         κ, c11, c11int = 0.01, 10.0, 0.5
-        make_pt(bcm, bcs) =
-            mkapp_convection_diffusion_pt(x -> SVector(-x[2], x[1]);
-                                          kappa=κ, c11, c11int, bcm, bcs)
-
-        mesh = mkmesh_square(9, 9, 3, 0, 1)
-        master = Master(mesh)
-        bcm, bcs = [1, 2, 1, 2], zeros(2, 1)
-        app = make_pt(bcm, bcs)
-        u0 = initu(mesh, app, [(x, y) -> exp(-4 * ((x - 0.5)^2 + y^2))])
-        ctx = DGContext(master, mesh)
-
-        dt, nstep = 1e-4, 5
-        u_shim = rk4(rldgexpl, master, mesh, app, copy(u0), 0.0, dt, nstep)
-        u_ka = rk4_ka!(rldgexpl!, ctx, app, copy(u0), 0.0, dt, nstep)
-        @test relerr(u_shim, u_ka) < 1e-13
+        eq = ConvectionDiffusionEquation(x -> SVector(-x[2], x[1]), κ)
+        stab = LDGStabilization(c11, c11int)
 
         # curved mesh: viscous residual finite and Float32-consistent
         mesh_c = mkmesh_trefftz(8, 16, 3)
         master_c = Master(mesh_c)
-        app_c = make_pt([1, 2], zeros(2, 1))
-        u_c = initu(mesh_c, app_c, [(x, y) -> exp(-4 * ((x - 0.5)^2 + y^2))])
+        phys_c = DGPhysics(eq; boundary_conditions=(Dirichlet(0.0), Neumann()),
+                           stabilization=stab)
+        u_c = initu(mesh_c, 1, [(x, y) -> exp(-4 * ((x - 0.5)^2 + y^2))])
         ctx_c = DGContext(master_c, mesh_c)
-        r_c = rldgexpl_ka(ctx_c, app_c, u_c, 0.11)
+        r_c = rldgexpl_ka(ctx_c, phys_c, u_c, 0.11)
         @test all(isfinite, r_c)
 
         ctx32 = DGContext(master_c, mesh_c; T=Float32)
-        r32 = rldgexpl_ka(ctx32, app_c, Float32.(u_c), 0.11f0)
+        r32 = rldgexpl_ka(ctx32, phys_c, Float32.(u_c), 0.11f0)
         @test eltype(r32) == Float32
         @test all(isfinite, r32)
         @test relerr(Float64.(r32), r_c) < 1e-3
@@ -153,15 +168,16 @@ end
         uinf = [1.0, 0.3, 0.05, 1.0 / (γ - 1) + 0.5 * (0.3^2 + 0.05^2)]
         mesh = mkmesh_square(7, 7, 2, 0, 1)
         master = Master(mesh)
-        app = mkapp_euler_pt(; gamma=γ, bcm=fill(1, 4), bcs=reshape(uinf, 1, 4))
-        u = initu(mesh, app, euler_ic(γ))
+        phys = DGPhysics(EulerEquations(γ=γ);
+                         boundary_conditions=ntuple(_ -> FarField(uinf), 4))
+        u = initu(mesh, 4, euler_ic(γ))
 
         ctx64 = DGContext(master, mesh)
-        r64 = rinvexpl_ka(ctx64, app, u, 0.0)
+        r64 = rinvexpl_ka(ctx64, phys, u, 0.0)
 
         ctx32 = DGContext(master, mesh; T=Float32)
         @test eltype(ctx32) == Float32
-        r32 = rinvexpl_ka(ctx32, app, Float32.(u), 0.0f0)
+        r32 = rinvexpl_ka(ctx32, phys, Float32.(u), 0.0f0)
         @test eltype(r32) == Float32
         @test all(isfinite, r32)
         @test relerr(Float64.(r32), r64) < 1e-3

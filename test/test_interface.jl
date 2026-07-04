@@ -3,7 +3,7 @@
 # low-level drivers they wrap.
 
 using TwoDG
-using TwoDG.Interface: lower_bcs, lower_dbc
+using TwoDG.Interface: lower_dbc
 using Test
 using LinearAlgebra
 using StaticArrays
@@ -11,26 +11,32 @@ using SciMLBase: ODEProblem
 using OrdinaryDiffEqTsit5: Tsit5
 
 @testset "Interface (problems + solve)" begin
-    @testset "boundary-condition lowering" begin
+    @testset "boundary-condition objects" begin
+        # ghost states by dispatch
         eq = EulerEquations(γ=1.4)
-        uinf = [1.0, 0.3, 0.05, 2.0]
-        bcm, bcs = lower_bcs(eq, [FarField(uinf), SlipWall(), FarField(uinf)])
-        @test bcm == [1, 2, 1]
-        @test bcs[1, :] == uinf
-        @test all(bcs[2, :] .== 0)
+        uinf = SVector(1.0, 0.3, 0.05, 2.0)
+        uL = SVector(1.1, 0.2, 0.1, 2.1)
+        n = SVector(1.0, 0.0)
+        x = SVector(0.0, 0.0)
+        @test boundary_state(FarField(uinf), eq, uL, n, x, 0.0) == uinf
+        wall = boundary_state(SlipWall(), eq, uL, n, x, 0.0)
+        @test wall[2] ≈ -uL[2] && wall[1] == uL[1] && wall[4] == uL[4]
+        @test boundary_state(Neumann(), eq, uL, n, x, 0.0) == uL
+        @test boundary_state(Dirichlet(0.5), eq, SVector(1.0), n, x, 0.0) == SVector(0.5)
+        # (x, t)-dependent Dirichlet data
+        g = Dirichlet((x, t) -> x[1] + 2x[2])
+        @test boundary_state(g, eq, SVector(1.0), n, SVector(1.0, 2.0), 0.0) == SVector(5.0)
 
-        # conflicting data for the same code must be rejected
-        @test_throws ArgumentError lower_bcs(eq, [FarField(uinf), FarField(2 .* uinf)])
-        # unsupported combination must be rejected
-        @test_throws ArgumentError lower_bcs(eq, [Neumann()])
-
-        cd = ConvectionDiffusionEquation([1.0, 0.5], 0.1)
-        bcm, bcs = lower_bcs(cd, [Dirichlet(0.0), Neumann(), Dirichlet(0.0), Neumann()])
-        @test bcm == [1, 2, 1, 2]
-
+        # HDG Dirichlet-data lowering ((x, y) closure -> coordinate-matrix form)
         dbc = lower_dbc(Dirichlet((x, y) -> x + 2y))
         @test dbc([1.0 2.0; 3.0 4.0]) ≈ [5.0, 11.0]
         @test lower_dbc(Dirichlet(0.5))([1.0 2.0]) == [0.5]
+
+        # wrong boundary count is rejected at solve time
+        mesh = mkmesh_square(5, 5, 1, 0, 1)
+        bad = DGProblem(ConvectionEquation([1.0, 0.0]), mesh;
+                        bc=[FarField([0.0])], u0=[(x, y) -> 0.0])
+        @test_throws ArgumentError solve(bad, RK4(); dt=1e-3, nstep=1)
     end
 
     @testset "DGProblem/RK4 reproduces rk4_ka! (Euler)" begin
@@ -45,23 +51,22 @@ using OrdinaryDiffEqTsit5: Tsit5
         @test sol.t ≈ 5e-3
 
         # free-stream preservation through the whole high-level path
-        uinf_arr = initu(mesh, mkapp_euler_pt(; gamma=γ, bcm=fill(1, 4),
-                                              bcs=reshape(uinf, 1, 4)), u0funcs)
+        uinf_arr = initu(mesh, 4, u0funcs)
         @test norm(sol.u .- uinf_arr) / norm(uinf_arr) < 1e-10
 
         # identical to driving the KA stepper by hand
         master = Master(mesh)
-        app_pt = mkapp_euler_pt(; gamma=γ, bcm=fill(1, 4), bcs=reshape(uinf, 1, 4))
-        u_ref = rk4_ka!(DGContext(master, mesh), app_pt, copy(uinf_arr), 0.0, 1e-3, 5)
+        phys = DGPhysics(eq; boundary_conditions=ntuple(_ -> FarField(uinf), 4))
+        u_ref = rk4_ka!(DGContext(master, mesh), phys, copy(uinf_arr), 0.0, 1e-3, 5)
         @test sol.u ≈ u_ref rtol = 1e-12
     end
 
     @testset "DGProblem LDG (convection-diffusion) runs and decays" begin
-        eq = ConvectionDiffusionEquation(x -> SVector(-x[2], x[1]), 0.01;
-                                         c11=10.0, c11int=0.5)
+        eq = ConvectionDiffusionEquation(x -> SVector(-x[2], x[1]), 0.01)
         mesh = mkmesh_square(9, 9, 3, 0, 1)
         u0 = [(x, y) -> exp(-4 * ((x - 0.5)^2 + y^2))]
-        prob = DGProblem(eq, mesh; bc=[Dirichlet(), Neumann(), Dirichlet(), Neumann()], u0)
+        prob = DGProblem(eq, mesh; bc=[Dirichlet(), Neumann(), Dirichlet(), Neumann()],
+                         u0, stabilization=LDGStabilization(10.0, 0.5))
         sol = solve(prob, RK4(); dt=1e-4, nstep=20)
         @test all(isfinite, sol.u)
         @test size(sol.u) == (size(mesh.dgnodes, 1), 1, size(mesh.dgnodes, 3))
@@ -101,6 +106,27 @@ using OrdinaryDiffEqTsit5: Tsit5
         @test_throws ArgumentError solve(bad, RK4(); dt=1e-4, nstep=1)
         incomplete = DGProblem(eq, mesh; bc=(top=Dirichlet(), left=Neumann()), u0)
         @test_throws ArgumentError solve(incomplete, RK4(); dt=1e-4, nstep=1)
+    end
+
+    @testset "solve callback hook" begin
+        mesh = mkmesh_square(7, 7, 2, 0, 1)
+        eq = ConvectionEquation([1.0, 0.5])
+        u0 = [(x, y) -> exp(-16 * ((x - 0.5)^2 + (y - 0.5)^2))]
+        prob = DGProblem(eq, mesh; bc=fill(FarField([0.0]), 4), u0)
+
+        # called every step with (u, t, step, prob); norms recorded
+        ts = Float64[]
+        cb = state -> (push!(ts, state.t); false)
+        sol = solve(prob, RK4(); dt=1e-3, nstep=5, callback=cb)
+        @test ts ≈ collect(1:5) .* 1e-3
+        # callback path gives the same answer as the plain path
+        sol0 = solve(prob, RK4(); dt=1e-3, nstep=5)
+        @test sol.u == sol0.u
+
+        # returning true stops the loop early
+        sol_stop = solve(prob, RK4(); dt=1e-3, nstep=100,
+                         callback=state -> state.step >= 3)
+        @test sol_stop.t ≈ 3e-3
     end
 
     @testset "compute_dt (CFL helper)" begin

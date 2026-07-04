@@ -39,6 +39,12 @@ using LinearAlgebra
     mesh = mkmesh_square(5, 5, porder, 0, 1)
     master = Master(mesh, ngauss)
     u, _, _ = hdg_solve(master, mesh, source, dbc, param)
+
+    # batched sparse-direct path (the one Interface's Direct() uses) agrees
+    # with the per-element reference to solver precision
+    ud, _, _ = hdg_direct_batched(master, mesh, source, dbc, param)
+    @test norm(vec(ud) .- vec(u)) / norm(vec(u)) < 1e-8
+
     up, _, _, _ = hdg_parsolve(master, mesh, source, dbc, param;
                                restart=200, tol=1e-10)
     upn, _, _, _ = hdg_parsolve(master, mesh, source, dbc, param;
