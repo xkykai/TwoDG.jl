@@ -1,6 +1,8 @@
 """
-High-level problem/solve API (roadmap A1). Thin, allocation-light wrappers
-around the validated low-level solvers:
+High-level problem/solve API: thin orchestration over the validated low-level
+solvers. Physics (equations, boundary conditions, numerical fluxes) lives in
+`TwoDG.Equations` and is passed through to the kernels *unchanged* — there is
+no translation layer.
 
 ```julia
 using TwoDG
@@ -12,10 +14,6 @@ prob = DGProblem(eq, mesh; bc = [FarField(uinf), SlipWall(), FarField(uinf), Far
 sol  = solve(prob, RK4(); dt = 1e-3, tfinal = 1.0)
 err  = l2error(sol, exact)      # or scaplot(sol.prob.mesh, sol.u[:, 1, :])
 ```
-
-Boundary-condition objects lower to the kernels' compiled `bcm::Vector{Int}` /
-`bcs::Matrix` representation (an `Int32` code plus a data row stays the right
-GPU format; it is just no longer the *user* API).
 """
 module Interface
 
@@ -23,250 +21,21 @@ import CommonSolve
 using CommonSolve: solve
 using StaticArrays
 using Adapt: adapt
-using ..Apps: mkapp_convection_pt, mkapp_convection_diffusion_pt,
-              mkapp_wave_pt, mkapp_euler_pt
 using LinearAlgebra: norm
+using ..Equations
 using ..Masters: Master
 using ..Meshes: Mesh
 using ..Utils: initu, interpolate
-using ..DiscontinuousGalerkin: DGContext, rinvexpl!, rldgexpl!, rk4_ka!,
-                               RinvWorkspace, RldgWorkspace
-using ..HybridizableDiscontinuousGalerkin: hdg_solve, hdg_parsolve,
+using ..DiscontinuousGalerkin: DGContext, DGPhysics, rinvexpl!, rldgexpl!, rk4_ka!,
+                               RinvWorkspace, RldgWorkspace, _default_ka_ws
+using ..HybridizableDiscontinuousGalerkin: hdg_direct_batched, hdg_parsolve,
                                            hdg_parsolve_batched
 using ..ContinuousGalerkin: cg_solve, cg_parsolve
 import ..ContinuousGalerkin: l2error
 
 export solve, semidiscretize, compute_dt,
-    ConvectionEquation, ConvectionDiffusionEquation, WaveEquation,
-    EulerEquations, PoissonEquation, nvariables,
-    Dirichlet, Neumann, SlipWall, FarField, IncomingWave,
     DGProblem, HDGProblem, CGProblem,
     RK4, Direct, GMRES, ConjugateGradient
-
-# --------------------------------------------------------------- equations
-
-abstract type AbstractEquation end
-
-"""
-    ConvectionEquation(velocity)
-
-Linear scalar convection `u_t + ∇·(v u) = s`. `velocity` is a constant
-2-vector or a callable `x::SVector{2} -> SVector{2}`.
-"""
-struct ConvectionEquation{V} <: AbstractEquation
-    velocity::V
-end
-
-"""
-    ConvectionDiffusionEquation(velocity, κ; c11=1.0, c11int=0.0)
-
-Linear convection-diffusion `u_t + ∇·(v u) = ∇·(κ ∇u) + s`, discretized with
-LDG viscous fluxes (`c11`/`c11int` are the boundary/interior stabilization
-coefficients). Used by both `DGProblem` (explicit LDG) and `HDGProblem`
-(steady HDG, where `c11`/`c11int` are ignored).
-"""
-struct ConvectionDiffusionEquation{V, T} <: AbstractEquation
-    velocity::V
-    κ::T
-    c11::T
-    c11int::T
-end
-ConvectionDiffusionEquation(velocity, κ; c11=1.0, c11int=0.0) =
-    ConvectionDiffusionEquation(velocity, promote(κ, c11, c11int)...)
-
-"""
-    WaveEquation(c; k=nothing, f=nothing)
-
-First-order wave system (3 components) with speed `c`. `k` (wave vector) and
-`f(c, k, x, t)` are only needed when an [`IncomingWave`](@ref) boundary is
-used.
-"""
-struct WaveEquation{T, K, F} <: AbstractEquation
-    c::T
-    k::K
-    f::F
-end
-WaveEquation(c; k=nothing, f=nothing) = WaveEquation(c, k, f)
-
-"""
-    EulerEquations(; γ=1.4)
-
-Compressible Euler equations (4 components), Roe numerical flux.
-"""
-struct EulerEquations{T} <: AbstractEquation
-    γ::T
-end
-EulerEquations(; γ=1.4) = EulerEquations(γ)
-
-"""
-    PoissonEquation(κ=1.0)
-
-Poisson / pure-diffusion equation `-∇·(κ ∇u) = s`, for `HDGProblem` and
-`CGProblem`.
-"""
-struct PoissonEquation{T} <: AbstractEquation
-    κ::T
-end
-PoissonEquation() = PoissonEquation(1.0)
-
-"""
-    nvariables(eq)
-
-Number of conserved components of an equation.
-"""
-nvariables(::ConvectionEquation) = 1
-nvariables(::ConvectionDiffusionEquation) = 1
-nvariables(::WaveEquation) = 3
-nvariables(::EulerEquations) = 4
-nvariables(::PoissonEquation) = 1
-
-_velocity(v::Function) = v
-_velocity(v) = SVector{2, Float64}(v[1], v[2])
-
-# ------------------------------------------------------- boundary conditions
-
-"""
-Abstract supertype of the boundary-condition objects ([`Dirichlet`](@ref),
-[`Neumann`](@ref), [`SlipWall`](@ref), [`FarField`](@ref),
-[`IncomingWave`](@ref)). Problems take one per boundary (positionally by
-tag, or as a `NamedTuple` keyed by the mesh's boundary names); they lower to
-the kernels' compiled integer-code + data-row representation in
-[`lower_bcs`](@ref).
-"""
-abstract type BoundaryCondition end
-
-"""
-    Dirichlet(value=0.0)
-
-Prescribed solution value on a boundary. For `DGProblem` the value must be a
-constant; for `HDGProblem`/`CGProblem` it may be a function `(x, y) -> g`.
-"""
-struct Dirichlet{G} <: BoundaryCondition
-    value::G
-end
-Dirichlet() = Dirichlet(0.0)
-
-"""
-    Neumann(flux=0.0)
-
-Zero-flux (natural) boundary. Only the homogeneous case is currently
-supported by the kernels.
-"""
-struct Neumann{G} <: BoundaryCondition
-    flux::G
-end
-Neumann() = Neumann(0.0)
-
-"Impermeable slip wall (reflection) for the wave and Euler systems."
-struct SlipWall <: BoundaryCondition end
-
-"Far-field boundary carrying the free-stream `state` (one value per component)."
-struct FarField{S} <: BoundaryCondition
-    state::S
-end
-
-"Incoming-wave boundary for [`WaveEquation`](@ref) (uses the equation's `k`, `f`)."
-struct IncomingWave <: BoundaryCondition end
-
-# Lowering to the kernels' integer-code convention: `bc_code` selects the
-# behavior branch inside the pointwise boundary flux, `bc_state` the data row.
-bc_code(::ConvectionEquation, ::Union{Dirichlet, FarField}) = 1
-bc_code(::ConvectionDiffusionEquation, ::Dirichlet) = 1
-bc_code(::ConvectionDiffusionEquation, ::Neumann) = 2
-bc_code(::WaveEquation, ::FarField) = 1
-bc_code(::WaveEquation, ::SlipWall) = 2
-bc_code(::WaveEquation, ::IncomingWave) = 3
-bc_code(::EulerEquations, ::FarField) = 1
-bc_code(::EulerEquations, ::SlipWall) = 2
-bc_code(eq::AbstractEquation, bc::BoundaryCondition) =
-    throw(ArgumentError("$(typeof(bc).name.name) boundaries are not supported for $(typeof(eq).name.name)"))
-
-bc_state(eq::AbstractEquation, bc::FarField) = collect(Float64, bc.state)
-function bc_state(eq::AbstractEquation, bc::Dirichlet)
-    bc.value isa Number ||
-        throw(ArgumentError("DG boundary data must be a constant (got $(typeof(bc.value)))"))
-    return fill(Float64(bc.value), nvariables(eq))
-end
-function bc_state(eq::AbstractEquation, bc::Neumann)
-    iszero(bc.flux) ||
-        throw(ArgumentError("only homogeneous Neumann boundaries are supported"))
-    return zeros(nvariables(eq))
-end
-bc_state(eq::AbstractEquation, ::Union{SlipWall, IncomingWave}) = zeros(nvariables(eq))
-
-"""
-    lower_bcs(eq, bcs) -> (bcm, bcs_matrix)
-
-Lower a collection of [`BoundaryCondition`](@ref)s (indexed by the mesh's
-boundary tag) to the kernel representation `bcm::Vector{Int}`,
-`bcs::Matrix{Float64}`. Boundaries mapping to the same code must carry the
-same data (a limitation of the compiled format).
-"""
-function lower_bcs(eq::AbstractEquation, bcs)
-    nc = nvariables(eq)
-    bcm = [bc_code(eq, bc) for bc in bcs]
-    nrow = maximum(bcm)
-    mat = zeros(nrow, nc)
-    seen = falses(nrow)
-    for (tag, bc) in enumerate(bcs)
-        code = bcm[tag]
-        state = bc_state(eq, bc)
-        if seen[code] && !isapprox(vec(mat[code, :]), state)
-            throw(ArgumentError("boundaries with the same type must currently " *
-                                "share the same data (boundary $tag conflicts)"))
-        end
-        mat[code, :] .= state
-        seen[code] = true
-    end
-    return bcm, mat
-end
-
-"""
-    _ordered_bcs(bc, mesh)
-
-Boundary conditions may be given positionally (a vector/tuple indexed by
-boundary tag) or, when the mesh generator attached boundary names, as a
-`NamedTuple` keyed by those names, e.g. for `mkmesh_square`:
-`(bottom=Dirichlet(), right=Neumann(), top=Dirichlet(), left=Neumann())`.
-"""
-_ordered_bcs(bc, mesh) = bc
-function _ordered_bcs(bc::NamedTuple, mesh)
-    names = mesh.boundary_names
-    (names === nothing || isempty(names)) &&
-        throw(ArgumentError("this mesh carries no boundary names; pass the " *
-                            "boundary conditions as a vector ordered by boundary tag"))
-    unknown = setdiff(collect(keys(bc)), names)
-    isempty(unknown) ||
-        throw(ArgumentError("unknown boundary name(s) $(Tuple(unknown)); " *
-                            "this mesh's boundaries are $(Tuple(names))"))
-    missing_names = setdiff(names, collect(keys(bc)))
-    isempty(missing_names) ||
-        throw(ArgumentError("missing boundary condition(s) for $(Tuple(missing_names))"))
-    return [bc[name] for name in names]
-end
-
-# Dirichlet data for HDG/CG: accept a constant or a function (x, y) -> g and
-# produce the `dbc(coords::Matrix) -> values` closure the solvers expect.
-lower_dbc(bc::Dirichlet) = lower_dbc(bc.value)
-lower_dbc(g::Number) = p -> fill(Float64(g), size(p, 1))
-lower_dbc(g::Function) = p -> [Float64(g(p[i, 1], p[i, 2])) for i in axes(p, 1)]
-
-# --------------------------------------------------- equations -> pointwise app
-
-has_diffusion(::AbstractEquation) = false
-has_diffusion(::ConvectionDiffusionEquation) = true
-
-pointwise_app(eq::ConvectionEquation; bcm, bcs, source) =
-    mkapp_convection_pt(_velocity(eq.velocity); bcm, bcs, src=source)
-pointwise_app(eq::ConvectionDiffusionEquation; bcm, bcs, source) =
-    mkapp_convection_diffusion_pt(_velocity(eq.velocity); kappa=eq.κ,
-                                  c11=eq.c11, c11int=eq.c11int,
-                                  bcm, bcs, src=source)
-pointwise_app(eq::WaveEquation; bcm, bcs, source) =
-    mkapp_wave_pt(; c=eq.c, k=eq.k === nothing ? nothing : SVector{2, Float64}(eq.k...),
-                  f=eq.f, bcm, bcs, src=source)
-pointwise_app(eq::EulerEquations; bcm, bcs, source) =
-    mkapp_euler_pt(; gamma=eq.γ, bcm, bcs, src=source)
 
 # ---------------------------------------------------------------- algorithms
 
@@ -309,33 +78,46 @@ end
 # ------------------------------------------------------------------ problems
 
 """
-    DGProblem(equation, mesh; bc, u0, source=nothing, T=Float64)
+    DGProblem(equation, mesh; bc, u0, source=nothing, numerical_flux=nothing,
+              stabilization=nothing, T=Float64)
 
-Explicit (L)DG semidiscretization of `equation` on `mesh`. `bc` is a
-collection of [`BoundaryCondition`](@ref)s indexed by boundary tag; `u0` the
-initial condition — either an `(npl, nc, nt)` array or a vector of `nc`
-constants / `(x, y) -> value` functions; `source` an optional pointwise source
-`(u, x, param, t) -> SVector`. Solve with [`RK4`](@ref):
+Explicit (L)DG semidiscretization of `equation` on `mesh`.
+
+- `bc` — one `BoundaryCondition` per boundary tag (a vector/tuple in tag
+  order, or a `NamedTuple` keyed by the mesh's boundary names).
+- `u0` — initial condition: an `(npl, nc, nt)` array or a vector of `nc`
+  constants / `(x, y) -> value` functions.
+- `source` — `nothing` or a pointwise source `(u, x, t) -> SVector`.
+- `numerical_flux` — any callable `(eq, uL, uR, n, x, t) -> SVector`;
+  defaults to `default_numerical_flux(equation)`.
+- `stabilization` — LDG penalty policy ([`LDGStabilization`](@ref)) for
+  diffusive equations; defaults to `default_stabilization(equation)`.
+
+Solve with [`RK4`](@ref):
 
     solve(prob, RK4(); dt, tfinal (or nstep), t0=0.0, ArrayT=Array)
 
 `ArrayT=CuArray` (with CUDA.jl loaded) runs the whole time loop on the GPU.
 """
-struct DGProblem{E <: AbstractEquation, M, B, U, S, T <: AbstractFloat}
-    equation :: E
-    mesh     :: M
-    bc       :: B
-    u0       :: U
-    source   :: S
+struct DGProblem{E <: AbstractEquation, M, B, U, S, NF, ST, T <: AbstractFloat}
+    equation       :: E
+    mesh           :: M
+    bc             :: B
+    u0             :: U
+    source         :: S
+    numerical_flux :: NF
+    stabilization  :: ST
 end
 
 function DGProblem(equation::AbstractEquation, mesh; bc, u0, source=nothing,
+                   numerical_flux=nothing, stabilization=nothing,
                    T::Type{<:AbstractFloat}=Float64)
     return DGProblem{typeof(equation), typeof(mesh), typeof(bc), typeof(u0),
-                     typeof(source), T}(equation, mesh, bc, u0, source)
-end
+                     typeof(source), typeof(numerical_flux), typeof(stabilization),
+                     T}(equation, mesh, bc, u0, source, numerical_flux, stabilization)
+    end
 
-Base.eltype(::DGProblem{<:Any, <:Any, <:Any, <:Any, <:Any, T}) where {T} = T
+Base.eltype(::DGProblem{<:Any, <:Any, <:Any, <:Any, <:Any, <:Any, <:Any, T}) where {T} = T
 
 """
     HDGProblem(equation, mesh; bc, source=nothing, stabilization=1.0)
@@ -440,34 +222,96 @@ Base.show(io::IO, sol::CGSolution) =
 
 # -------------------------------------------------------------------- solve
 
-_initial_state(prob::DGProblem, app) = _initial_state(prob.u0, prob, app)
-_initial_state(u0::AbstractArray{<:Any, 3}, prob, app) = float(copy(u0))
-_initial_state(u0::Union{Tuple, AbstractVector}, prob, app) =
-    initu(prob.mesh, app, u0)
+"""
+    _ordered_bcs(bc, mesh)
+
+Boundary conditions may be given positionally (a vector/tuple indexed by
+boundary tag) or, when the mesh generator attached boundary names, as a
+`NamedTuple` keyed by those names, e.g. for `mkmesh_square`:
+`(bottom=Dirichlet(), right=Neumann(), top=Dirichlet(), left=Neumann())`.
+"""
+_ordered_bcs(bc, mesh) = bc
+function _ordered_bcs(bc::NamedTuple, mesh)
+    names = mesh.boundary_names
+    (names === nothing || isempty(names)) &&
+        throw(ArgumentError("this mesh carries no boundary names; pass the " *
+                            "boundary conditions as a vector ordered by boundary tag"))
+    unknown = setdiff(collect(keys(bc)), names)
+    isempty(unknown) ||
+        throw(ArgumentError("unknown boundary name(s) $(Tuple(unknown)); " *
+                            "this mesh's boundaries are $(Tuple(names))"))
+    missing_names = setdiff(names, collect(keys(bc)))
+    isempty(missing_names) ||
+        throw(ArgumentError("missing boundary condition(s) for $(Tuple(missing_names))"))
+    return [bc[name] for name in names]
+end
+
+# Dirichlet data for HDG/CG: accept a constant or a function (x, y) -> g and
+# produce the `dbc(coords::Matrix) -> values` closure the solvers expect.
+lower_dbc(bc::Dirichlet) = lower_dbc(bc.value)
+lower_dbc(g::Number) = p -> fill(Float64(g), size(p, 1))
+lower_dbc(g::Function) = p -> [Float64(g(p[i, 1], p[i, 2])) for i in axes(p, 1)]
+
+_initial_state(prob::DGProblem) = _initial_state(prob.u0, prob)
+_initial_state(u0::AbstractArray{<:Any, 3}, prob) = float(copy(u0))
+_initial_state(u0::Union{Tuple, AbstractVector}, prob) =
+    initu(prob.mesh, nvariables(prob.equation), u0)
+
+"""
+    _dg_physics(prob::DGProblem) -> DGPhysics
+
+Assemble the physics bundle the DG kernels consume: the equation, the
+per-boundary condition tuple (validated against the mesh's boundary count),
+the numerical flux, source, and stabilization — problem-level `nothing`s
+resolved to the equation's defaults.
+"""
+function _dg_physics(prob::DGProblem)
+    eq, mesh = prob.equation, prob.mesh
+    bcs = _ordered_bcs(prob.bc, mesh)
+    nbnd = maximum(-mesh.f[mesh.f[:, 4] .< 0, 4])
+    length(bcs) == nbnd ||
+        throw(ArgumentError("mesh has $nbnd boundaries, got $(length(bcs)) boundary conditions"))
+    return DGPhysics(eq;
+                     boundary_conditions=Tuple(bcs),
+                     numerical_flux=something(prob.numerical_flux,
+                                              default_numerical_flux(eq)),
+                     source=prob.source,
+                     stabilization=prob.stabilization === nothing ?
+                                   default_stabilization(eq) : prob.stabilization)
+end
 
 # Shared setup for the internal RK4 stepper and the SciML `semidiscretize`
-# bridge: lower BCs, build the pointwise app, the (possibly device-resident)
-# DGContext and initial state, and select the residual kernel.
+# bridge: build the physics bundle, the (possibly device-resident) DGContext
+# and initial state, and select the residual kernel.
 function _dg_setup(prob::DGProblem; ArrayT=Array, ngauss=nothing)
-    eq, mesh = prob.equation, prob.mesh
     T = eltype(prob)
-    bcm, bcs = lower_bcs(eq, _ordered_bcs(prob.bc, mesh))
-    app = pointwise_app(eq; bcm, bcs, source=prob.source)
+    phys = _dg_physics(prob)
 
-    master = ngauss === nothing ? Master(mesh) : Master(mesh, ngauss)
-    ctx = adapt(ArrayT, DGContext(master, mesh; T))
-    u = adapt(ArrayT, T.(_initial_state(prob, app)))
-    app_d = adapt(ArrayT, app)
+    master = ngauss === nothing ? Master(prob.mesh) : Master(prob.mesh, ngauss)
+    ctx = adapt(ArrayT, DGContext(master, prob.mesh; T))
+    u = adapt(ArrayT, T.(_initial_state(prob)))
+    phys_d = adapt(ArrayT, phys)
 
-    residual! = has_diffusion(eq) ? rldgexpl! : rinvexpl!
-    return ctx, app_d, u, residual!
+    residual! = has_diffusion(prob.equation) ? rldgexpl! : rinvexpl!
+    return ctx, phys_d, u, residual!
 end
 
 CommonSolve.solve(prob::DGProblem; kwargs...) = solve(prob, RK4(); kwargs...)
 
+"""
+    solve(prob::DGProblem, RK4(); dt, tfinal (or nstep), t0=0.0,
+          ArrayT=Array, ngauss=nothing, callback=nothing)
+
+Run the internal RK4 time loop. `callback`, if given, is called after every
+step as `callback((; u, t, step, prob))` — `u` is the *live* solution array
+(device-resident under `ArrayT=CuArray`; copy or `Array(u)` it if you keep
+it). Return `false` from the callback to keep going, `true` to stop early.
+This is the minimal diagnostics hook; the composable callback system is
+designed in CALLBACKS_PLAN.md.
+"""
 function CommonSolve.solve(prob::DGProblem, ::RK4;
                            dt, tfinal=nothing, nstep=nothing, t0=0.0,
-                           ArrayT=Array, ngauss=nothing)
+                           ArrayT=Array, ngauss=nothing, callback=nothing)
     (tfinal === nothing) == (nstep === nothing) &&
         throw(ArgumentError("give exactly one of `tfinal` or `nstep`"))
     if nstep === nothing
@@ -475,10 +319,25 @@ function CommonSolve.solve(prob::DGProblem, ::RK4;
     end
 
     T = eltype(prob)
-    ctx, app_d, u, residual! = _dg_setup(prob; ArrayT, ngauss)
-    rk4_ka!(residual!, ctx, app_d, u, T(t0), T(dt), nstep)
+    ctx, phys, u, residual! = _dg_setup(prob; ArrayT, ngauss)
 
-    return DGSolution(Array(u), t0 + nstep * dt, prob)
+    if callback === nothing
+        rk4_ka!(residual!, ctx, phys, u, T(t0), T(dt), nstep)
+        return DGSolution(Array(u), t0 + nstep * dt, prob)
+    end
+
+    ws = _default_ka_ws(residual!, ctx, phys)
+    t = t0
+    laststep = nstep
+    for step in 1:nstep
+        rk4_ka!(residual!, ctx, phys, u, T(t), T(dt), 1; ws)
+        t = t0 + step * dt
+        if callback((; u, t, step, prob)) === true
+            laststep = step
+            break
+        end
+    end
+    return DGSolution(Array(u), t0 + laststep * dt, prob)
 end
 
 """
@@ -552,18 +411,15 @@ _max_wavespeed(::PoissonEquation, prob) = 0.0
 function _max_wavespeed(eq::EulerEquations, prob)
     u0 = prob.u0
     u = u0 isa AbstractArray{<:Any, 3} ? u0 : interpolate(prob.mesh, u0)
-    γ = eq.γ
     smax = 0.0
     for it in axes(u, 3), i in axes(u, 1)
-        ρ, ρu, ρv, ρE = u[i, 1, it], u[i, 2, it], u[i, 3, it], u[i, 4, it]
-        vel = hypot(ρu, ρv) / ρ
-        pres = (γ - 1) * (ρE - 0.5 * (ρu^2 + ρv^2) / ρ)
-        smax = max(smax, vel + sqrt(γ * pres / ρ))
+        state = SVector(u[i, 1, it], u[i, 2, it], u[i, 3, it], u[i, 4, it])
+        smax = max(smax, norm(velocity(eq, state)) + soundspeed(eq, state))
     end
     return smax
 end
 
-_max_velocity(v, mesh) = norm(_velocity(v))
+_max_velocity(v, mesh) = norm(v)
 function _max_velocity(v::Function, mesh)
     smax = 0.0
     dg = mesh.dgnodes
@@ -573,13 +429,15 @@ function _max_velocity(v::Function, mesh)
     return smax
 end
 
+# ------------------------------------------------------------ HDG / CG solves
+
 CommonSolve.solve(prob::HDGProblem; kwargs...) = solve(prob, GMRES(); kwargs...)
 
 function CommonSolve.solve(prob::HDGProblem, ::Direct; ngauss=nothing)
     mesh = prob.mesh
     master = ngauss === nothing ? Master(mesh, 4 * (mesh.porder + 1)) : Master(mesh, ngauss)
     param = hdg_param(prob.equation, prob.stabilization)
-    u, q, uhat = hdg_solve(master, mesh, prob.source, lower_dbc(prob.bc), param)
+    u, q, uhat = hdg_direct_batched(master, mesh, prob.source, lower_dbc(prob.bc), param)
     return HDGSolution(u, q, uhat, 0, prob)
 end
 
