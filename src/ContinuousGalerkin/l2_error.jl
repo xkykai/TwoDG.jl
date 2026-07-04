@@ -54,14 +54,3 @@ function l2error(mesh, uh::AbstractArray{<:Any, 3}, exact::Function)
     return l2error(mesh, reshape(uh, size(uh, 1), :), exact)
 end
 
-"""
-    l2_error(mesh, uh, exact)
-
-Deprecated: returns the *squared* L2 error. Use [`l2error`](@ref), which
-returns the error itself.
-"""
-function l2_error(mesh, uh::AbstractArray, exact::Function)
-    Base.depwarn("`l2_error` returns the squared L2 error and is deprecated; " *
-                 "use `l2error(mesh, uh, exact)` (not squared) instead.", :l2_error)
-    return l2error(mesh, uh, exact)^2
-end

@@ -1,19 +1,16 @@
-# KernelAbstractions implementation of the LDG viscous path (the GPU-capable
-# counterpart of `getq` + `rldgexpl`). Shares DGContext and the scatter/lift/
-# mass kernels with rinvexpl_ka.jl; adds the LDG gradient computation and
-# viscous flux kernels.
+# KernelAbstractions implementation of the LDG viscous path (gradient
+# computation + viscous fluxes). Shares DGContext and the scatter/lift/mass
+# kernels with rinvexpl_ka.jl.
 #
-# Requires an app in the *pointwise* flux convention with the viscous
-# extension (see src/Apps/pointwise.jl):
-#   fvisi(uL, uR, qL, qR, n, x, param, time) -> SVector{nc}
-#   fvisb(uL, qL, n, ib, ui, x, param, time) -> SVector{nc}
-#   fvisv(u, q, x, param, time) -> (fx, fy)
-#   fvisub(uL, n, ib, ui, x, param, time) -> SVector{nc}
-# where gradients q are SMatrix{2,nc} (rows = x/y derivative).
+# Physics enters through dispatch on the `DGPhysics` components: the
+# equation's `viscous_flux`, the stabilization policy's
+# `viscous_numerical_flux`, and `boundary_trace`/`boundary_viscous_flux` on
+# the per-tag boundary-condition tuple. Gradients q are SMatrix{2, nc}
+# (rows = x/y derivative).
 #
-# LDG alternating traces (matching the legacy implementation): û on interior
-# faces is the LEFT trace, and the viscous interface flux sees the RIGHT
-# element's gradient. Gradient layout matches legacy getq: q (npl, 2, nc, nt).
+# LDG alternating traces: û on interior faces is the LEFT trace, and the
+# viscous interface flux sees the RIGHT element's gradient. Gradient layout:
+# q (npl, 2, nc, nt).
 
 using KernelAbstractions
 using KernelAbstractions: @kernel, @index, @Const
@@ -64,14 +61,12 @@ end
     end)
 end
 
-# LDG gradient, face term: û (left trace on interior faces, fvisub on the
-# boundary) times weighted normal components -> qfx, qfy (ng1d, nc, nf).
+# LDG gradient, face term: û (left trace on interior faces, boundary_trace on
+# the boundary) times weighted normal components -> qfx, qfy (ng1d, nc, nf).
 @kernel function _grad_face_flux!(qfx, qfy, @Const(u), @Const(facecon), @Const(f_el),
                                   @Const(nlg), @Const(dws), @Const(pfg), @Const(sh1d),
-                                  fvisub, @Const(bcm), @Const(bcs),
-                                  param, time, ni, ::Val{NC}) where {NC}
+                                  eq, bcs, time, ni, ::Val{NC}) where {NC}
     g, fc = @index(Global, NTuple)
-    T = eltype(qfx)
 
     el = f_el[fc, 1]
     uL = _face_state(u, facecon, sh1d, g, fc, 1, el, Val(NC))
@@ -82,9 +77,7 @@ end
         n = SVector(nlg[g, 1, fc], nlg[g, 2, fc])
         x = SVector(pfg[g, 1, fc], pfg[g, 2, fc])
         ib = -Int(f_el[fc, 2])
-        ibc = bcm[ib]
-        ui = SVector{NC, T}(ntuple(c -> T(bcs[ibc, c]), Val(NC)))
-        û = fvisub(uL, n, ibc, ui, x, param, time)
+        û = apply_boundary_trace(bcs, ib, eq, uL, n, x, time)
     end
 
     w = dws[g, fc]
@@ -157,16 +150,14 @@ end
 end
 
 # face flux with viscous contribution: inviscid Riemann/boundary flux plus
-# fvisi (interior, sees the RIGHT gradient per the LDG alternating choice —
-# the left gradient is also interpolated and passed for generality) or fvisb
-# (boundary, sees the left gradient).
+# the LDG viscous numerical flux (interior, sees the RIGHT gradient per the
+# LDG alternating choice — the left gradient is also interpolated and passed
+# for generality) or the boundary viscous flux (sees the left gradient).
 @kernel function _face_flux_visc!(fng, @Const(u), @Const(q), @Const(facecon),
                                   @Const(f_el), @Const(nlg), @Const(dws), @Const(pfg),
-                                  @Const(sh1d), finvi, finvb, fvisi, fvisb,
-                                  @Const(bcm), @Const(bcs),
-                                  param, time, ni, ::Val{NC}) where {NC}
+                                  @Const(sh1d), eq, numflux, stab, bcs,
+                                  time, ni, ::Val{NC}) where {NC}
     g, fc = @index(Global, NTuple)
-    T = eltype(fng)
 
     el = f_el[fc, 1]
     n = SVector(nlg[g, 1, fc], nlg[g, 2, fc])
@@ -179,15 +170,13 @@ end
         uR = _face_state(u, facecon, sh1d, g, fc, 2, er, Val(NC))
         qL = _face_grad(q, facecon, sh1d, g, fc, 1, el, Val(NC))
         qR = _face_grad(q, facecon, sh1d, g, fc, 2, er, Val(NC))
-        fn = finvi(uL, uR, n, x, param, time) +
-             fvisi(uL, uR, qL, qR, n, x, param, time)
+        fn = numflux(eq, uL, uR, n, x, time) +
+             viscous_numerical_flux(stab, eq, uL, uR, qL, qR, n, x, time)
     else
         ib = -Int(f_el[fc, 2])
-        ibc = bcm[ib]
-        ui = SVector{NC, T}(ntuple(c -> T(bcs[ibc, c]), Val(NC)))
         qL = _face_grad(q, facecon, sh1d, g, fc, 1, el, Val(NC))
-        fn = finvb(uL, n, ibc, ui, x, param, time) +
-             fvisb(uL, qL, n, ibc, ui, x, param, time)
+        fn = apply_boundary_flux(bcs, ib, eq, numflux, uL, n, x, time) +
+             apply_boundary_viscous_flux(bcs, ib, stab, eq, uL, qL, n, x, time)
     end
 
     w = dws[g, fc]
@@ -198,8 +187,7 @@ end
 
 # volume flux with viscous contribution (reads the staged ug)
 @kernel function _volume_flux_visc!(fxg, fyg, @Const(ug), @Const(q), @Const(shap),
-                                    @Const(pg), finvv, fvisv, param, time,
-                                    ::Val{NC}) where {NC}
+                                    @Const(pg), eq, time, ::Val{NC}) where {NC}
     g, e = @index(Global, NTuple)
     T = eltype(fxg)
     npl = size(shap, 1)
@@ -216,8 +204,8 @@ end
     end)
     x = SVector(pg[g, 1, e], pg[g, 2, e])
 
-    fxi, fyi = finvv(u, x, param, time)
-    fxv, fyv = fvisv(u, qg, x, param, time)
+    fxi, fyi = flux(eq, u, x, time)
+    fxv, fyv = viscous_flux(eq, u, qg, x, time)
     @inbounds for c in 1:NC
         fxg[g, c, e] = fxi[c] + fxv[c]
         fyg[g, c, e] = fyi[c] + fyv[c]
@@ -264,23 +252,23 @@ function RldgWorkspace(ctx::DGContext{T}, nc::Integer) where {T}
 end
 
 """
-    getq!(q, ctx, app, u, time; ws=RldgWorkspace(ctx, app.nc))
+    getq!(q, ctx, phys, u, time; ws=RldgWorkspace(ctx, nvariables(phys)))
 
-KernelAbstractions version of [`getq`](@ref): the LDG gradient `q = ∇u`
-(`(npl, 2, nc, nt)`, already multiplied by the inverse mass matrix) for an
-`app` in the pointwise flux convention. Also leaves `u` interpolated to volume
-quadrature points in `ws.ug` (reused by [`rldgexpl!`](@ref)).
+LDG gradient `q = ∇u`
+(`(npl, 2, nc, nt)`, already multiplied by the inverse mass matrix). Also
+leaves `u` interpolated to volume quadrature points in `ws.ug` (reused by
+[`rldgexpl!`](@ref)).
 """
-function getq!(q, ctx::DGContext, app, u, time;
-               ws::RldgWorkspace=RldgWorkspace(ctx, app.nc))
+function getq!(q, ctx::DGContext, phys::DGPhysics, u, time;
+               ws::RldgWorkspace=RldgWorkspace(ctx, nvariables(phys)))
     backend = KernelAbstractions.get_backend(ctx)
-    ncv = Val(Int(app.nc))
+    ncv = Val(nvariables(phys))
 
     fill!(ws.qtmp, zero(eltype(ws.qtmp)))
     _interp_u!(backend)(ws.ug, u, ctx.shap, ncv; ndrange=(ctx.ng, ctx.nt))
     _grad_face_flux!(backend)(ws.qfx, ws.qfy, u, ctx.facecon, ctx.f_el, ctx.nlg,
-                              ctx.dws, ctx.pfg, ctx.sh1d, app.fvisub, app.bcm,
-                              app.bcs, app.arg, time, ctx.ni, ncv;
+                              ctx.dws, ctx.pfg, ctx.sh1d, phys.equation,
+                              phys.boundary_conditions, time, ctx.ni, ncv;
                               ndrange=(ctx.ng1d, ctx.nf))
     _grad_face_scatter!(backend)(ws.qtmp, ws.qfx, ws.qfy, ctx.facecon, ctx.f_el,
                                  ctx.sh1d, ctx.ni, ncv; ndrange=(ctx.np1d, ctx.nf))
@@ -293,50 +281,49 @@ function getq!(q, ctx::DGContext, app, u, time;
 end
 
 """
-    getq_ka(ctx, app, u, time)
+    getq_ka(ctx, phys, u, time)
 
 Allocating convenience wrapper around [`getq!`](@ref).
 """
-function getq_ka(ctx::DGContext, app, u, time)
+function getq_ka(ctx::DGContext, phys::DGPhysics, u, time)
     backend = KernelAbstractions.get_backend(ctx)
-    q = KernelAbstractions.zeros(backend, eltype(u), ctx.npl, 2, Int(app.nc), ctx.nt)
-    return getq!(q, ctx, app, u, time)
+    q = KernelAbstractions.zeros(backend, eltype(u), ctx.npl, 2, nvariables(phys), ctx.nt)
+    return getq!(q, ctx, phys, u, time)
 end
 
 """
-    rldgexpl!(r, ctx, app, u, time; ws=RldgWorkspace(ctx, app.nc))
+    rldgexpl!(r, ctx, phys, u, time; ws=RldgWorkspace(ctx, nvariables(phys)))
 
-KernelAbstractions version of [`rldgexpl`](@ref): residual `r = du/dt` (already
-multiplied by the inverse mass matrix) of the LDG discretization with viscous
-terms, for an `app` in the pointwise flux convention. Falls back to the
-inviscid [`rinvexpl!`](@ref) kernels when `app.fvisv === nothing`.
+LDG (viscous) DG residual `r = du/dt` (already multiplied by the inverse mass
+matrix) of the LDG discretization with viscous terms. Falls back to the
+inviscid [`rinvexpl!`](@ref) kernels when the equation has no diffusion.
 """
-function rldgexpl!(r, ctx::DGContext, app, u, time;
-                   ws::RldgWorkspace=RldgWorkspace(ctx, app.nc))
-    if app.fvisv === nothing
-        return rinvexpl!(r, ctx, app, u, time; ws)
+function rldgexpl!(r, ctx::DGContext, phys::DGPhysics, u, time;
+                   ws::RldgWorkspace=RldgWorkspace(ctx, nvariables(phys)))
+    if !has_diffusion(phys)
+        return rinvexpl!(r, ctx, phys, u, time; ws)
     end
 
     backend = KernelAbstractions.get_backend(ctx)
-    ncv = Val(Int(app.nc))
+    ncv = Val(nvariables(phys))
+    eq = phys.equation
 
-    getq!(ws.q, ctx, app, u, time; ws)
+    getq!(ws.q, ctx, phys, u, time; ws)
 
     fill!(ws.rtmp, zero(eltype(ws.rtmp)))
     _face_flux_visc!(backend)(ws.fng, u, ws.q, ctx.facecon, ctx.f_el, ctx.nlg,
-                              ctx.dws, ctx.pfg, ctx.sh1d, app.finvi, app.finvb,
-                              app.fvisi, app.fvisb, app.bcm, app.bcs, app.arg,
+                              ctx.dws, ctx.pfg, ctx.sh1d, eq, phys.numerical_flux,
+                              phys.stabilization, phys.boundary_conditions,
                               time, ctx.ni, ncv; ndrange=(ctx.ng1d, ctx.nf))
     _volume_flux_visc!(backend)(ws.fxg, ws.fyg, ws.ug, ws.q, ctx.shap, ctx.pg,
-                                app.finvv, app.fvisv, app.arg, time, ncv;
-                                ndrange=(ctx.ng, ctx.nt))
+                                eq, time, ncv; ndrange=(ctx.ng, ctx.nt))
     _face_scatter!(backend)(ws.rtmp, ws.fng, ctx.facecon, ctx.f_el, ctx.sh1d,
                             ctx.ni, ncv; ndrange=(ctx.np1d, ctx.nf))
     _volume_lift!(backend)(ws.rtmp, ws.fxg, ws.fyg, ctx.shapx, ctx.shapy, ncv;
                            ndrange=(ctx.npl, ctx.nt))
-    if app.src !== nothing
+    if phys.source !== nothing
         _volume_source!(backend)(ws.srcg, u, ctx.shap, ctx.pg, ctx.wjac,
-                                 app.src, app.arg, time, ncv;
+                                 phys.source, time, ncv;
                                  ndrange=(ctx.ng, ctx.nt))
         _source_lift!(backend)(ws.rtmp, ws.srcg, ctx.shap, ncv;
                                ndrange=(ctx.npl, ctx.nt))
@@ -348,10 +335,11 @@ function rldgexpl!(r, ctx::DGContext, app, u, time;
 end
 
 """
-    rldgexpl_ka(ctx, app, u, time)
+    rldgexpl_ka(ctx, phys, u, time)
 
 Allocating convenience wrapper around [`rldgexpl!`](@ref).
 """
-rldgexpl_ka(ctx::DGContext, app, u, time) = rldgexpl!(similar(u), ctx, app, u, time)
+rldgexpl_ka(ctx::DGContext, phys::DGPhysics, u, time) =
+    rldgexpl!(similar(u), ctx, phys, u, time)
 
-_default_ka_ws(::typeof(rldgexpl!), ctx, app) = RldgWorkspace(ctx, app.nc)
+_default_ka_ws(::typeof(rldgexpl!), ctx, phys) = RldgWorkspace(ctx, nvariables(phys))

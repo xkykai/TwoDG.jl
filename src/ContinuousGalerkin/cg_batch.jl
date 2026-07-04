@@ -50,11 +50,12 @@ function cg_element_system(mesh, master, source, param;
     ae = zeros(T, npl, npl, nt)
     fe = zeros(T, npl, nt)
 
+    Tg = promote_type(eltype(mesh.pcg), eltype(rt.gwgh))   # geometry precision
     Threads.@threads for e in 1:nt
-        Sx = Matrix{Float64}(undef, npl, ng)
-        Sy = Matrix{Float64}(undef, npl, ng)
-        wjac = Vector{Float64}(undef, ng)
-        pg = Matrix{Float64}(undef, ng, 2)
+        Sx = Matrix{Tg}(undef, npl, ng)
+        Sy = Matrix{Tg}(undef, npl, ng)
+        wjac = Vector{Tg}(undef, ng)
+        pg = Matrix{Tg}(undef, ng, 2)
         coords = mesh.pcg[mesh.tcg[e, :], :]
 
         # always the isoparametric (per-quad-point) path, matching elemmat_cg

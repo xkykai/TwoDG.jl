@@ -1,10 +1,12 @@
-# KernelAbstractions implementation of the inviscid DG residual (the GPU-capable
-# counterpart of `rinvexpl`). Works on the KA CPU backend and on any GPU backend
-# (CUDA/AMDGPU/Metal/oneAPI) when the DGContext, workspace, state and app have
-# been moved over with `Adapt.adapt` (e.g. `adapt(CuArray, ctx)`).
+# KernelAbstractions implementation of the inviscid DG residual. Works on the
+# KA CPU backend and on any GPU backend (CUDA/AMDGPU/Metal/oneAPI) when the
+# DGContext, workspace, state, and physics have been moved over with
+# `Adapt.adapt` (e.g. `adapt(CuArray, ctx)`).
 #
-# Requires an app in the *pointwise* flux convention (see src/Apps/pointwise.jl
-# and GPU_PLAN.md); legacy matrix-flux apps will not work here.
+# Physics enters through dispatch on the `DGPhysics` components: the
+# equation's `flux`, the problem's numerical flux, and `boundary_flux` on the
+# per-tag boundary-condition tuple (statically selected, see
+# Equations/boundary_conditions.jl).
 #
 # Kernel decomposition (staging buffers live in RinvWorkspace):
 #   1. _face_flux!    (g, face):  interpolate uL/uR to face quad points, Riemann
@@ -12,8 +14,6 @@
 #   2. _volume_flux!  (g, elem):  interpolate u to volume quad points, volume
 #                                 flux                              -> fxg, fyg
 #   3. _face_scatter! (j, face):  lift fng with sh1d, atomic scatter into rtmp
-#                                 (atomics make this race-free, unlike the
-#                                 threaded legacy loop)
 #   4. _volume_lift!  (i, elem):  rtmp += shapx*fxg + shapy*fyg (element-local)
 #   5. optional source kernels
 #   6. _apply_minv!   (i, elem):  r = Minv * rtmp
@@ -26,8 +26,7 @@ using Adapt
 
 @kernel function _face_flux!(fng, @Const(u), @Const(facecon), @Const(f_el),
                              @Const(nlg), @Const(dws), @Const(pfg), @Const(sh1d),
-                             finvi, finvb, @Const(bcm), @Const(bcs),
-                             param, time, ni, ::Val{NC}) where {NC}
+                             eq, numflux, bcs, time, ni, ::Val{NC}) where {NC}
     g, fc = @index(Global, NTuple)
     T = eltype(fng)
     np1d = size(sh1d, 1)
@@ -53,12 +52,10 @@ using Adapt
             end
             s
         end)
-        fn = finvi(uL, uR, n, x, param, time)
+        fn = numflux(eq, uL, uR, n, x, time)
     else
         ib = -Int(f_el[fc, 2])
-        ibc = bcm[ib]
-        ui = SVector{NC, T}(ntuple(c -> T(bcs[ibc, c]), Val(NC)))
-        fn = finvb(uL, n, ibc, ui, x, param, time)
+        fn = apply_boundary_flux(bcs, ib, eq, numflux, uL, n, x, time)
     end
 
     w = dws[g, fc]
@@ -92,7 +89,7 @@ end
 end
 
 @kernel function _volume_flux!(fxg, fyg, @Const(u), @Const(shap), @Const(pg),
-                               finvv, param, time, ::Val{NC}) where {NC}
+                               eq, time, ::Val{NC}) where {NC}
     g, e = @index(Global, NTuple)
     T = eltype(fxg)
     npl = size(shap, 1)
@@ -106,7 +103,7 @@ end
     end)
     x = SVector(pg[g, 1, e], pg[g, 2, e])
 
-    fx, fy = finvv(ug, x, param, time)
+    fx, fy = flux(eq, ug, x, time)
     @inbounds for c in 1:NC
         fxg[g, c, e] = fx[c]
         fyg[g, c, e] = fy[c]
@@ -129,7 +126,7 @@ end
 end
 
 @kernel function _volume_source!(srcg, @Const(u), @Const(shap), @Const(pg),
-                                 @Const(wjac), src, param, time, ::Val{NC}) where {NC}
+                                 @Const(wjac), src, time, ::Val{NC}) where {NC}
     g, e = @index(Global, NTuple)
     T = eltype(srcg)
     npl = size(shap, 1)
@@ -143,7 +140,7 @@ end
     end)
     x = SVector(pg[g, 1, e], pg[g, 2, e])
 
-    sv = src(ug, x, param, time)
+    sv = src(ug, x, time)
     w = wjac[g, e]
     @inbounds for c in 1:NC
         srcg[g, c, e] = sv[c] * w
@@ -207,35 +204,34 @@ function RinvWorkspace(ctx::DGContext{T}, nc::Integer) where {T}
 end
 
 """
-    rinvexpl!(r, ctx, app, u, time; ws=RinvWorkspace(ctx, app.nc))
+    rinvexpl!(r, ctx, phys::DGPhysics, u, time; ws=RinvWorkspace(ctx, nvariables(phys)))
 
-KernelAbstractions version of [`rinvexpl`](@ref): residual `r = du/dt` (already
-multiplied by the inverse mass matrix) of the inviscid DG discretization, for
-an `app` in the pointwise flux convention. `r`, `u` are `(npl, nc, nt)` arrays
-on the same backend as `ctx`. Pass a pre-built `ws` to avoid re-allocating
-staging buffers across calls.
+Inviscid DG residual `r = du/dt` (already multiplied by the inverse mass
+matrix). `r`, `u` are `(npl, nc, nt)` arrays on the same backend as `ctx`.
+Pass a pre-built `ws` to avoid re-allocating staging buffers across calls.
 """
-function rinvexpl!(r, ctx::DGContext, app, u, time;
-                   ws=RinvWorkspace(ctx, app.nc))
+function rinvexpl!(r, ctx::DGContext, phys::DGPhysics, u, time;
+                   ws=RinvWorkspace(ctx, nvariables(phys)))
     backend = KernelAbstractions.get_backend(ctx)
-    ncv = Val(Int(app.nc))
+    ncv = Val(nvariables(phys))
+    eq = phys.equation
 
     # Kernels launched on the same backend execute in order (same stream/queue
     # on GPUs; synchronous on the CPU backend), so no intermediate syncs needed.
     fill!(ws.rtmp, zero(eltype(ws.rtmp)))
     _face_flux!(backend)(ws.fng, u, ctx.facecon, ctx.f_el, ctx.nlg, ctx.dws,
-                         ctx.pfg, ctx.sh1d, app.finvi, app.finvb, app.bcm,
-                         app.bcs, app.arg, time, ctx.ni, ncv;
+                         ctx.pfg, ctx.sh1d, eq, phys.numerical_flux,
+                         phys.boundary_conditions, time, ctx.ni, ncv;
                          ndrange=(ctx.ng1d, ctx.nf))
-    _volume_flux!(backend)(ws.fxg, ws.fyg, u, ctx.shap, ctx.pg, app.finvv,
-                           app.arg, time, ncv; ndrange=(ctx.ng, ctx.nt))
+    _volume_flux!(backend)(ws.fxg, ws.fyg, u, ctx.shap, ctx.pg, eq, time, ncv;
+                           ndrange=(ctx.ng, ctx.nt))
     _face_scatter!(backend)(ws.rtmp, ws.fng, ctx.facecon, ctx.f_el, ctx.sh1d,
                             ctx.ni, ncv; ndrange=(ctx.np1d, ctx.nf))
     _volume_lift!(backend)(ws.rtmp, ws.fxg, ws.fyg, ctx.shapx, ctx.shapy, ncv;
                            ndrange=(ctx.npl, ctx.nt))
-    if app.src !== nothing
+    if phys.source !== nothing
         _volume_source!(backend)(ws.srcg, u, ctx.shap, ctx.pg, ctx.wjac,
-                                 app.src, app.arg, time, ncv;
+                                 phys.source, time, ncv;
                                  ndrange=(ctx.ng, ctx.nt))
         _source_lift!(backend)(ws.rtmp, ws.srcg, ctx.shap, ncv;
                                ndrange=(ctx.npl, ctx.nt))
@@ -247,35 +243,37 @@ function rinvexpl!(r, ctx::DGContext, app, u, time;
 end
 
 """
-    rinvexpl_ka(ctx, app, u, time)
+    rinvexpl_ka(ctx, phys, u, time)
 
 Allocating convenience wrapper around [`rinvexpl!`](@ref).
 """
-rinvexpl_ka(ctx::DGContext, app, u, time) = rinvexpl!(similar(u), ctx, app, u, time)
+rinvexpl_ka(ctx::DGContext, phys::DGPhysics, u, time) =
+    rinvexpl!(similar(u), ctx, phys, u, time)
 
 """
-    rk4_ka!([residual!,] ctx, app, u, time, dt, nstep; ws)
+    rk4_ka!([residual!,] ctx, phys, u, time, dt, nstep; ws)
 
 In-place RK4 time integrator driving a KA residual (`rinvexpl!` by default;
 pass `rldgexpl!` for the LDG viscous path). All stage buffers are allocated
 once up front; the stage updates are plain broadcasts, so the stepper runs
 unchanged on CPU and GPU arrays. Returns `u` after `nstep` steps.
 """
-function rk4_ka!(residual!::F, ctx::DGContext, app, u, time::Real, dt::Real,
-                 nstep::Integer; ws=_default_ka_ws(residual!, ctx, app)) where {F}
+function rk4_ka!(residual!::F, ctx::DGContext, phys::DGPhysics, u, time::Real,
+                 dt::Real, nstep::Integer;
+                 ws=_default_ka_ws(residual!, ctx, phys)) where {F}
     T = eltype(u)
     k1, k2, k3, k4, tmp = (similar(u) for _ in 1:5)
     h = T(dt)
     t = time
 
     for _ in 1:nstep
-        residual!(k1, ctx, app, u, t; ws)
+        residual!(k1, ctx, phys, u, t; ws)
         @. tmp = u + h / 2 * k1
-        residual!(k2, ctx, app, tmp, t + dt / 2; ws)
+        residual!(k2, ctx, phys, tmp, t + dt / 2; ws)
         @. tmp = u + h / 2 * k2
-        residual!(k3, ctx, app, tmp, t + dt / 2; ws)
+        residual!(k3, ctx, phys, tmp, t + dt / 2; ws)
         @. tmp = u + h * k3
-        residual!(k4, ctx, app, tmp, t + dt; ws)
+        residual!(k4, ctx, phys, tmp, t + dt; ws)
         @. u += h * (k1 / 6 + k2 / 3 + k3 / 3 + k4 / 6)
         t += dt
     end
@@ -283,8 +281,8 @@ function rk4_ka!(residual!::F, ctx::DGContext, app, u, time::Real, dt::Real,
     return u
 end
 
-rk4_ka!(ctx::DGContext, app, u, time::Real, dt::Real, nstep::Integer;
-        ws=RinvWorkspace(ctx, app.nc)) =
-    rk4_ka!(rinvexpl!, ctx, app, u, time, dt, nstep; ws)
+rk4_ka!(ctx::DGContext, phys::DGPhysics, u, time::Real, dt::Real, nstep::Integer;
+        ws=RinvWorkspace(ctx, nvariables(phys))) =
+    rk4_ka!(rinvexpl!, ctx, phys, u, time, dt, nstep; ws)
 
-_default_ka_ws(::typeof(rinvexpl!), ctx, app) = RinvWorkspace(ctx, app.nc)
+_default_ka_ws(::typeof(rinvexpl!), ctx, phys) = RinvWorkspace(ctx, nvariables(phys))
