@@ -1,26 +1,31 @@
 """
     WaveEquation(c; k=nothing, f=nothing)
 
-First-order acoustic wave system for `u = (q₁, q₂, p)`,
+First-order acoustic wave system for `u = (q₁, …, q_Dim, p)`,
 
     ∂q/∂t + c ∇p = 0,    ∂p/∂t + c ∇ ⋅ q = 0,
 
-with speed `c`. `k` (wave vector) and `f(c, k, x, t)` prescribe the incident
-field and are only needed when an [`IncomingWave`](@ref) boundary is used.
+with speed `c` (`Dim + 1` components; 2D by default, or inferred from the
+wave vector `k`). `k` and `f(c, k, x, t)` prescribe the incident field and
+are only needed when an [`IncomingWave`](@ref) boundary is used.
 """
-struct WaveEquation{T, K, F} <: AbstractEquation
+struct WaveEquation{Dim, T, K, F} <: AbstractEquation{Dim}
     c :: T
     k :: K
     f :: F
 end
-WaveEquation(c; k=nothing, f=nothing) =
-    WaveEquation(c, k === nothing ? nothing : SVector{2}(k...), f)
+function WaveEquation(c; k=nothing, f=nothing)
+    kv = k === nothing ? nothing : SVector{length(k)}(k...)
+    Dim = k === nothing ? 2 : length(k)
+    return WaveEquation{Dim, typeof(c), typeof(kv), typeof(f)}(c, kv, f)
+end
 
-nvariables(::WaveEquation) = 3
-varnames(::WaveEquation) = (:q1, :q2, :p)
+nvariables(::WaveEquation{Dim}) where {Dim} = Dim + 1
+varnames(::WaveEquation{2}) = (:q1, :q2, :p)
+varnames(::WaveEquation{3}) = (:q1, :q2, :q3, :p)
 default_numerical_flux(::WaveEquation) = RoeFlux()
 
-@inline function flux(eq::WaveEquation, u::SVector{3, T}, x, t) where {T}
+@inline function flux(eq::WaveEquation{2}, u::SVector{3, T}, x, t) where {T}
     c = convert(T, eq.c)
     fx = SVector(-c * u[3], zero(T), -c * u[1])
     fy = SVector(zero(T), -c * u[3], -c * u[2])

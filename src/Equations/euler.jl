@@ -1,98 +1,142 @@
 """
     EulerEquations(; γ=1.4)
+    EulerEquations{Dim}(; γ=1.4)
 
-Compressible Euler equations for the conserved state `u = (ρ, ρu, ρv, ρE)`,
-with ideal-gas ratio of specific heats `γ`. Default numerical flux:
-[`RoeFlux`](@ref).
+Compressible Euler equations for the conserved state `(ρ, ρu, ρv[, ρw], ρE)`
+(`Dim + 2` components; 2D by default), with ideal-gas ratio of specific heats
+`γ`. Default numerical flux: [`RoeFlux`](@ref).
 """
-struct EulerEquations{T} <: AbstractEquation
+struct EulerEquations{Dim, T} <: AbstractEquation{Dim}
     γ :: T
 end
+EulerEquations(γ::Real) = EulerEquations{2, typeof(γ)}(γ)
 EulerEquations(; γ=1.4) = EulerEquations(γ)
+EulerEquations{Dim}(γ::Real) where {Dim} = EulerEquations{Dim, typeof(γ)}(γ)
+EulerEquations{Dim}(; γ=1.4) where {Dim} = EulerEquations{Dim}(γ)
 
-nvariables(::EulerEquations) = 4
-varnames(::EulerEquations) = (:ρ, :ρu, :ρv, :ρE)
+nvariables(::EulerEquations{Dim}) where {Dim} = Dim + 2
+varnames(::EulerEquations{2}) = (:ρ, :ρu, :ρv, :ρE)
+varnames(::EulerEquations{3}) = (:ρ, :ρu, :ρv, :ρw, :ρE)
 default_numerical_flux(::EulerEquations) = RoeFlux()
 
 # ------------------------------------------------------------- primitives
-# Defined once; the physical flux, the Roe flux, boundary states, and the
-# derived-quantity fields below all call these.
+# Defined once, for any `Dim`, on the conserved state `(ρ, ρv..., ρE)` with
+# `NC = Dim + 2` components; the physical flux, the Roe flux, boundary states,
+# and the derived-quantity fields below all call these. The accumulation
+# helpers keep the momentum sums left-associated (in component order) so the
+# 2D results are bit-identical to the pre-3D specialized methods.
+
+# In-order accumulation helpers. These exist for two reasons: the sums must
+# associate left-to-right in component order (so the Dim = 2 results are
+# bit-identical to the pre-3D code), and locals that a closure captures must
+# be assigned exactly once — a captured local reassigned in a loop gets boxed,
+# which is a silent 100× cliff inside a KA kernel. Callers bind each helper's
+# result once and only capture that.
+@inline function _minus_mom_dot(s, v::SVector{Dim}, Δ) where {Dim}
+    for d in 1:Dim
+        s -= v[d] * Δ[d + 1]
+    end
+    return s
+end
+@inline function _plus_mom_dot_n(s, Δ, n::SVector{Dim}) where {Dim}
+    for d in 1:Dim
+        s += Δ[d + 1] * n[d]
+    end
+    return s
+end
+@inline function _dotn(v::SVector{Dim}, n) where {Dim}
+    s = v[1] * n[1]
+    for d in 2:Dim
+        s += v[d] * n[d]
+    end
+    return s
+end
 
 "Density `ρ` of a conserved Euler state."
-@inline density(eq::EulerEquations, u::SVector{4}) = u[1]
+@inline density(eq::EulerEquations, u::SVector) = u[1]
 
-"Velocity vector `(u, v) = (ρu, ρv)/ρ` of a conserved Euler state."
-@inline velocity(eq::EulerEquations, u::SVector{4}) = SVector(u[2], u[3]) / u[1]
+"Velocity vector `ρv/ρ` of a conserved Euler state."
+@inline velocity(eq::EulerEquations{Dim}, u::SVector) where {Dim} =
+    SVector(ntuple(d -> u[d + 1], Val(Dim))) / u[1]
 
 "Ideal-gas pressure `p = (γ-1)(ρE - ρ|v|²/2)` of a conserved Euler state."
-@inline function pressure(eq::EulerEquations, u::SVector{4, T}) where {T}
+@inline function pressure(eq::EulerEquations{Dim}, u::SVector{NC, T}) where {Dim, NC, T}
     γ = convert(T, eq.γ)
-    return (γ - one(T)) * (u[4] - (u[2]^2 + u[3]^2) / (2 * u[1]))
+    ρv² = u[2]^2
+    for d in 2:Dim
+        ρv² += u[d + 1]^2
+    end
+    return (γ - one(T)) * (u[NC] - ρv² / (2 * u[1]))
 end
 
 "Speed of sound `c = √(γp/ρ)`."
-@inline soundspeed(eq::EulerEquations, u::SVector{4, T}) where {T} =
+@inline soundspeed(eq::EulerEquations, u::SVector{NC, T}) where {NC, T} =
     sqrt(convert(T, eq.γ) * pressure(eq, u) / u[1])
 
 "Specific total enthalpy `h = (ρE + p)/ρ`."
-@inline enthalpy(eq::EulerEquations, u::SVector{4}) = (u[4] + pressure(eq, u)) / u[1]
+@inline enthalpy(eq::EulerEquations, u::SVector{NC}) where {NC} =
+    (u[NC] + pressure(eq, u)) / u[1]
 
 "Mach number `|v|/c`."
-@inline mach(eq::EulerEquations, u::SVector{4}) =
+@inline mach(eq::EulerEquations, u::SVector) =
     norm(velocity(eq, u)) / soundspeed(eq, u)
 
 "Entropy function `s = p/ρ^γ`."
-@inline entropy(eq::EulerEquations, u::SVector{4, T}) where {T} =
+@inline entropy(eq::EulerEquations, u::SVector{NC, T}) where {NC, T} =
     pressure(eq, u) / u[1]^convert(T, eq.γ)
 
 # ------------------------------------------------------------------ fluxes
 
-@inline function flux(eq::EulerEquations, u::SVector{4, T}, x, t) where {T}
-    ρ, ρu, ρv, ρE = u
+# f_d = (ρ v_d, ρv v_d + p e_d, v_d (ρE + p)) — one definition for every Dim
+@inline function flux(eq::EulerEquations{Dim}, u::SVector{NC, T}, x, t) where {Dim, NC, T}
     v = velocity(eq, u)
     p = pressure(eq, u)
-    fx = SVector(ρu, ρu * v[1] + p, ρv * v[1], v[1] * (ρE + p))
-    fy = SVector(ρv, ρu * v[2], ρv * v[2] + p, v[2] * (ρE + p))
-    return fx, fy
+    ρE = u[NC]
+    return ntuple(Val(Dim)) do d
+        SVector(ntuple(Val(NC)) do c
+            c == 1  ? u[d + 1] :
+            c == NC ? v[d] * (ρE + p) :
+            c == d + 1 ? u[c] * v[d] + p : u[c] * v[d]
+        end)
+    end
 end
 
-@inline function max_abs_speed(eq::EulerEquations, u::SVector{4}, n, x, t)
+@inline function max_abs_speed(eq::EulerEquations{Dim}, u::SVector, n, x, t) where {Dim}
     v = velocity(eq, u)
-    return abs(v[1] * n[1] + v[2] * n[2]) + soundspeed(eq, u)
+    return abs(_dotn(v, n)) + soundspeed(eq, u)
 end
 
 # Roe (1981), JCP 43:357. F̂ = ½(F(uL)+F(uR))·n − ½|Â(ũ)|(uR−uL); the
 # dissipation is |Â| applied to the jump, evaluated at the Roe average.
-@inline function (::RoeFlux)(eq::EulerEquations, uL::SVector{4, T}, uR::SVector{4, T},
-                             n, x, t) where {T}
+@inline function (::RoeFlux)(eq::EulerEquations, uL::SVector{NC, T}, uR::SVector{NC, T},
+                             n, x, t) where {NC, T}
     central = (normal_flux(eq, uL, n, x, t) + normal_flux(eq, uR, n, x, t)) / 2
     return central - roe_dissipation(eq, uL, uR, n) / 2
 end
 
 # Density-weighted (Roe) average of velocity and total enthalpy: the unique
 # state ũ with Â(ũ)(uR − uL) = F(uR) − F(uL).
-@inline function roe_average(eq::EulerEquations, uL::SVector{4, T},
-                             uR::SVector{4, T}) where {T}
+@inline function roe_average(eq::EulerEquations{Dim}, uL::SVector{NC, T},
+                             uR::SVector{NC, T}) where {Dim, NC, T}
     d = sqrt(uR[1] / uL[1])
     w = inv(d + one(T))
     vL = velocity(eq, uL)
     vR = velocity(eq, uR)
-    ũ = (d * vR[1] + vL[1]) * w
-    ṽ = (d * vR[2] + vL[2]) * w
+    ṽ = SVector(ntuple(k -> (d * vR[k] + vL[k]) * w, Val(Dim)))
     h̃ = (d * enthalpy(eq, uR) + enthalpy(eq, uL)) * w
-    return ũ, ṽ, h̃
+    return ṽ, h̃
 end
 
-# |Â(ũ)| (uR − uL): eigenvalues |ũ·n ± c̃| (acoustic) and |ũ·n| (entropy/shear),
-# with the acoustic/normal-momentum wave strengths α below.
-@inline function roe_dissipation(eq::EulerEquations, uL::SVector{4, T},
-                                 uR::SVector{4, T}, n) where {T}
+# |Â(ũ)| (uR − uL): eigenvalues |ũ·n ± c̃| (acoustic) and |ũ·n| (entropy +
+# Dim−1 shear), with the acoustic/normal-momentum wave strengths α below.
+@inline function roe_dissipation(eq::EulerEquations{Dim}, uL::SVector{NC, T},
+                                 uR::SVector{NC, T}, n) where {Dim, NC, T}
     γ1 = convert(T, eq.γ) - one(T)
-    ũ, ṽ, h̃ = roe_average(eq, uL, uR)
-    ke = (ũ^2 + ṽ^2) / 2
+    ṽ, h̃ = roe_average(eq, uL, uR)
+    ke = _dotn(ṽ, ṽ) / 2
     c̃² = γ1 * (h̃ - ke)
     c̃ = sqrt(c̃²)
-    un = ũ * n[1] + ṽ * n[2]
+    un = _dotn(ṽ, n)
     Δ = uR - uL
 
     λ⁺ = abs(un + c̃)                 # right-going acoustic
@@ -102,22 +146,25 @@ end
     d½ = (λ⁺ - λ⁻) / 2
 
     # wave strengths: energy-like and normal-momentum projections of the jump
-    α_E = γ1 * (ke * Δ[1] - ũ * Δ[2] - ṽ * Δ[3] + Δ[4])
-    α_n = -un * Δ[1] + Δ[2] * n[1] + Δ[3] * n[2]
+    α_E = γ1 * (_minus_mom_dot(ke * Δ[1], ṽ, Δ) + Δ[NC])
+    α_n = _plus_mom_dot_n(-un * Δ[1], Δ, n)
     c₁ = (s½ - λ⁰) * α_E / c̃² + d½ * α_n / c̃
     c₂ = d½ * α_E / c̃ + (s½ - λ⁰) * α_n
 
-    return SVector(λ⁰ * Δ[1] + c₁,
-                   λ⁰ * Δ[2] + c₁ * ũ + c₂ * n[1],
-                   λ⁰ * Δ[3] + c₁ * ṽ + c₂ * n[2],
-                   λ⁰ * Δ[4] + c₁ * h̃ + c₂ * un)
+    return SVector(ntuple(Val(NC)) do c
+        c == 1  ? λ⁰ * Δ[1] + c₁ :
+        c == NC ? λ⁰ * Δ[NC] + c₁ * h̃ + c₂ * un :
+                  λ⁰ * Δ[c] + c₁ * ṽ[c - 1] + c₂ * n[c - 1]
+    end)
 end
 
 # slip wall: reflect the normal momentum
-@inline function boundary_state(::SlipWall, eq::EulerEquations, uL::SVector{4, T},
-                                n, x, t) where {T}
-    ρvn = uL[2] * n[1] + uL[3] * n[2]
-    return SVector(uL[1], uL[2] - 2ρvn * n[1], uL[3] - 2ρvn * n[2], uL[4])
+@inline function boundary_state(::SlipWall, eq::EulerEquations{Dim},
+                                uL::SVector{NC, T}, n, x, t) where {Dim, NC, T}
+    ρvn = _plus_mom_dot_n(zero(T), uL, n)
+    return SVector(ntuple(Val(NC)) do c
+        (c == 1 || c == NC) ? uL[c] : uL[c] - 2ρvn * n[c - 1]
+    end)
 end
 
 # --------------------------------------------------------- derived fields

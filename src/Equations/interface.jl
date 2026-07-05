@@ -3,9 +3,11 @@
 # user adds an equation by defining methods on their own type.
 
 """
-    AbstractEquation
+    AbstractEquation{Dim}
 
-Supertype of all equations. A concrete equation is a small immutable struct
+Supertype of all equations in `Dim` space dimensions (Trixi's `NDIMS`
+pattern: the dimension is a type parameter the kernels and problem
+constructors dispatch on). A concrete equation is a small immutable struct
 holding its physical parameters as typed fields (e.g. `EulerEquations(γ)`),
 and implements the dispatch contract:
 
@@ -13,18 +15,25 @@ and implements the dispatch contract:
 |---|---|---|
 | [`nvariables`](@ref)`(eq)` | all | number of conserved components |
 | [`varnames`](@ref)`(eq)` | all | component names, for output |
-| [`flux`](@ref)`(eq, u, x, t)` | all | physical flux `(fx, fy)` |
+| [`flux`](@ref)`(eq, u, x, t)` | all | physical flux, one `SVector{nc}` per direction |
 | [`max_abs_speed`](@ref)`(eq, u, n, x, t)` | Lax–Friedrichs-type fluxes | max characteristic speed along `n` |
 | [`default_numerical_flux`](@ref)`(eq)` | `solve` defaults | numerical flux used when none is given |
 | [`has_diffusion`](@ref)`(eq)` | viscous (LDG) terms | `true` enables the gradient/viscous path |
-| [`viscous_flux`](@ref)`(eq, u, q, x, t)` | if `has_diffusion` | viscous physical flux `(fx, fy)` |
+| [`viscous_flux`](@ref)`(eq, u, q, x, t)` | if `has_diffusion` | viscous physical flux, per direction |
 
-States `u` are `SVector{nc}`, positions `x` are `SVector{2}`, gradients `q`
-are `SMatrix{2, nc}` (rows = x/y derivative). All methods must be `@inline`,
-allocation-free, and generic in the element type `T` so they compile inside
-CPU/GPU kernels at any precision.
+States `u` are `SVector{nc}`, positions `x` and normals `n` are
+`SVector{Dim}`, gradients `q` are `SMatrix{Dim, nc}` (row `d` = ∂/∂x_d). All
+methods must be `@inline`, allocation-free, and generic in the element type
+`T` so they compile inside CPU/GPU kernels at any precision.
+
+Scalar equations are dimension-polymorphic: `ConvectionEquation(v)` infers
+`Dim = length(v)` from its velocity; equations without a directional
+parameter (e.g. `PoissonEquation()`) default to 2D, with `PoissonEquation{3}`
+available explicitly — a user never spells `Dim` twice.
 """
-abstract type AbstractEquation end
+abstract type AbstractEquation{Dim} end
+
+Base.ndims(::AbstractEquation{Dim}) where {Dim} = Dim
 
 """
     nvariables(eq) -> Int
@@ -42,13 +51,13 @@ Names of the conserved components, in storage order.
 function varnames end
 
 """
-    flux(eq, u, x, t) -> (fx, fy)
+    flux(eq, u, x, t) -> NTuple{Dim, SVector{nc}}
 
 Physical (volume) flux of the equation at state `u::SVector{nc}` and position
-`x::SVector{2}`: the pair of `SVector{nc}` flux components such that the
-conservation law reads `∂u/∂t + ∂fx/∂x + ∂fy/∂y = source`. Defined **once**
-per equation; the numerical fluxes, boundary fluxes, and volume terms all
-call it.
+`x::SVector{Dim}`: one `SVector{nc}` flux per space direction, such that the
+conservation law reads `∂u/∂t + Σ_d ∂f_d/∂x_d = source` (in 2D this is the
+familiar `(fx, fy)` pair). Defined **once** per equation; the numerical
+fluxes, boundary fluxes, and volume terms all call it.
 """
 function flux end
 
@@ -58,9 +67,13 @@ function flux end
 Physical flux projected on the unit normal `n`: `flux(eq, u, x, t) ⋅ n`.
 Numerical fluxes use it for their central part.
 """
-@inline function normal_flux(eq::AbstractEquation, u, n, x, t)
-    fx, fy = flux(eq, u, x, t)
-    return fx * n[1] + fy * n[2]
+@inline function normal_flux(eq::AbstractEquation{Dim}, u, n, x, t) where {Dim}
+    fd = flux(eq, u, x, t)
+    fn = fd[1] * n[1]
+    for d in 2:Dim   # Dim is a compile-time constant; the loop unrolls
+        fn += fd[d] * n[d]
+    end
+    return fn
 end
 
 """
