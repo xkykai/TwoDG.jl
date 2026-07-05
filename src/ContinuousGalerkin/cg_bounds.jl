@@ -78,12 +78,9 @@ function equilibrate(master, mesh, guh, forcing)
         ipl = sum(mesh.t[el, :]) - ipt
         isl = findfirst(x -> x == ipl, mesh.t[el, :])
         
-        if mesh.t2f[el, isl] < 0
-            iol = 2
-        else
-            iol = 1
-        end
-        
+        iol = mesh.t2o[el, isl]
+
+
         # Coordinates of 1D quadrature points along the face in element el
         xxi = transpose(master.sh1d[:, 2, :]) * mesh.dgnodes[perm[:, isl, iol], 1, el]
         yxi = transpose(master.sh1d[:, 2, :]) * mesh.dgnodes[perm[:, isl, iol], 2, el]
@@ -107,12 +104,9 @@ function equilibrate(master, mesh, guh, forcing)
             # find local node in er that is opposite to the face
             ipr = sum(mesh.t[er, :]) - ipt
             isr = findfirst(x -> x == ipr, mesh.t[er, :])
-            if mesh.t2f[er, isr] < 0
-                ior = 2
-            else
-                ior = 1
-            end
-            
+            ior = mesh.t2o[er, isr]
+
+
             # Right side gradient
             gurx = guh[perm[:, isr, ior], 1, er]
             gury = guh[perm[:, isr, ior], 2, er]
@@ -147,39 +141,20 @@ function equilibrate(master, mesh, guh, forcing)
     cnstr = zeros(3 * npl1d, nt)
     for i in 1:nt
         for j in 1:3
-            f = mesh.t2f[i, j]
+            fpos = mesh.t2f[i, j]
             row_offset = (j - 1) * npl1d
-            if f > 0
-                fpos = f
-                ipt = sum(mesh.f[fpos, 1:2])
-                ipl = sum(mesh.t[i, :]) - ipt
-                isl = findfirst(x -> x == ipl, mesh.t[i, :])
-                if mesh.t2f[i, isl] < 0
-                    iol = 2
-                else
-                    iol = 1
-                end
-                
-                xxi = master.sh1d[:, 2, :]' * mesh.dgnodes[perm[:, isl, iol], 1, i]
-                yxi = master.sh1d[:, 2, :]' * mesh.dgnodes[perm[:, isl, iol], 2, i]
-                dsdxi = sqrt.(xxi.^2 .+ yxi.^2)
-                dws = master.gw1d .* dsdxi
+            ipt = sum(mesh.f[fpos, 1:2])
+            ipl = sum(mesh.t[i, :]) - ipt
+            isl = findfirst(x -> x == ipl, mesh.t[i, :])
+            iol = mesh.t2o[i, isl]
+
+            xxi = master.sh1d[:, 2, :]' * mesh.dgnodes[perm[:, isl, iol], 1, i]
+            yxi = master.sh1d[:, 2, :]' * mesh.dgnodes[perm[:, isl, iol], 2, i]
+            dsdxi = sqrt.(xxi.^2 .+ yxi.^2)
+            dws = master.gw1d .* dsdxi
+            if mesh.t2o[i, j] == 1
                 cnstr[(row_offset+1):(row_offset+npl1d), i] = -(sh1d * dws)
             else
-                fpos = -f  # Python: -f - 1
-                ipt = sum(mesh.f[fpos, 1:2])
-                ipr = sum(mesh.t[i, :]) - ipt
-                isr = findfirst(x -> x == ipr, mesh.t[i, :])
-                if mesh.t2f[i, isr] < 0
-                    ior = 2
-                else
-                    ior = 1
-                end
-                
-                xxi = master.sh1d[:, 2, :]' * mesh.dgnodes[perm[:, isr, ior], 1, i]
-                yxi = master.sh1d[:, 2, :]' * mesh.dgnodes[perm[:, isr, ior], 2, i]
-                dsdxi = sqrt.(xxi.^2 .+ yxi.^2)
-                dws = master.gw1d .* dsdxi
                 cnstr[(row_offset+1):(row_offset+npl1d), i] = reverse(sh1d * dws)
             end
         end
@@ -272,16 +247,14 @@ function reconstruct(master, mesh, forcing, qn)
         F .= 0
        
         for j in 1:3
-            f_m = mesh.t2f[i, j]
+            f_idx = mesh.t2f[i, j]
             row_start = (j - 1) * npl1d + 1
             row_end = j * npl1d
             row_range = row_start:row_end
 
-            if f_m > 0
-                f_idx = f_m
+            if mesh.t2o[i, j] == 1
                 F[row_range] .= qn[:, f_idx]  # Use .= for in-place assignment
             else
-                f_idx = -f_m
                 F[row_range] .= -reverse(view(qn, :, f_idx))
             end
            

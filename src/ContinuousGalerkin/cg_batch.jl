@@ -52,15 +52,16 @@ function cg_element_system(mesh, master, source, param;
 
     Tg = promote_type(eltype(mesh.pcg), eltype(rt.gwgh))   # geometry precision
     Threads.@threads for e in 1:nt
-        Sx = Matrix{Tg}(undef, npl, ng)
-        Sy = Matrix{Tg}(undef, npl, ng)
+        Sd = Array{Tg, 3}(undef, npl, ng, 2)
         wjac = Vector{Tg}(undef, ng)
         pg = Matrix{Tg}(undef, ng, 2)
         coords = mesh.pcg[mesh.tcg[e, :], :]
 
         # always the isoparametric (per-quad-point) path, matching elemmat_cg
-        M = element_geometry!(Sx, Sy, wjac, pg, rt, coords; verts=nothing)
+        M = element_geometry!(Sd, wjac, pg, rt, coords; verts=nothing)
 
+        Sx = @view Sd[:, :, 1]
+        Sy = @view Sd[:, :, 2]
         Dx = Sx ./ wjac'                       # unweighted physical derivatives
         Dy = Sy ./ wjac'
         A = κ .* (Sx * Dx' .+ Sy * Dy')        # diffusion
