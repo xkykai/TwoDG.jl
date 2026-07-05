@@ -3,6 +3,11 @@
 # DGContext, workspace, state, and physics have been moved over with
 # `Adapt.adapt` (e.g. `adapt(CuArray, ctx)`).
 #
+# Dimension-generic (THREED_PLAN Phase A): the same kernel bodies serve 2D
+# triangles and 3D tetrahedra through the `Val(DIM)` parameter — positions and
+# normals are `SVector{DIM}`, the volume flux is staged in one
+# `fdg (ng, nc, Dim, nt)` array, and direction loops run `1:DIM`.
+#
 # Physics enters through dispatch on the `DGPhysics` components: the
 # equation's `flux`, the problem's numerical flux, and `boundary_flux` on the
 # per-tag boundary-condition tuple (statically selected, see
@@ -12,9 +17,9 @@
 #   1. _face_flux!    (g, face):  interpolate uL/uR to face quad points, Riemann
 #                                 or boundary flux, weight by dws  -> fng
 #   2. _volume_flux!  (g, elem):  interpolate u to volume quad points, volume
-#                                 flux                              -> fxg, fyg
-#   3. _face_scatter! (j, face):  lift fng with sh1d, atomic scatter into rtmp
-#   4. _volume_lift!  (i, elem):  rtmp += shapx*fxg + shapy*fyg (element-local)
+#                                 flux                              -> fdg
+#   3. _face_scatter! (j, face):  lift fng with shapf, atomic scatter into rtmp
+#   4. _volume_lift!  (i, elem):  rtmp += Σ_d shapd_d*fdg_d (element-local)
 #   5. optional source kernels
 #   6. _apply_minv!   (i, elem):  r = Minv * rtmp
 
@@ -25,20 +30,21 @@ using StaticArrays
 using Adapt
 
 @kernel function _face_flux!(fng, @Const(u), @Const(facecon), @Const(f_el),
-                             @Const(nlg), @Const(dws), @Const(pfg), @Const(sh1d),
-                             eq, numflux, bcs, time, ni, ::Val{NC}) where {NC}
+                             @Const(nlg), @Const(dws), @Const(pfg), @Const(shapf),
+                             eq, numflux, bcs, time, ni,
+                             ::Val{NC}, ::Val{DIM}) where {NC, DIM}
     g, fc = @index(Global, NTuple)
     T = eltype(fng)
-    np1d = size(sh1d, 1)
+    npf = size(shapf, 1)
 
     el = f_el[fc, 1]
-    n = SVector(nlg[g, 1, fc], nlg[g, 2, fc])
-    x = SVector(pfg[g, 1, fc], pfg[g, 2, fc])
+    n = SVector{DIM, T}(ntuple(d -> @inbounds(nlg[g, d, fc]), Val(DIM)))
+    x = SVector{DIM, T}(ntuple(d -> @inbounds(pfg[g, d, fc]), Val(DIM)))
 
     uL = SVector{NC, T}(ntuple(Val(NC)) do c
         s = zero(T)
-        @inbounds for j in 1:np1d
-            s += sh1d[j, g] * u[facecon[j, 1, fc], c, el]
+        @inbounds for j in 1:npf
+            s += shapf[j, g] * u[facecon[j, 1, fc], c, el]
         end
         s
     end)
@@ -47,8 +53,8 @@ using Adapt
         er = f_el[fc, 2]
         uR = SVector{NC, T}(ntuple(Val(NC)) do c
             s = zero(T)
-            @inbounds for j in 1:np1d
-                s += sh1d[j, g] * u[facecon[j, 2, fc], c, er]
+            @inbounds for j in 1:npf
+                s += shapf[j, g] * u[facecon[j, 2, fc], c, er]
             end
             s
         end)
@@ -65,10 +71,10 @@ using Adapt
 end
 
 @kernel function _face_scatter!(rtmp, @Const(fng), @Const(facecon), @Const(f_el),
-                                @Const(sh1d), ni, ::Val{NC}) where {NC}
+                                @Const(shapf), ni, ::Val{NC}) where {NC}
     j, fc = @index(Global, NTuple)
     T = eltype(rtmp)
-    ng1d = size(sh1d, 2)
+    ngf = size(shapf, 2)
 
     el = f_el[fc, 1]
     il = facecon[j, 1, fc]
@@ -76,8 +82,8 @@ end
 
     @inbounds for c in 1:NC
         cnt = zero(T)
-        for g in 1:ng1d
-            cnt += sh1d[j, g] * fng[g, c, fc]
+        for g in 1:ngf
+            cnt += shapf[j, g] * fng[g, c, fc]
         end
         Atomix.@atomic rtmp[il, c, el] -= cnt
         if interior
@@ -88,10 +94,10 @@ end
     end
 end
 
-@kernel function _volume_flux!(fxg, fyg, @Const(u), @Const(shap), @Const(pg),
-                               eq, time, ::Val{NC}) where {NC}
+@kernel function _volume_flux!(fdg, @Const(u), @Const(shap), @Const(pg),
+                               eq, time, ::Val{NC}, ::Val{DIM}) where {NC, DIM}
     g, e = @index(Global, NTuple)
-    T = eltype(fxg)
+    T = eltype(fdg)
     npl = size(shap, 1)
 
     ug = SVector{NC, T}(ntuple(Val(NC)) do c
@@ -101,32 +107,36 @@ end
         end
         s
     end)
-    x = SVector(pg[g, 1, e], pg[g, 2, e])
+    x = SVector{DIM, T}(ntuple(d -> @inbounds(pg[g, d, e]), Val(DIM)))
 
-    fx, fy = flux(eq, ug, x, time)
-    @inbounds for c in 1:NC
-        fxg[g, c, e] = fx[c]
-        fyg[g, c, e] = fy[c]
+    fd = flux(eq, ug, x, time)
+    @inbounds for d in 1:DIM, c in 1:NC
+        fdg[g, c, d, e] = fd[d][c]
     end
 end
 
-@kernel function _volume_lift!(rtmp, @Const(fxg), @Const(fyg),
-                               @Const(shapx), @Const(shapy), ::Val{NC}) where {NC}
+@kernel function _volume_lift!(rtmp, @Const(fdg), @Const(shapd),
+                               ::Val{NC}, ::Val{DIM}) where {NC, DIM}
     i, e = @index(Global, NTuple)
     T = eltype(rtmp)
-    ng = size(fxg, 1)
+    ng = size(fdg, 1)
 
     @inbounds for c in 1:NC
         acc = zero(T)
         for g in 1:ng
-            acc += shapx[i, g, e] * fxg[g, c, e] + shapy[i, g, e] * fyg[g, c, e]
+            s = zero(T)
+            for d in 1:DIM
+                s += shapd[i, g, d, e] * fdg[g, c, d, e]
+            end
+            acc += s
         end
         rtmp[i, c, e] += acc
     end
 end
 
 @kernel function _volume_source!(srcg, @Const(u), @Const(shap), @Const(pg),
-                                 @Const(wjac), src, time, ::Val{NC}) where {NC}
+                                 @Const(wjac), src, time,
+                                 ::Val{NC}, ::Val{DIM}) where {NC, DIM}
     g, e = @index(Global, NTuple)
     T = eltype(srcg)
     npl = size(shap, 1)
@@ -138,7 +148,7 @@ end
         end
         s
     end)
-    x = SVector(pg[g, 1, e], pg[g, 2, e])
+    x = SVector{DIM, T}(ntuple(d -> @inbounds(pg[g, d, e]), Val(DIM)))
 
     sv = src(ug, x, time)
     w = wjac[g, e]
@@ -179,14 +189,14 @@ end
     RinvWorkspace(ctx, nc)
 
 Staging buffers reused across residual evaluations (e.g. RK stages):
-`fng (ng1d, nc, nf)` weighted face fluxes, `fxg`/`fyg`/`srcg (ng, nc, nt)`
-volume fluxes and source, `rtmp (npl, nc, nt)` pre-mass-solve residual.
-Allocated on the backend of `ctx`.
+`fng (ngf, nc, nf)` weighted face fluxes, `fdg (ng, nc, Dim, nt)` volume
+fluxes, `srcg (ng, nc, nt)` source, `rtmp (npl, nc, nt)` pre-mass-solve
+residual. Allocated on the backend of `ctx`.
 """
-struct RinvWorkspace{A3 <: AbstractArray{<:AbstractFloat, 3}}
+struct RinvWorkspace{A3 <: AbstractArray{<:AbstractFloat, 3},
+                     A4 <: AbstractArray{<:AbstractFloat, 4}}
     fng  :: A3
-    fxg  :: A3
-    fyg  :: A3
+    fdg  :: A4
     srcg :: A3
     rtmp :: A3
 end
@@ -195,12 +205,12 @@ Adapt.@adapt_structure RinvWorkspace
 
 function RinvWorkspace(ctx::DGContext{T}, nc::Integer) where {T}
     backend = KernelAbstractions.get_backend(ctx)
-    fng = KernelAbstractions.zeros(backend, T, ctx.ng1d, nc, ctx.nf)
-    fxg = KernelAbstractions.zeros(backend, T, ctx.ng, nc, ctx.nt)
-    fyg = KernelAbstractions.zeros(backend, T, ctx.ng, nc, ctx.nt)
+    dim = ndims(ctx)
+    fng = KernelAbstractions.zeros(backend, T, ctx.ngf, nc, ctx.nf)
+    fdg = KernelAbstractions.zeros(backend, T, ctx.ng, nc, dim, ctx.nt)
     srcg = KernelAbstractions.zeros(backend, T, ctx.ng, nc, ctx.nt)
     rtmp = KernelAbstractions.zeros(backend, T, ctx.npl, nc, ctx.nt)
-    return RinvWorkspace(fng, fxg, fyg, srcg, rtmp)
+    return RinvWorkspace(fng, fdg, srcg, rtmp)
 end
 
 """
@@ -214,24 +224,25 @@ function rinvexpl!(r, ctx::DGContext, phys::DGPhysics, u, time;
                    ws=RinvWorkspace(ctx, nvariables(phys)))
     backend = KernelAbstractions.get_backend(ctx)
     ncv = Val(nvariables(phys))
+    dimv = Val(ndims(ctx))
     eq = phys.equation
 
     # Kernels launched on the same backend execute in order (same stream/queue
     # on GPUs; synchronous on the CPU backend), so no intermediate syncs needed.
     fill!(ws.rtmp, zero(eltype(ws.rtmp)))
     _face_flux!(backend)(ws.fng, u, ctx.facecon, ctx.f_el, ctx.nlg, ctx.dws,
-                         ctx.pfg, ctx.sh1d, eq, phys.numerical_flux,
-                         phys.boundary_conditions, time, ctx.ni, ncv;
-                         ndrange=(ctx.ng1d, ctx.nf))
-    _volume_flux!(backend)(ws.fxg, ws.fyg, u, ctx.shap, ctx.pg, eq, time, ncv;
+                         ctx.pfg, ctx.shapf, eq, phys.numerical_flux,
+                         phys.boundary_conditions, time, ctx.ni, ncv, dimv;
+                         ndrange=(ctx.ngf, ctx.nf))
+    _volume_flux!(backend)(ws.fdg, u, ctx.shap, ctx.pg, eq, time, ncv, dimv;
                            ndrange=(ctx.ng, ctx.nt))
-    _face_scatter!(backend)(ws.rtmp, ws.fng, ctx.facecon, ctx.f_el, ctx.sh1d,
-                            ctx.ni, ncv; ndrange=(ctx.np1d, ctx.nf))
-    _volume_lift!(backend)(ws.rtmp, ws.fxg, ws.fyg, ctx.shapx, ctx.shapy, ncv;
+    _face_scatter!(backend)(ws.rtmp, ws.fng, ctx.facecon, ctx.f_el, ctx.shapf,
+                            ctx.ni, ncv; ndrange=(ctx.npf, ctx.nf))
+    _volume_lift!(backend)(ws.rtmp, ws.fdg, ctx.shapd, ncv, dimv;
                            ndrange=(ctx.npl, ctx.nt))
     if phys.source !== nothing
         _volume_source!(backend)(ws.srcg, u, ctx.shap, ctx.pg, ctx.wjac,
-                                 phys.source, time, ncv;
+                                 phys.source, time, ncv, dimv;
                                  ndrange=(ctx.ng, ctx.nt))
         _source_lift!(backend)(ws.rtmp, ws.srcg, ctx.shap, ncv;
                                ndrange=(ctx.npl, ctx.nt))
