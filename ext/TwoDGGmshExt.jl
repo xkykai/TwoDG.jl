@@ -204,13 +204,50 @@ function read_gmsh_mesh(filepath)
     # return nodeCoords, elementNodeTags
 end
 
+# Gmsh linear element type codes (Gmsh reference manual §9.1)
+const GMSH_TRIANGLE3 = 2
+const GMSH_TET4 = 4
+
+function Meshes.gmsh_geometry(filepath; boundaries, curved=Symbol[], fd=nothing)
+    gmsh.initialize()
+    local p, t
+    try
+        gmsh.open(filepath)
+        nodeTags, nodeCoords, _ = gmsh.model.mesh.getNodes()
+        coords = reshape(nodeCoords, 3, :)
+        remap = Dict{Int, Int}(Int(tag) => i for (i, tag) in enumerate(nodeTags))
+
+        # prefer tetrahedra (a 3D model also contains its surface triangles)
+        elementTypes, _, elementNodeTags = gmsh.model.mesh.getElements(3)
+        i3 = findfirst(==(GMSH_TET4), elementTypes)
+        if i3 !== nothing
+            conn = elementNodeTags[i3]
+            t = [remap[Int(conn[(e - 1) * 4 + k])] for e in 1:(length(conn) ÷ 4), k in 1:4]
+            p = Matrix(coords')
+        else
+            elementTypes2, _, elementNodeTags2 = gmsh.model.mesh.getElements(2)
+            i2 = findfirst(==(GMSH_TRIANGLE3), elementTypes2)
+            i2 === nothing &&
+                error("no linear tetrahedra or triangles found in $filepath " *
+                      "(high-order Gmsh elements are not supported yet)")
+            conn = elementNodeTags2[i2]
+            t = [remap[Int(conn[(e - 1) * 3 + k])] for e in 1:(length(conn) ÷ 3), k in 1:3]
+            p = Matrix(coords[1:2, :]')
+        end
+    finally
+        gmsh.finalize()
+    end
+    p, t = fixmesh(p, t)
+    return MeshGeometry(p, t; boundaries, curved, fd)
+end
+
 function Meshes.mkmesh_naca(t_naca=10, porder=2, name="naca0012", display_gmsh=false)
     gmsh_naca(t_naca, name, display_gmsh)
     p, t = read_gmsh_mesh("$name.msh")
     p, t = fixmesh(p, t)
 
-    f, t2f = mkt2f(t)
-    
+    f, t2f, t2o = mkt2f(t)
+
     function boundary_airfoil(p)
         xs, ys = p[:, 1], p[:, 2]
         outputs = falses(size(p, 1))
@@ -236,7 +273,7 @@ function Meshes.mkmesh_naca(t_naca=10, porder=2, name="naca0012", display_gmsh=f
     
     plocal, tlocal = uniformlocalpnts(porder)
     
-    mesh = TwoDG.Mesh(; p, t, f, t2f, fcurved, tcurved, porder, plocal, tlocal,
+    mesh = TwoDG.Mesh(; p, t, f, t2f, t2o, fcurved, tcurved, porder, plocal, tlocal,
                       boundary_names=[:airfoil, :left, :right, :bottom, :top])
 
     fd_left(p) = abs(p[1] + 3)
