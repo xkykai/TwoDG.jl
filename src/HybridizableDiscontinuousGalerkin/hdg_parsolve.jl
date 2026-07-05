@@ -1,4 +1,4 @@
-using TwoDG.Meshes: mkf2f
+using TwoDG.Meshes: mkf2f, mkelcon
 using LinearAlgebra
 
 """
@@ -14,10 +14,8 @@ f : Array
     Face to element connectivity
 t2f : Array
     Element to face connectivity
-ind1 : Array
-    Forward indices
-ind2 : Array
-    Backward indices
+G : Array (npf, nfe, ne)
+    Element-local -> face-canonical trace-node gather (see `hdg_densesystem`)
 ncf : Int
     Number of components per face
 nbf : Int
@@ -34,66 +32,70 @@ A_i : Array
 F_i : Array
     Global vector for face i
 """
-@inline function global_assembly(AE, FE, f, t2f, ind1, ind2, ncf, nbf, nfe, i)
+@inline function global_assembly(AE, FE, f, t2f, G, ncf, nbf, nfe, i)
     A = zeros(ncf, ncf, nbf)
-    
+
     # Obtain two elements sharing the same face i
     fi = @view f[i, end-1:end]
-    
+
+    # element-local trace-node order of a face block, in the face's canonical
+    # numbering (handles every orientation, 2D reversal or 3D symmetry)
+    ind(el, is) = @view G[:, is, el]
+
     if fi[2] > 0  # face i is an interior face
         # Obtain neighboring faces
-        kf = abs.(t2f[fi, :])
-        
+        kf = t2f[fi, :]
+
         # Obtain the index of face i in elements
         i1 = findfirst(x -> x == i, kf[1, :])
         i2 = findfirst(x -> x == i, kf[2, :])
-        
+
         # Determine orientation
-        j1, j2 = t2f[fi[1], i1] > 0 ? (ind1, ind2) : (ind2, ind1)
-        
+        j1, j2 = ind(fi[1], i1), ind(fi[2], i2)
+
         # First block
         k = 1
-        A[:, :, 1] .= reshape(AE[:, j1, i1, :, j1, i1, fi[1]] .+ 
+        A[:, :, 1] .= reshape(AE[:, j1, i1, :, j1, i1, fi[1]] .+
                             AE[:, j2, i2, :, j2, i2, fi[2]], (ncf, ncf))
         F = reshape(FE[:, j1, i1, fi[1]] .+ FE[:, j2, i2, fi[2]], (ncf,))
-        
+
         # Loop over each face of the 1st element
         for is = 1:nfe
             if is != i1
                 k += 1
-                j3 = t2f[fi[1], is] > 0 ? ind1 : ind2
+                j3 = ind(fi[1], is)
                 A[:, :, k] = reshape(AE[:, j1, i1, :, j3, is, fi[1]], (ncf, ncf))
             end
         end
-        
+
         # Loop over faces of the 2nd element
         for is = 1:nfe
             if is != i2
                 k += 1
-                j4 = t2f[fi[2], is] > 0 ? ind1 : ind2
+                j4 = ind(fi[2], is)
                 A[:, :, k] = reshape(AE[:, j2, i2, :, j4, is, fi[2]], (ncf, ncf))
             end
         end
     else  # face i is a boundary face
         # Obtain neighboring faces
-        kf = abs.(t2f[fi[1], :])
-        
+        kf = t2f[fi[1], :]
+
         # Obtain the index of face i in the 1st element
         i1 = findfirst(x -> x == i, kf)
 
-        # Determine orientation
-        j1 = t2f[fi[1], i1] > 0 ? ind1 : ind2
-        
+        # Element-local order of this face block in canonical numbering
+        j1 = ind(fi[1], i1)
+
         # First block
         k = 1
         A[:, :, 1] = reshape(AE[:, j1, i1, :, j1, i1, fi[1]], (ncf, ncf))
         F = reshape(FE[:, j1, i1, fi[1]], (ncf,))
-        
+
         # Loop over each face of the 1st element
         for is = 1:nfe
             if is != i1
                 k += 1
-                j3 = t2f[fi[1], is] > 0 ? ind1 : ind2
+                j3 = ind(fi[1], is)
                 A[:, :, k] = reshape(AE[:, j1, i1, :, j3, is, fi[1]], (ncf, ncf))
             end
         end
@@ -103,55 +105,70 @@ F_i : Array
 end
 
 """
-    hdg_densesystem(AE, FE, f, t2f, npf)
+    hdg_densesystem(AE, FE, f, t2f, elcon)
+    hdg_densesystem(AE, FE, f, t2f, t2o, npf)
 
-Assembles the global system in dense format.
+Assembles the global system in dense face-block format.
 
 # Arguments
 - `AE`: Element matrices
 - `FE`: Element vectors
 - `f`: Face to element connectivity
 - `t2f`: Element to face connectivity
-- `npf`: Number of points per face
+- `elcon (npf, nfe, ne)`: orientation-resolved element-to-global trace-node
+  connectivity ([`mkelcon`](@ref TwoDG.Meshes.mkelcon)); the second form
+  reconstructs the 2D (two-orientation) `elcon` from `t2o` and the trace
+  size `npf` for backwards compatibility.
 
 # Returns
 - `A`: Global matrix in dense format
 - `F`: Global vector in dense format
 """
-@inline function hdg_densesystem(AE::AbstractArray, FE::AbstractArray, f::AbstractArray, 
-                         t2f::AbstractArray, npf::Integer)
+@inline function hdg_densesystem(AE::AbstractArray, FE::AbstractArray, f::AbstractArray,
+                         t2f::AbstractArray, elcon::AbstractArray{<:Integer, 3})
     # Get dimensions
     nf = size(f, 1)  # Number of faces
     ne, nfe = size(t2f)  # Number of elements, number of faces per element
-    
+    npf = size(elcon, 1)  # Trace nodes per face
+
     # Calculate derived dimensions
     N = length(FE)
     ndf = npf * nfe  # Number of points per face times number of faces per element
     nch = N ÷ (ndf * ne)  # Number of components of UH (integer division)
     ncf = nch * npf  # Number of components of UH times number of points per face
     nbf = 2 * nfe - 1  # Number of neighboring faces
-    
-    # Create index arrays for face orientation
-    ind1 = 1:npf  # Forward indices
-    ind2 = npf:-1:1  # Reverse indices for handling differently oriented faces
-    
+
+    # Element-local -> face-canonical trace-node gather: row r of the block of
+    # face t2f[el, is] is element-local trace node G[r, is, el]. The elcon
+    # offsets already encode the face orientation (reversal in 2D, the 6
+    # triangle symmetries in 3D), so this is their inverse permutation.
+    G = Array{Int}(undef, npf, nfe, ne)
+    for el in 1:ne, is in 1:nfe
+        base = (t2f[el, is] - 1) * npf
+        G[:, is, el] .= invperm(elcon[:, is, el] .- base)
+    end
+
     # Reshape element matrices and vectors to access them by components, points, faces, and elements
     FE_reshaped = reshape(FE, (nch, npf, nfe, ne))
     AE_reshaped = reshape(AE, (nch, npf, nfe, nch, npf, nfe, ne))
-    
+
     # Pre-allocate global matrix and vector
     A = zeros(ncf, ncf, nbf, nf)
     F = zeros(ncf, nf)
-    
+
     # Process each face in parallel, assembling its contribution to the global system
     @views Threads.@threads for i in 1:nf
-        A_i, F_i = global_assembly(AE_reshaped, FE_reshaped, f, t2f, ind1, ind2, ncf, nbf, nfe, i)
+        A_i, F_i = global_assembly(AE_reshaped, FE_reshaped, f, t2f, G, ncf, nbf, nfe, i)
         A[:, :, :, i] .= A_i
         F[:, i] .= F_i
     end
 
     return A, vec(F)
 end
+
+@inline hdg_densesystem(AE::AbstractArray, FE::AbstractArray, f::AbstractArray,
+                        t2f::AbstractArray, t2o::AbstractArray, npf::Integer) =
+    hdg_densesystem(AE, FE, f, t2f, mkelcon(t2f, t2o, npf - 1))
 
 """
     hdg_elemmats(master, mesh, source, dbc, param)
@@ -183,18 +200,22 @@ end
     hdg_applydbc!(ae, fe, master, mesh, dbc)
 
 Applies the strong Dirichlet boundary condition `dbc` to the boundary-face
-rows of the element matrices/vectors `ae`, `fe` in place.
+rows of the element matrices/vectors `ae`, `fe` in place. The identity rows
+are set in the element's own face-node order, so the assembled system pins
+each global trace node to the boundary value at its own coordinate for any
+face orientation (2D or 3D).
 """
 function hdg_applydbc!(ae, fe, master, mesh, dbc)
-    nps = mesh.porder + 1
+    Dim = size(mesh.t, 2) - 1
+    nps = size(master.perm, 1)
 
-    # Find first boundary face
-    ni = findfirst(f -> f[4] < 0, eachrow(mesh.f))
+    # Find first boundary face (right-element column is -tag)
+    ni = findfirst(f -> f[end] < 0, eachrow(mesh.f))
 
     @views Threads.@threads for i in ni:size(mesh.f, 1)
-        el = mesh.f[i, 3]  # Element index
+        el = mesh.f[i, Dim + 1]  # Element index
         # Find local face number through point indices
-        ipl = sum(mesh.t[el, :]) - sum(mesh.f[i, 1:2])
+        ipl = sum(mesh.t[el, :]) - sum(mesh.f[i, 1:Dim])
         isl = findfirst(x -> x == ipl, mesh.t[el, :])
 
         # Get the nodes on this boundary face
@@ -229,23 +250,10 @@ function hdg_localrecovery(master, mesh, uhath, source, param)
     npl = size(mesh.dgnodes, 1)
     nt = size(mesh.t, 1)
 
-    # Build connectivity array for mapping global trace DOFs to local elements
-    elcon = zeros(Int, 3*nps, nt)
-
-    # Process t2f entries to build connectivity
-    Threads.@threads for i in 1:nt
-        for j in 1:3
-            f = mesh.t2f[i, j]
-            if f > 0
-                # Same orientation - use forward mapping
-                elcon[(j-1)*nps+1:j*nps, i] .= (f-1)*nps+1:f*nps
-            elseif f < 0
-                # Opposite orientation - use reverse mapping
-                f = abs(f)  # Get positive face index
-                elcon[(j-1)*nps+1:j*nps, i] .= f*nps:-1:(f-1)*nps+1
-            end
-        end
-    end
+    # Orientation-resolved trace connectivity, flattened to face blocks
+    elcon = reshape(mesh.elcon === nothing ?
+                    mkelcon(mesh.t2f, mesh.t2o, mesh.porder) : mesh.elcon,
+                    3 * nps, nt)
 
     # Solve local problems to get uh and qh using the computed trace values
     uh = zeros(npl, 1, nt)

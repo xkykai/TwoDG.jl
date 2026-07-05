@@ -138,8 +138,8 @@ perturbation that destroys the superconvergence of the method.
 """
 function boundary_face_quad(mesh, master, i)
     it = mesh.f[i, 3]
-    lf = findfirst(x -> abs(x) == i, mesh.t2f[it, :])
-    ori = mesh.t2f[it, lf] > 0 ? 1 : 2
+    lf = findfirst(==(i), mesh.t2f[it, :])
+    ori = mesh.t2o[it, lf]
     pp = master.perm[:, lf, ori]
     sh1d = @view master.sh1d[:, 1, :]
     sh1dx = @view master.sh1d[:, 2, :]
@@ -846,10 +846,10 @@ function hdg_ns_postprocess(master, mesh, master1, mesh1, result)
 
             # face-average of nᵀ L t with the tangent t = (-n2, n1)
             a = nLt_edge(L, it, s, master, n1, n2)
-            i_f = abs(mesh.t2f[it, s])
+            i_f = mesh.t2f[it, s]
             jt = mesh.f[i_f, 3] == it ? mesh.f[i_f, 4] : mesh.f[i_f, 3]
             if jt > 0
-                s2 = findfirst(x -> abs(x) == i_f, mesh.t2f[jt, :])
+                s2 = findfirst(==(i_f), mesh.t2f[jt, :])
                 a = (a .+ nLt_edge(L, jt, s2, master, n1, n2; rev=true)) ./ 2
             end
             b[row] = sum(gw1d .* μx .* a)

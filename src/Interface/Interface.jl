@@ -21,7 +21,7 @@ import CommonSolve
 using CommonSolve: solve
 using StaticArrays
 using Adapt: adapt
-using LinearAlgebra: norm
+using LinearAlgebra: norm, cross, dot
 using ..Equations
 using ..Masters: Master
 using ..Meshes: Mesh
@@ -112,21 +112,32 @@ end
 function DGProblem(equation::AbstractEquation, mesh; bc, u0, source=nothing,
                    numerical_flux=nothing, stabilization=nothing,
                    T::Type{<:AbstractFloat}=Float64)
+    _check_dims(equation, mesh)
     return DGProblem{typeof(equation), typeof(mesh), typeof(bc), typeof(u0),
                      typeof(source), typeof(numerical_flux), typeof(stabilization),
                      T}(equation, mesh, bc, u0, source, numerical_flux, stabilization)
     end
+
+# equations and meshes carry their space dimension as a type parameter; a
+# mismatch is a user error caught at problem construction (D8: the user never
+# spells Dim, so the mesh is the source of truth)
+function _check_dims(equation::AbstractEquation, mesh)
+    ndims(equation) == ndims(mesh) ||
+        throw(ArgumentError("$(nameof(typeof(equation))) is $(ndims(equation))D but the mesh is $(ndims(mesh))D"))
+    return nothing
+end
 
 Base.eltype(::DGProblem{<:Any, <:Any, <:Any, <:Any, <:Any, <:Any, <:Any, T}) where {T} = T
 
 """
     HDGProblem(equation, mesh; bc, source=nothing, stabilization=1.0)
 
-Steady convection-diffusion (or Poisson) problem discretized with HDG. `bc`
-is a single [`Dirichlet`](@ref) applied on the whole boundary (constant or
-`(x, y) -> g`); `source` is `nothing` or a function of the quadrature-point
-coordinate matrix `p -> values`. Solve with [`Direct`](@ref) (sparse LU) or
-[`GMRES`](@ref) (default).
+Steady convection-diffusion (or Poisson) problem discretized with HDG, on
+triangular (2D) or tetrahedral (3D) meshes. `bc` is a single
+[`Dirichlet`](@ref) applied on the whole boundary (constant, `(x, y) -> g`,
+or `(x, y, z) -> g`); `source` is `nothing` or a function of the
+quadrature-point coordinate matrix `p -> values`. Solve with
+[`Direct`](@ref) (sparse LU) or [`GMRES`](@ref) (default).
 """
 struct HDGProblem{E <: AbstractEquation, M, B, S, T}
     equation      :: E
@@ -136,16 +147,18 @@ struct HDGProblem{E <: AbstractEquation, M, B, S, T}
     stabilization :: T
 end
 
-HDGProblem(equation::AbstractEquation, mesh; bc, source=nothing, stabilization=1.0) =
-    HDGProblem(equation, mesh, bc, source, stabilization)
+function HDGProblem(equation::AbstractEquation, mesh; bc, source=nothing, stabilization=1.0)
+    _check_dims(equation, mesh)
+    return HDGProblem(equation, mesh, bc, source, stabilization)
+end
 
 function hdg_param(eq::ConvectionDiffusionEquation, taud)
     eq.velocity isa Function &&
         throw(ArgumentError("HDGProblem requires a constant convective velocity"))
     return Dict(:kappa => eq.κ, :c => collect(Float64, eq.velocity), :taud => taud)
 end
-hdg_param(eq::PoissonEquation, taud) =
-    Dict(:kappa => eq.κ, :c => [0.0, 0.0], :taud => taud)
+hdg_param(eq::PoissonEquation{Dim}, taud) where {Dim} =
+    Dict(:kappa => eq.κ, :c => zeros(Dim), :taud => taud)
 
 """
     CGProblem(equation, mesh; source, reaction=0.0)
@@ -161,10 +174,12 @@ struct CGProblem{E <: AbstractEquation, M, S, T}
     reaction :: T
 end
 
-CGProblem(equation::AbstractEquation, mesh; source, reaction=0.0) =
-    CGProblem(equation, mesh, source, reaction)
+function CGProblem(equation::AbstractEquation, mesh; source, reaction=0.0)
+    _check_dims(equation, mesh)
+    return CGProblem(equation, mesh, source, reaction)
+end
 
-cg_param(eq::PoissonEquation, s) = (; κ=eq.κ, c=[0.0, 0.0], s)
+cg_param(eq::PoissonEquation{Dim}, s) where {Dim} = (; κ=eq.κ, c=zeros(Dim), s)
 cg_param(eq::ConvectionDiffusionEquation, s) =
     (; κ=eq.κ, c=collect(Float64, eq.velocity), s)
 
@@ -180,7 +195,7 @@ struct DGSolution{U, T, P}
 end
 
 """
-Solution of an [`HDGProblem`](@ref): `u (npl, 1, nt)`, flux `q (npl, 2, nt)`,
+Solution of an [`HDGProblem`](@ref): `u (npl, 1, nt)`, flux `q (npl, Dim, nt)`,
 trace `uhat (nps, nf)` and GMRES iteration count (`0` for a direct solve).
 """
 struct HDGSolution{U, Q, H, P}
@@ -246,11 +261,12 @@ function _ordered_bcs(bc::NamedTuple, mesh)
     return [bc[name] for name in names]
 end
 
-# Dirichlet data for HDG/CG: accept a constant or a function (x, y) -> g and
-# produce the `dbc(coords::Matrix) -> values` closure the solvers expect.
+# Dirichlet data for HDG/CG: accept a constant or a function of the point
+# coordinates ((x, y) in 2D, (x, y, z) in 3D) and produce the
+# `dbc(coords::Matrix) -> values` closure the solvers expect.
 lower_dbc(bc::Dirichlet) = lower_dbc(bc.value)
 lower_dbc(g::Number) = p -> fill(Float64(g), size(p, 1))
-lower_dbc(g::Function) = p -> [Float64(g(p[i, 1], p[i, 2])) for i in axes(p, 1)]
+lower_dbc(g::Function) = p -> [Float64(g(p[i, :]...)) for i in axes(p, 1)]
 
 _initial_state(prob::DGProblem) = _initial_state(prob.u0, prob)
 _initial_state(u0::AbstractArray{<:Any, 3}, prob) = float(copy(u0))
@@ -268,7 +284,8 @@ resolved to the equation's defaults.
 function _dg_physics(prob::DGProblem)
     eq, mesh = prob.equation, prob.mesh
     bcs = _ordered_bcs(prob.bc, mesh)
-    nbnd = maximum(-mesh.f[mesh.f[:, 4] .< 0, 4])
+    tags = @view mesh.f[:, end]     # right element, or -tag on boundary faces
+    nbnd = maximum(-tags[tags .< 0])
     length(bcs) == nbnd ||
         throw(ArgumentError("mesh has $nbnd boundaries, got $(length(bcs)) boundary conditions"))
     return DGPhysics(eq;
@@ -371,11 +388,11 @@ CFL-limited explicit time step: over all elements,
 
     dt = cfl * min 1 / ( λ (2p+1)/h + κ ((2p+1)/h)² )
 
-with `h` the inscribed-circle diameter, `p` the polynomial order, `λ` the
-maximum characteristic speed of the equation (evaluated from the initial
-state for [`EulerEquations`](@ref)), and `κ` the diffusivity (LDG diffusion
-limits the step quadratically). `cfl = 0.3` is a conservative default for
-the internal [`RK4`](@ref) stepper.
+with `h` the inscribed-circle (2D) / inscribed-sphere (3D) diameter, `p` the
+polynomial order, `λ` the maximum characteristic speed of the equation
+(evaluated from the initial state for [`EulerEquations`](@ref)), and `κ` the
+diffusivity (LDG diffusion limits the step quadratically). `cfl = 0.3` is a
+conservative default for the internal [`RK4`](@ref) stepper.
 """
 function compute_dt(prob::DGProblem; cfl=0.3)
     mesh = prob.mesh
@@ -388,15 +405,29 @@ function compute_dt(prob::DGProblem; cfl=0.3)
     dtmin = Inf
     p, t = mesh.p, mesh.t
     for it in axes(t, 1)
-        a = hypot(p[t[it, 2], 1] - p[t[it, 1], 1], p[t[it, 2], 2] - p[t[it, 1], 2])
-        b = hypot(p[t[it, 3], 1] - p[t[it, 2], 1], p[t[it, 3], 2] - p[t[it, 2], 2])
-        c = hypot(p[t[it, 1], 1] - p[t[it, 3], 1], p[t[it, 1], 2] - p[t[it, 3], 2])
-        s = (a + b + c) / 2
-        area = sqrt(max(s * (s - a) * (s - b) * (s - c), 0.0))
-        h = 4 * area / (a + b + c)          # inscribed-circle diameter
+        h = _inscribed_diameter(p, t, it, Val(ndims(mesh)))
         dtmin = min(dtmin, 1 / (λ * pfac / h + κ * (pfac / h)^2))
     end
     return cfl * dtmin
+end
+
+# inscribed-simplex diameter 2r = 2·Dim·|K|/|∂K| — the h that controls the CFL
+function _inscribed_diameter(p, t, it, ::Val{2})
+    a = hypot(p[t[it, 2], 1] - p[t[it, 1], 1], p[t[it, 2], 2] - p[t[it, 1], 2])
+    b = hypot(p[t[it, 3], 1] - p[t[it, 2], 1], p[t[it, 3], 2] - p[t[it, 2], 2])
+    c = hypot(p[t[it, 1], 1] - p[t[it, 3], 1], p[t[it, 1], 2] - p[t[it, 3], 2])
+    s = (a + b + c) / 2
+    area = sqrt(max(s * (s - a) * (s - b) * (s - c), 0.0))
+    return 4 * area / (a + b + c)
+end
+
+function _inscribed_diameter(p, t, it, ::Val{3})
+    v = ntuple(k -> SVector(p[t[it, k], 1], p[t[it, k], 2], p[t[it, k], 3]), Val(4))
+    e2, e3, e4 = v[2] - v[1], v[3] - v[1], v[4] - v[1]
+    vol = abs(dot(e2, cross(e3, e4))) / 6
+    area = (norm(cross(v[3] - v[2], v[4] - v[2])) + norm(cross(e3, e4)) +
+            norm(cross(e4, e2)) + norm(cross(e2, e3))) / 2
+    return 6 * vol / area
 end
 
 _diffusivity(::AbstractEquation) = 0.0
@@ -411,9 +442,10 @@ _max_wavespeed(::PoissonEquation, prob) = 0.0
 function _max_wavespeed(eq::EulerEquations, prob)
     u0 = prob.u0
     u = u0 isa AbstractArray{<:Any, 3} ? u0 : interpolate(prob.mesh, u0)
+    NC = Val(nvariables(eq))
     smax = 0.0
     for it in axes(u, 3), i in axes(u, 1)
-        state = SVector(u[i, 1, it], u[i, 2, it], u[i, 3, it], u[i, 4, it])
+        state = SVector(ntuple(c -> u[i, c, it], NC))
         smax = max(smax, norm(velocity(eq, state)) + soundspeed(eq, state))
     end
     return smax
@@ -421,10 +453,11 @@ end
 
 _max_velocity(v, mesh) = norm(v)
 function _max_velocity(v::Function, mesh)
+    Dim = Val(ndims(mesh))
     smax = 0.0
     dg = mesh.dgnodes
     for it in axes(dg, 3), i in axes(dg, 1)
-        smax = max(smax, norm(v(SVector(dg[i, 1, it], dg[i, 2, it]))))
+        smax = max(smax, norm(v(SVector(ntuple(d -> dg[i, d, it], Dim)))))
     end
     return smax
 end

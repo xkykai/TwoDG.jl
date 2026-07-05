@@ -39,8 +39,9 @@ Adapt.@adapt_structure HDGSystem
 Base.eltype(::HDGSystem{T}) where {T} = T
 
 function HDGSystem(ae, fe, mesh; T::Type{<:AbstractFloat}=Float64)
-    nps = mesh.porder + 1
-    A, b = hdg_densesystem(ae, fe, mesh.f, mesh.t2f, nps)
+    elcon = mesh.elcon === nothing ?
+            mkelcon(mesh.t2f, mesh.t2o, mesh.porder) : mesh.elcon
+    A, b = hdg_densesystem(ae, fe, mesh.f, mesh.t2f, elcon)
     B = compute_blockjacobi(A)
     f2f = mesh.f2f === nothing ? mkf2f(mesh.f, mesh.t2f) : mesh.f2f
     return HDGSystem(T.(A), T.(B), T.(b), Int32.(f2f))

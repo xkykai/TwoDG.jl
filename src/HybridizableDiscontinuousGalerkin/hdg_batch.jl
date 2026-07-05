@@ -1,24 +1,27 @@
 # Batched HDG element assembly and local recovery on any KA backend
-# (Phase 3b of GPU_PLAN.md). The per-element math of `localprob`/`elemmat_hdg`
-# is restated as batched dense linear algebra:
+# (Phase 3b of GPU_PLAN.md; dimension-generic since THREED_PLAN Phase E).
+# The per-element math of `localprob`/`elemmat_hdg` is restated as batched
+# dense linear algebra, with the spatial direction as an array axis (D5):
 #
-#   local solves:  K [U | u0] = [-Lu + Cx M⁻¹ Lx + Cy M⁻¹ Ly | F_src],
-#                  K = D + Cx M⁻¹ Cx' + Cy M⁻¹ Cy',
-#                  Qx = (M⁻¹ Cx') U - M⁻¹ Lx   (Qy analogous)
-#   assembly:      ae = -(Aλ + Rx Qx + Ry Qy + Ru U),
-#                  fe =  Rx q0x + Ry q0y + Ru u0
+#   local solves:  K [U | u0] = [-Lu + Σ_d C_d M⁻¹ L_d | F_src],
+#                  K = D + Σ_d C_d M⁻¹ C_d',
+#                  Q_d = (M⁻¹ C_d') U - M⁻¹ L_d
+#   assembly:      ae = -(Aλ + Σ_d R_d Q_d + Ru U),
+#                  fe =  Σ_d R_d q0_d + Ru u0
 #   recovery:      uh = U m + u0,  qh = Q m + q0   (m = element trace values)
 #
-# The small per-element matrices (M⁻¹, Cx, Cy, D, edge lifts L*, trace-test
-# matrices R*/Aλ) are geometry × parameters, built once on the CPU (reusing
-# DGContext geometry); the batched GEMMs and the per-element LU solve run as
-# KA kernels. The unit-trace solutions U/Qx/Qy double as the trace-to-solution
-# maps, so recovery is a batched matvec instead of a per-element re-solve.
+# The small per-element matrices (M⁻¹, C_d, D, face lifts L_d, trace-test
+# matrices R_d/Ru/Aλ) are geometry × parameters, built once on the CPU
+# (reusing the canonical Geometry caches); the batched GEMMs and the
+# per-element LU solve run as KA kernels. The unit-trace solutions U/Q_d
+# double as the trace-to-solution maps, so recovery is a batched matvec
+# instead of a per-element re-solve.
 #
-# Faithful to the legacy code in two easily-missed ways: `localprob` uses
+# Faithful to the legacy 2D code in two easily-missed ways: `localprob` uses
 # taud = κ for its internal stabilization while `elemmat_hdg` uses
-# param[:taud] in the numerical flux, and corner nodes accumulate edge-lift
-# contributions from both adjacent edges.
+# param[:taud] in the numerical flux, and nodes shared by several faces
+# (corners in 2D; edges and vertices in 3D) accumulate face-lift
+# contributions from every adjacent face.
 
 using KernelAbstractions
 using KernelAbstractions: @kernel, @index, @Const
@@ -26,44 +29,50 @@ using Adapt
 using LinearAlgebra
 using SparseArrays
 using TwoDG.Geometry: GeometricFactors, SideGeometry
+using TwoDG.Meshes: mkelcon
 
 """
     HDGBatch(master, mesh, source, param; T=Float64)
 
 Per-element operator matrices for the batched HDG assembly/recovery path,
 built once on the CPU. All fields are plain arrays (`Adapt.@adapt_structure`),
-so `adapt(CuArray, batch)` moves everything to the GPU.
+so `adapt(CuArray, batch)` moves everything to the GPU. Dimension-generic:
+`Dim` is the direction axis of `C`/`Le`/`R` (2 on triangles, 3 on
+tetrahedra).
 
-Shapes (`npl` volume nodes, `nps = porder + 1` trace nodes per edge,
-`ndf = 3nps` trace DOFs per element, `nc1 = ndf + 1` local-solve columns —
-the unit-trace columns plus the source column):
+Shapes (`npl` volume nodes, `nps` trace nodes per face — `porder + 1` in 2D,
+`(porder+1)(porder+2)/2` in 3D — `ndf = (Dim+1) nps` trace DOFs per element,
+`nc1 = ndf + 1` local-solve columns — the unit-trace columns plus the source
+column):
 
 - `MinvM (npl, npl, nt)`: κ × inverse mass (the inverse of `localprob`'s `M`).
-- `Cx, Cy, D (npl, npl, nt)`: coupling matrices and convection + stabilization
-  operator (stabilization with `tau = κ + |c·n|`, as in `localprob`).
-- `Lxe, Lye (npl, nc1, nt)`: edge lifts of the trace (`Fx = -Lxe m`), last
+- `C (npl, npl, Dim, nt)`, `D (npl, npl, nt)`: coupling matrices and
+  convection + stabilization operator (stabilization with `tau = κ + |c·n|`,
+  as in `localprob`).
+- `Le (npl, nc1, Dim, nt)`: face lifts of the trace (`F_d = -Le_d m`), last
   column zero so the source column threads through the same GEMMs.
 - `B0 (npl, nc1, nt)`: local-solve RHS seed `[-Lu | F_src]`.
-- `Alam (ndf, ndf, nt)`, `Rx, Ry, Ru (ndf, npl, nt)`: trace-test matrices of
-  the numerical flux (`tau = param[:taud] + |c·n|`, as in `elemmat_hdg`).
+- `Alam (ndf, ndf, nt)`, `R (ndf, npl, Dim, nt)`, `Ru (ndf, npl, nt)`:
+  trace-test matrices of the numerical flux (`tau = param[:taud] + |c·n|`,
+  as in `elemmat_hdg`).
 - `elcon (ndf, nt)`: element trace DOFs -> global trace DOFs (orientation
-  resolved), for the recovery gather.
+  resolved through the mesh's [`mkelcon`](@ref TwoDG.Meshes.mkelcon)
+  connectivity — reversal in 2D, the 6 triangle symmetries in 3D), for the
+  assembly scatter and recovery gather.
 """
-struct HDGBatch{T, A3 <: AbstractArray{T, 3}, I2 <: AbstractMatrix{Int32}}
+struct HDGBatch{T, A3 <: AbstractArray{T, 3}, A4 <: AbstractArray{T, 4},
+                I2 <: AbstractMatrix{Int32}}
     npl   :: Int
     nps   :: Int
     ndf   :: Int
     nt    :: Int
     MinvM :: A3
-    Cx    :: A3
-    Cy    :: A3
+    C     :: A4
     D     :: A3
-    Lxe   :: A3
-    Lye   :: A3
+    Le    :: A4
     B0    :: A3
     Alam  :: A3
-    Rx    :: A3
-    Ry    :: A3
+    R     :: A4
     Ru    :: A3
     elcon :: I2
 end
@@ -71,14 +80,30 @@ end
 Adapt.@adapt_structure HDGBatch
 
 Base.eltype(::HDGBatch{T}) where {T} = T
+Base.ndims(batch::HDGBatch) = size(batch.C, 3)
+
+# element trace DOFs -> global trace DOFs in local-face-block order (ndf, nt):
+# face f owns nodes (f-1)nps+1 : f*nps in its canonical order; the mesh's
+# `elcon` already resolves each element's traversal through `orient_perm`
+function _hdg_elcon(mesh, nps, nfe)
+    elc = mesh.elcon === nothing ?
+          mkelcon(mesh.t2f, mesh.t2o, mesh.porder) : mesh.elcon
+    (size(elc, 1) == nps && size(elc, 2) == nfe) ||
+        throw(DimensionMismatch("mesh.elcon is $(size(elc)); expected ($nps, $nfe, nt)"))
+    return Int32.(reshape(elc, nps * nfe, size(elc, 3)))
+end
 
 function HDGBatch(master, mesh, source, param; T::Type{<:AbstractFloat}=Float64)
+    Dim = ndims(master)
     kappa = param[:kappa]
     c = param[:c]
+    length(c) == Dim ||
+        throw(ArgumentError("param[:c] has $(length(c)) components; the mesh is $(Dim)D"))
     taud_ae = param[:taud]
 
-    nps = master.porder + 1
-    ndf = 3 * nps
+    nfe = Dim + 1
+    nps = size(master.perm, 1)
+    ndf = nfe * nps
     nc1 = ndf + 1
     npl = size(mesh.dgnodes, 1)
     nt = size(mesh.t, 1)
@@ -86,77 +111,62 @@ function HDGBatch(master, mesh, source, param; T::Type{<:AbstractFloat}=Float64)
     ctx = GeometricFactors(master, mesh)   # canonical volume geometry (Float64)
     side = SideGeometry(master, mesh)      # face metrics in element orientation
     shap = ctx.shap                        # (npl, ng)
-    sh1d = master.sh1d[:, 1, :]            # (nps, ng1d)
+    fshap = master.face.shap[:, 1, :]      # (nps, ngf) face trace basis
     perm = master.perm[:, :, 1]
 
     MinvM = zeros(npl, npl, nt)
-    Cx = zeros(npl, npl, nt)
-    Cy = zeros(npl, npl, nt)
+    C = zeros(npl, npl, Dim, nt)
     D = zeros(npl, npl, nt)
-    Lxe = zeros(npl, nc1, nt)
-    Lye = zeros(npl, nc1, nt)
+    Le = zeros(npl, nc1, Dim, nt)
     B0 = zeros(npl, nc1, nt)
     Alam = zeros(ndf, ndf, nt)
-    Rx = zeros(ndf, npl, nt)
-    Ry = zeros(ndf, npl, nt)
+    R = zeros(ndf, npl, Dim, nt)
     Ru = zeros(ndf, npl, nt)
 
     @views Threads.@threads for e in 1:nt
         MinvM[:, :, e] .= kappa .* ctx.Minv[:, :, e]
-        Cx[:, :, e] .= shap * ctx.shapx[:, :, e]'
-        Cy[:, :, e] .= shap * ctx.shapy[:, :, e]'
-        D[:, :, e] .= .-c[1] .* Cx[:, :, e]' .- c[2] .* Cy[:, :, e]'
+        for d in 1:Dim
+            C[:, :, d, e] .= shap * ctx.shapd[:, :, d, e]'
+            D[:, :, e] .-= c[d] .* C[:, :, d, e]'
+        end
 
         if source isa Function
             src = source(ctx.pg[:, :, e])
             B0[:, nc1, e] .= shap * (ctx.wjac[:, e] .* vec(src))
         end
 
-        for s in 1:3
+        for s in 1:nfe
             ps = perm[:, s]
-            nl1 = side.nl[:, 1, s, e]
-            nl2 = side.nl[:, 2, s, e]
             sw = side.sw[:, s, e]
-            cnl = c[1] .* nl1 .+ c[2] .* nl2
+            cnl = c[1] .* side.nl[:, 1, s, e]
+            for d in 2:Dim
+                cnl .+= c[d] .* side.nl[:, d, s, e]
+            end
             tau_loc = kappa .+ abs.(cnl)      # localprob's tau (taud = kappa)
             tau_ae = taud_ae .+ abs.(cnl)     # elemmat_hdg's tau
 
-            Ex = sh1d * Diagonal(sw .* nl1) * sh1d'
-            Ey = sh1d * Diagonal(sw .* nl2) * sh1d'
-            Eu = sh1d * Diagonal(sw .* (cnl .- tau_loc)) * sh1d'
-            Wu = sh1d * Diagonal(sw .* tau_ae) * sh1d'
-            Aλ = sh1d * Diagonal(sw .* (cnl .- tau_ae)) * sh1d'
-
-            D[ps, ps, e] .+= sh1d * Diagonal(sw .* tau_loc) * sh1d'
-
             cols = (s-1)*nps+1 : s*nps
-            Lxe[ps, cols, e] .+= Ex
-            Lye[ps, cols, e] .+= Ey
-            B0[ps, cols, e] .-= Eu
+            for d in 1:Dim
+                Ed = fshap * Diagonal(sw .* side.nl[:, d, s, e]) * fshap'
+                Le[ps, cols, d, e] .+= Ed
+                R[cols, ps, d, e] .+= Ed
+            end
+            Eu = fshap * Diagonal(sw .* (cnl .- tau_loc)) * fshap'
+            Wu = fshap * Diagonal(sw .* tau_ae) * fshap'
+            Aλ = fshap * Diagonal(sw .* (cnl .- tau_ae)) * fshap'
 
-            Rx[cols, ps, e] .+= Ex
-            Ry[cols, ps, e] .+= Ey
+            D[ps, ps, e] .+= fshap * Diagonal(sw .* tau_loc) * fshap'
+            B0[ps, cols, e] .-= Eu
             Ru[cols, ps, e] .+= Wu
             Alam[cols, cols, e] .+= Aλ
         end
     end
 
-    # element trace DOFs -> global trace DOFs (same as hdg_localrecovery)
-    elcon = zeros(Int32, ndf, nt)
-    for e in 1:nt, j in 1:3
-        f = mesh.t2f[e, j]
-        if f > 0
-            elcon[(j-1)*nps+1:j*nps, e] .= (f-1)*nps+1:f*nps
-        else
-            f = abs(f)
-            elcon[(j-1)*nps+1:j*nps, e] .= f*nps:-1:(f-1)*nps+1
-        end
-    end
+    elcon = _hdg_elcon(mesh, nps, nfe)
 
     return HDGBatch(npl, nps, ndf, nt,
-                    T.(MinvM), T.(Cx), T.(Cy), T.(D),
-                    T.(Lxe), T.(Lye), T.(B0),
-                    T.(Alam), T.(Rx), T.(Ry), T.(Ru), elcon)
+                    T.(MinvM), T.(C), T.(D), T.(Le), T.(B0),
+                    T.(Alam), T.(R), T.(Ru), elcon)
 end
 
 # C[:,:,e] = α A[:,:,e] * B[:,:,e] + β C[:,:,e], one workitem per entry
@@ -185,7 +195,7 @@ end
 
 # In-place batched dense solve K[:,:,e] \ X[:,:,e]: Gaussian elimination with
 # partial pivoting, one workitem per element (K is destroyed). Sizes are tiny
-# (npl ≤ ~28), so a serial per-element factorization is appropriate.
+# (npl ≤ ~35), so a serial per-element factorization is appropriate.
 @kernel function _blusolve!(K, X)
     e = @index(Global)
     T = eltype(K)
@@ -240,36 +250,40 @@ end
     @inbounds m[k, e] = x[elcon[k, e]]
 end
 
-# uh = U[:,1:ndf] m + U[:,end] (and the same for qx, qy), one workitem per node
-@kernel function _recover!(u, qx, qy, @Const(U), @Const(Qx), @Const(Qy), @Const(m))
+# uh = U[:,1:ndf] m + U[:,end]; q_d likewise from Q (npl, nc1, Dim, nt),
+# one workitem per node
+@kernel function _recover!(u, q, @Const(U), @Const(Q), @Const(m))
     i, e = @index(Global, NTuple)
     ndf = size(m, 1)
+    Dim = size(q, 2)
     accu = U[i, ndf+1, e]
-    accx = Qx[i, ndf+1, e]
-    accy = Qy[i, ndf+1, e]
     @inbounds for k in 1:ndf
-        mk = m[k, e]
-        accu += U[i, k, e] * mk
-        accx += Qx[i, k, e] * mk
-        accy += Qy[i, k, e] * mk
+        accu += U[i, k, e] * m[k, e]
     end
     @inbounds u[i, e] = accu
-    @inbounds qx[i, e] = accx
-    @inbounds qy[i, e] = accy
+    @inbounds for d in 1:Dim
+        acc = Q[i, ndf+1, d, e]
+        for k in 1:ndf
+            acc += Q[i, k, d, e] * m[k, e]
+        end
+        q[i, d, e] = acc
+    end
 end
 
 """
     hdg_local_solves(batch::HDGBatch)
 
 Runs the batched local solves and static condensation on the backend of
-`batch`. Returns `(; ae, fe, U, Qx, Qy)`: the element matrices/vectors
+`batch`. Returns `(; ae, fe, U, Q)`: the element matrices/vectors
 `ae (ndf, ndf, nt)`, `fe (ndf, nt)` (Dirichlet BCs *not* yet applied) and the
-local solution maps `U/Qx/Qy (npl, ndf + 1, nt)` (unit-trace columns plus the
-source column) consumed by [`hdg_recover`](@ref).
+local solution maps `U (npl, ndf + 1, nt)` / `Q (npl, ndf + 1, Dim, nt)`
+(unit-trace columns plus the source column) consumed by
+[`hdg_recover`](@ref).
 """
 function hdg_local_solves(batch::HDGBatch{T}) where {T}
     backend = KernelAbstractions.get_backend(batch.D)
     npl, ndf, nt = batch.npl, batch.ndf, batch.nt
+    Dim = ndims(batch)
     nc1 = ndf + 1
     z = zero(T)
     o = one(T)
@@ -277,32 +291,39 @@ function hdg_local_solves(batch::HDGBatch{T}) where {T}
     nn = _bgemm_nn!(backend)
     ntk = _bgemm_nt!(backend)
 
-    T1 = KernelAbstractions.zeros(backend, T, npl, nc1, nt)   # M⁻¹ Lx
-    T2 = KernelAbstractions.zeros(backend, T, npl, nc1, nt)   # M⁻¹ Ly
-    X1 = KernelAbstractions.zeros(backend, T, npl, npl, nt)   # M⁻¹ Cx'
-    X2 = KernelAbstractions.zeros(backend, T, npl, npl, nt)   # M⁻¹ Cy'
-    nn(T1, batch.MinvM, batch.Lxe, o, z; ndrange=(npl, nc1, nt))
-    nn(T2, batch.MinvM, batch.Lye, o, z; ndrange=(npl, nc1, nt))
-    ntk(X1, batch.MinvM, batch.Cx, o, z; ndrange=(npl, npl, nt))
-    ntk(X2, batch.MinvM, batch.Cy, o, z; ndrange=(npl, npl, nt))
+    Td = KernelAbstractions.zeros(backend, T, npl, nc1, Dim, nt)   # M⁻¹ L_d
+    Xd = KernelAbstractions.zeros(backend, T, npl, npl, Dim, nt)   # M⁻¹ C_d'
+    for d in 1:Dim
+        nn(view(Td, :, :, d, :), batch.MinvM, view(batch.Le, :, :, d, :), o, z;
+           ndrange=(npl, nc1, nt))
+        ntk(view(Xd, :, :, d, :), batch.MinvM, view(batch.C, :, :, d, :), o, z;
+            ndrange=(npl, npl, nt))
+    end
 
     K = copy(batch.D)
-    nn(K, batch.Cx, X1, o, o; ndrange=(npl, npl, nt))
-    nn(K, batch.Cy, X2, o, o; ndrange=(npl, npl, nt))
+    for d in 1:Dim
+        nn(K, view(batch.C, :, :, d, :), view(Xd, :, :, d, :), o, o;
+           ndrange=(npl, npl, nt))
+    end
 
     U = copy(batch.B0)
-    nn(U, batch.Cx, T1, o, o; ndrange=(npl, nc1, nt))
-    nn(U, batch.Cy, T2, o, o; ndrange=(npl, nc1, nt))
+    for d in 1:Dim
+        nn(U, view(batch.C, :, :, d, :), view(Td, :, :, d, :), o, o;
+           ndrange=(npl, nc1, nt))
+    end
     _blusolve!(backend)(K, U; ndrange=nt)                     # U := K \ RHS
 
-    Qx = T1; Qx .= .-T1                                       # reuse buffers
-    Qy = T2; Qy .= .-T2
-    nn(Qx, X1, U, o, o; ndrange=(npl, nc1, nt))
-    nn(Qy, X2, U, o, o; ndrange=(npl, nc1, nt))
+    Q = Td; Q .= .-Td                                         # reuse buffer
+    for d in 1:Dim
+        nn(view(Q, :, :, d, :), view(Xd, :, :, d, :), U, o, o;
+           ndrange=(npl, nc1, nt))
+    end
 
     Z = KernelAbstractions.zeros(backend, T, ndf, nc1, nt)
-    nn(Z, batch.Rx, Qx, o, o; ndrange=(ndf, nc1, nt))
-    nn(Z, batch.Ry, Qy, o, o; ndrange=(ndf, nc1, nt))
+    for d in 1:Dim
+        nn(Z, view(batch.R, :, :, d, :), view(Q, :, :, d, :), o, o;
+           ndrange=(ndf, nc1, nt))
+    end
     nn(Z, batch.Ru, U, o, o; ndrange=(ndf, nc1, nt))
 
     ae = similar(Z, ndf, ndf, nt)
@@ -310,30 +331,30 @@ function hdg_local_solves(batch::HDGBatch{T}) where {T}
     fe = Z[:, nc1, :]
     KernelAbstractions.synchronize(backend)
 
-    return (; ae, fe, U, Qx, Qy)
+    return (; ae, fe, U, Q)
 end
 
 """
-    hdg_recover(batch, loc, x)
+    hdg_recover(batch, loc, x) -> (uh, qh)
 
-Recovers `uh (npl, nt)` and `qh (npl, 2, nt)` from the global trace vector `x`
-(on the same backend as `batch`) using the local solution maps from
+Recovers `uh (npl, nt)` and `qh (npl, Dim, nt)` from the global trace vector
+`x` (on the same backend as `batch`) using the local solution maps from
 [`hdg_local_solves`](@ref) — a batched matvec, no per-element re-solve.
 """
 function hdg_recover(batch::HDGBatch{T}, loc, x) where {T}
     backend = KernelAbstractions.get_backend(batch.D)
     npl, ndf, nt = batch.npl, batch.ndf, batch.nt
+    Dim = ndims(batch)
 
     m = KernelAbstractions.zeros(backend, T, ndf, nt)
     _gather_trace!(backend)(m, x, batch.elcon; ndrange=(ndf, nt))
 
     uh = KernelAbstractions.zeros(backend, T, npl, nt)
-    qx = KernelAbstractions.zeros(backend, T, npl, nt)
-    qy = KernelAbstractions.zeros(backend, T, npl, nt)
-    _recover!(backend)(uh, qx, qy, loc.U, loc.Qx, loc.Qy, m; ndrange=(npl, nt))
+    qh = KernelAbstractions.zeros(backend, T, npl, Dim, nt)
+    _recover!(backend)(uh, qh, loc.U, loc.Q, m; ndrange=(npl, nt))
     KernelAbstractions.synchronize(backend)
 
-    return uh, qx, qy
+    return uh, qh
 end
 
 """
@@ -345,10 +366,10 @@ assembly ([`hdg_local_solves`](@ref)) and local recovery
 ([`hdg_recover`](@ref)) run on the backend of `ArrayT` alongside the
 [`hdg_gmres_ka`](@ref) trace solve. Only the Dirichlet-BC application and the
 face-block global assembly (`hdg_densesystem`) remain on the CPU. `kwargs` are
-forwarded to `hdg_gmres_ka`.
+forwarded to `hdg_gmres_ka`. Works on triangles and tetrahedra alike.
 
 Returns `(uh, qh, uhath, niter)` with the same shapes as `hdg_parsolve`
-(`uh (npl, 1, nt)`, `qh (npl, 2, nt)`, `uhath (nps, nf)`).
+(`uh (npl, 1, nt)`, `qh (npl, Dim, nt)`, `uhath (nps, nf)`).
 """
 function hdg_parsolve_batched(master, mesh, source, dbc, param;
                               ArrayT=Array, T::Type{<:AbstractFloat}=Float64,
@@ -363,7 +384,7 @@ function hdg_parsolve_batched(master, mesh, source, dbc, param;
     sys = adapt(ArrayT, HDGSystem(ae, fe, mesh; T))
     x, stats = hdg_gmres_ka(sys; kwargs...)
 
-    return _hdg_batched_solution(batch, loc, x, mesh)..., stats.niter
+    return _hdg_batched_solution(batch, loc, x)..., stats.niter
 end
 
 """
@@ -389,7 +410,7 @@ function hdg_direct_batched(master, mesh, source, dbc, param;
     K, F = hdg_trace_system(ae, fe, batch.elcon)
     x = K \ F
 
-    return _hdg_batched_solution(batch, loc, T.(x), mesh)
+    return _hdg_batched_solution(batch, loc, T.(x))
 end
 
 """
@@ -424,13 +445,11 @@ function hdg_trace_system(ae::AbstractArray{Tv, 3}, fe, elcon) where {Tv}
 end
 
 # recover (uh, qh, uhath) in the standard output shapes from the trace vector
-function _hdg_batched_solution(batch, loc, x, mesh)
-    uh_d, qx_d, qy_d = hdg_recover(batch, loc, x)
+function _hdg_batched_solution(batch, loc, x)
+    uh_d, qh_d = hdg_recover(batch, loc, x)
     uh = Array{Float64}(undef, batch.npl, 1, batch.nt)
     uh[:, 1, :] .= Array(uh_d)
-    qh = Array{Float64}(undef, batch.npl, 2, batch.nt)
-    qh[:, 1, :] .= Array(qx_d)
-    qh[:, 2, :] .= Array(qy_d)
-    uhath = reshape(Float64.(Array(x)), mesh.porder + 1, :)
+    qh = Float64.(Array(qh_d))
+    uhath = reshape(Float64.(Array(x)), batch.nps, :)
     return uh, qh, uhath
 end
