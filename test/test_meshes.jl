@@ -3,9 +3,9 @@
 using TwoDG
 using Test
 
-"Structural invariants every mesh must satisfy (f/t2f consistency, orientation)."
+"Structural invariants every mesh must satisfy (f/t2f/t2o consistency, orientation)."
 function check_mesh_invariants(mesh)
-    (; p, t, f, t2f) = mesh
+    (; p, t, f, t2f, t2o) = mesh
     nf, nt = size(f, 1), size(t, 1)
     bnd = f[:, 4] .< 0
     ni = count(!, bnd)
@@ -23,12 +23,31 @@ function check_mesh_invariants(mesh)
     refcount = zeros(Int, nf)
     ok = true
     for el in 1:nt, k in 1:3
-        fc = abs(t2f[el, k])
+        fc = t2f[el, k]
         refcount[fc] += 1
         ok &= (f[fc, 3] == el || f[fc, 4] == el)
     end
     @test ok
     @test all(refcount[1:ni] .== 2) && all(refcount[(ni + 1):end] .== 1)
+
+    # t2f is unsigned; the orientation code lives in t2o: the left element
+    # traverses the face's stored direction (o = 1), and each face sees
+    # exactly one o = 1 and (interior) one o = 2 among its elements
+    @test all(>(0), t2f)
+    @test all(o -> o in (1, 2), t2o)
+    ok_orient = true
+    for el in 1:nt, k in 1:3
+        fc = t2f[el, k]
+        # local face k of element el is opposite local vertex k; its endpoints
+        # traversed counterclockwise must match f[fc, 1:2] under o = 1, and be
+        # reversed under o = 2
+        ccw = (t[el, mod1(k + 1, 3)], t[el, mod1(k + 2, 3)])
+        stored = (f[fc, 1], f[fc, 2])
+        ok_orient &= t2o[el, k] == (ccw == stored ? 1 : 2)
+        ok_orient &= (ccw == stored) || (ccw == reverse(stored))
+        f[fc, 3] == el && (ok_orient &= t2o[el, k] == 1)
+    end
+    @test ok_orient
 
     # positively oriented elements (counterclockwise vertices)
     signed_area(el) = (p[t[el, 2], 1] - p[t[el, 1], 1]) * (p[t[el, 3], 2] - p[t[el, 1], 2]) -
@@ -59,7 +78,7 @@ end
         mesh = discretize(geo, 2; nodetype=1)
         ref = mkmesh_square(5, 4, 2, 0, 1)
         @test mesh.p == ref.p && mesh.t == ref.t
-        @test mesh.f == ref.f && mesh.t2f == ref.t2f
+        @test mesh.f == ref.f && mesh.t2f == ref.t2f && mesh.t2o == ref.t2o
         @test mesh.dgnodes == ref.dgnodes
         @test mesh.pcg == ref.pcg && mesh.tcg == ref.tcg
         @test boundary_names(mesh) == [:bottom, :right, :top, :left]

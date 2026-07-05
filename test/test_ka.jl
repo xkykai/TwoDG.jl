@@ -28,7 +28,7 @@ end
 # structs cannot be defined inside a @testset block). Burgers' equation, a
 # frozen-ghost-state BC, and a central numerical flux, built from exported
 # methods only.
-struct BurgersEquation <: TwoDG.AbstractEquation end
+struct BurgersEquation <: TwoDG.AbstractEquation{2} end
 TwoDG.nvariables(::BurgersEquation) = 1
 TwoDG.flux(::BurgersEquation, u::SVector{1, T}, x, t) where {T} =
     (u .* u ./ 2, u .* u ./ 2)

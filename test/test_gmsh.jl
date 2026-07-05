@@ -45,4 +45,36 @@ else
             end
         end
     end
+
+    @testset "gmsh_geometry: tetrahedral import (THREED_PLAN C5)" begin
+        mktempdir() do dir
+            path = joinpath(dir, "box3d.msh")
+            gmsh.initialize()
+            gmsh.model.add("box3d")
+            gmsh.model.occ.addBox(0, 0, 0, 1, 1, 1)
+            gmsh.model.occ.synchronize()
+            gmsh.option.setNumber("Mesh.MeshSizeMax", 0.4)
+            gmsh.model.mesh.generate(3)
+            gmsh.write(path)
+            gmsh.finalize()
+
+            geo = gmsh_geometry(path; boundaries=(walls=p -> trues(size(p, 1)),))
+            @test ndims(geo) == 3
+            @test all(>(0), TwoDG.Meshes.simpvol(geo.p, geo.t))
+
+            mesh = discretize(geo, 2)
+            master = ReferenceElement(mesh)
+            ctx = DGContext(master, mesh)
+
+            # unit-box volume and surface through the quadrature
+            @test abs(sum(ctx.wjac) - 1.0) < 1e-10
+            @test abs(sum(ctx.dws[:, (ctx.ni + 1):ctx.nf]) - 6.0) < 1e-10
+
+            # free-stream preservation on a genuinely unstructured tet mesh
+            phys = DGPhysics(ConvectionEquation([0.3, 0.7, -0.2]);
+                             boundary_conditions=(Dirichlet(2.0),))
+            u = fill(2.0, ctx.npl, 1, ctx.nt)
+            @test maximum(abs, rinvexpl_ka(ctx, phys, u, 0.0)) < 1e-10
+        end
+    end
 end
