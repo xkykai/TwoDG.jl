@@ -42,7 +42,7 @@ function mkmesh_trefftz(m=15, n=30, porder=3, node_spacing_type=0, tparam=[0.1, 
     # fixmesh dedupes them (it preserves triangle order, so dgnodes still match)
     p, t = fixmesh(p, t)
 
-    f, t2f = mkt2f(t)
+    f, t2f, t2o = mkt2f(t)
 
     fcurved = trues(size(f, 1))
     tcurved = trues(size(t, 1))
@@ -69,7 +69,7 @@ function mkmesh_trefftz(m=15, n=30, porder=3, node_spacing_type=0, tparam=[0.1, 
     dgnodes[:, 1, :] .= real.(wd)
     dgnodes[:, 2, :] .= imag.(wd)
 
-    return TwoDG.Mesh(; p, t, f, t2f, fcurved, tcurved, porder, plocal, tlocal,
-                      dgnodes, elcon=mkelcon(t2f, porder), f2f=mkf2f(f, t2f),
+    return TwoDG.Mesh(; p, t, f, t2f, t2o, fcurved, tcurved, porder, plocal, tlocal,
+                      dgnodes, elcon=mkelcon(t2f, t2o, porder), f2f=mkf2f(f, t2f),
                       boundary_names=[:airfoil, :farfield])
 end

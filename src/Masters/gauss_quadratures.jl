@@ -46,6 +46,72 @@ end
 
 
 """
+    gaussjacobi(n, α, β=0) -> (x, w)
+
+Gauss–Jacobi points and weights on [-1, 1] with weight `(1-x)^α (1+x)^β`:
+`n` points integrate `f(x) (1-x)^α (1+x)^β` exactly for polynomial `f` of
+degree `≤ 2n-1`. Same Vandermonde-solve construction as [`gaussquad1d`](@ref)
+(which is the `α = β = 0` case); by orthogonality only the constant
+polynomial has a nonzero weighted moment, `2^(α+β+1) B(α+1, β+1)`.
+"""
+function gaussjacobi(n::Integer, α::Integer, β::Integer=0)
+    x = jacobi_zeros(n, Float64(α), Float64(β))
+
+    A = zeros(Float64, n, n)
+    for i in 1:n
+        A[i, :] .= jacobi.(x, i - 1, Float64(α), Float64(β))
+    end
+
+    # B(α+1, β+1) = α! β! / (α+β+1)! for integer α, β
+    r = zeros(Float64, n)
+    r[1] = 2.0^(α + β + 1) *
+           Float64(factorial(big(α)) * factorial(big(β)) // factorial(big(α + β + 1)))
+    w = A \ r
+
+    return x, w
+end
+
+"""
+    gaussquad3d(pgauss::Integer)
+
+Gauss integration points and weights on the unit tetrahedron
+`{ξ ≥ 0, ξ₁+ξ₂+ξ₃ ≤ 1}` via collapsed-coordinate Gauss–Jacobi product rules
+(degree-exact for any requested `pgauss`; Hesthaven & Warburton 2008, §10.2).
+The cube [-1,1]³ maps to the tetrahedron with Jacobian
+`(1-η₂)(1-η₃)²/64`, absorbed into Gauss–Jacobi weights with `α = 1` and
+`α = 2` — no quadrature point lies on the collapsed edge. Tabulated symmetric
+rules (Witherden–Vincent) can later replace these as a pure optimization.
+
+# Returns
+- `x::Matrix{Float64}`: integration points `(ng, 3)`
+- `w::Vector{Float64}`: integration weights (summing to the volume 1/6)
+"""
+function gaussquad3d(pgauss::Integer)
+    n = ceil(Int, (pgauss + 1) / 2)
+
+    x1, w1 = gaussjacobi(n, 0)   # η₁ direction, weight 1
+    x2, w2 = gaussjacobi(n, 1)   # η₂ direction, weight (1-η₂)
+    x3, w3 = gaussjacobi(n, 2)   # η₃ direction, weight (1-η₃)²
+
+    ng = n^3
+    x = zeros(ng, 3)
+    w = zeros(ng)
+    m = 0
+    for k in 1:n, j in 1:n, i in 1:n
+        m += 1
+        η1, η2, η3 = x1[i], x2[j], x3[k]
+        # collapsed (Duffy) map cube -> unit tetrahedron
+        x[m, 1] = (1 + η1) * (1 - η2) * (1 - η3) / 8
+        x[m, 2] = (1 + η2) * (1 - η3) / 4
+        x[m, 3] = (1 + η3) / 2
+        # 1/8 volume scaling × (1/2 from (1-η₂)/2) × (1/4 from ((1-η₃)/2)²)
+        w[m] = w1[i] * w2[j] * w3[k] / 64
+    end
+
+    return x, w
+end
+
+"""
     gaussquad2d(pgauss::Integer)
 
 Calculate Gauss integration points and weights in 2D for [0,1]×[0,1].

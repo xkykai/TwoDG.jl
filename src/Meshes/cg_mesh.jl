@@ -7,18 +7,20 @@ nodes shared between elements: fills `pcg` (unique node coordinates) and
 `cg_solve`. Nodes closer than `ptol` (after rounding) are merged.
 """
 function cgmesh(mesh, ptol=2e-13)
+    dim = size(mesh.dgnodes, 2)
+
     # Reshape and rearrange mesh.dgnodes
-    ph = reshape(permutedims(mesh.dgnodes, (3, 1, 2)), :, 2)
-    
+    ph = reshape(permutedims(mesh.dgnodes, (3, 1, 2)), :, dim)
+
     # Create array of indices
     th = reshape(1:size(ph, 1), (size(mesh.dgnodes, 3), :))
 
     # Find unique rows in rounded ph
     rounded_ph = round.(ph, digits=6)
-    
+
     # Process unique points efficiently with dictionary
     point_tuples = [Tuple(row) for row in eachrow(rounded_ph)]
-    unique_dict = Dict{NTuple{2,Float64}, Int}()
+    unique_dict = Dict{NTuple{dim, Float64}, Int}()
     unique_indices = Int[]
     inverse_map = zeros(Int, length(point_tuples))
     

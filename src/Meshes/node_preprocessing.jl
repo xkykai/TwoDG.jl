@@ -3,94 +3,170 @@ using TwoDG.Utils:unique_rows
 """
     simpvol(p::Matrix{T}, t::Matrix{Int}) where T<:Real
 
-Compute signed volumes (areas) of triangular elements in a 2D mesh.
+Compute signed volumes of the simplices of a mesh: areas of triangles
+(`t (nt, 3)`) or volumes of tetrahedra (`t (nt, 4)`), positive for
+counterclockwise / right-handed vertex ordering.
 
 Parameters:
-- `p`: Nx2 matrix of vertex coordinates where N is the number of vertices
-- `t`: Mx3 matrix of triangle vertex indices where M is the number of triangles
+- `p`: N×Dim matrix of vertex coordinates
+- `t`: M×(Dim+1) matrix of simplex vertex indices
 
 Returns:
-- Vector of signed volumes (areas) for each triangle
-
-Performance optimizations:
-- Uses views instead of array copies for index operations
-- Preallocates output array
-- Leverages SIMD operations through Julia's native array operations
+- Vector of signed volumes for each simplex
 """
 function simpvol(p::Matrix{T}, t::Matrix{Int}) where T<:Real
-    # Get number of triangles
-    num_triangles = size(t, 1)
-    
-    # Preallocate output array
-    volumes = Vector{T}(undef, num_triangles)
-    
-    # Use views for efficient indexing
-    @views for i in 1:num_triangles
-        # Extract vertex indices for current triangle
-        v0, v1, v2 = t[i, 1], t[i, 2], t[i, 3]
-        
-        # Calculate edge vectors
-        d01_x = p[v1, 1] - p[v0, 1]
-        d01_y = p[v1, 2] - p[v0, 2]
-        d02_x = p[v2, 1] - p[v0, 1]
-        d02_y = p[v2, 2] - p[v0, 2]
-        
-        # Calculate signed volume (area)
-        volumes[i] = (d01_x * d02_y - d01_y * d02_x) / 2
+    nt = size(t, 1)
+    volumes = Vector{T}(undef, nt)
+
+    if size(t, 2) == 3
+        @views for i in 1:nt
+            v0, v1, v2 = t[i, 1], t[i, 2], t[i, 3]
+            d01_x = p[v1, 1] - p[v0, 1]
+            d01_y = p[v1, 2] - p[v0, 2]
+            d02_x = p[v2, 1] - p[v0, 1]
+            d02_y = p[v2, 2] - p[v0, 2]
+            volumes[i] = (d01_x * d02_y - d01_y * d02_x) / 2
+        end
+    else
+        @views for i in 1:nt
+            v0 = p[t[i, 1], :]
+            d1 = p[t[i, 2], :] - v0
+            d2 = p[t[i, 3], :] - v0
+            d3 = p[t[i, 4], :] - v0
+            volumes[i] = (d1[1] * (d2[2] * d3[3] - d2[3] * d3[2]) -
+                          d1[2] * (d2[1] * d3[3] - d2[3] * d3[1]) +
+                          d1[3] * (d2[1] * d3[2] - d2[2] * d3[1])) / 6
+        end
     end
-    
+
     return volumes
 end
 
 """
     fixmesh(p::Matrix{T}, t::Matrix{Int}, ptol::Real=2e-13) where T<:Real
 
-Remove duplicated/unused nodes and fix element orientation in a mesh.
+Remove duplicated nodes and fix element orientation in a simplicial mesh
+(triangles or tetrahedra).
 
 Parameters:
-- `p`: Nx2 matrix of vertex coordinates
-- `t`: Mx3 matrix of triangle vertex indices
+- `p`: N×Dim matrix of vertex coordinates
+- `t`: M×(Dim+1) matrix of simplex vertex indices
 - `ptol`: tolerance for identifying duplicate vertices (default: 2e-13)
 
 Returns:
-- Tuple of (cleaned vertex matrix, fixed triangle matrix)
+- Tuple of (cleaned vertex matrix, fixed simplex matrix with positive
+  orientation)
 """
 function fixmesh(p::Matrix{T}, t::Matrix{Int}, ptol::Real=2e-13) where T<:Real
     # Find scaling factor for snapping based on mesh size
     snap = maximum(maximum(p, dims=1) - minimum(p, dims=1)) * ptol
-    
+
     # Fix nearly-zero coordinates (handling -0.0 vs 0.0 issue)
     zero_idx = findall(abs.(p) .< snap)
     p[zero_idx] .= zero(T)
-    
+
     # Round coordinates to snap threshold and find unique vertices
     p_rounded = round.(p ./ snap) .* snap
     p_unique, ix, jx = unique_rows(p_rounded; return_index=true, return_inverse=true)
-    
+
     t_unique = similar(t)
     for i in eachindex(t)
         t_unique[i] = jx[t[i]]
     end
-    
-    # Fix triangle orientation based on signed volume
-    vols = simpvol(p, t)
-    flip_idx = findall(vols .< 0)
-    
-    # Flip triangles with negative volume
-    if !isempty(flip_idx)
-        t[flip_idx, 1:2] = t[flip_idx, 2:-1:1]
+
+    # Restore positive orientation: swapping the last two vertices flips the
+    # sign of the simplex volume in any dimension
+    nv = size(t, 2)
+    vols = simpvol(p_unique, t_unique)
+    for i in findall(<(0), vols)
+        t_unique[i, nv - 1], t_unique[i, nv] = t_unique[i, nv], t_unique[i, nv - 1]
     end
-    
+
     return p_unique, t_unique
 end
 
 """
-mkt2f(t)
-Compute element connectivities from element indices.
+    mkt2f(t) -> (f, t2f, t2o)
 
-t2t, t2n = mkt2t(t)
+Face connectivity of a simplicial mesh: triangles `t (nt, 3)` or tetrahedra
+`t (nt, 4)` (routed by the column count):
+
+- `f (nf, Dim+2)`: face rows `[v..., left element, right element]` — `Dim`
+  vertices, then the two adjacent elements, the right entry `0` for boundary
+  faces (later replaced by `-tag`, see [`setbndnbrs`](@ref)). The stored
+  vertex order is the **left** element's outward traversal (counterclockwise
+  edge in 2D; right-hand-rule outward triangle in 3D).
+- `t2f (nt, Dim+1)`: face index of each local face (unsigned; local face `j`
+  is opposite local vertex `j`).
+- `t2o (nt, Dim+1)`: orientation code of each local face — the index into
+  `master.perm[:, s, o]` mapping the face's canonical (stored) node ordering
+  to the element's own traversal: `1` when they match (always the case for
+  the left element), `2` when reversed in 2D; `1:6` over the triangle
+  symmetry group in 3D. This replaces the former sign of `t2f` (an explicit
+  small integer is the representation that scales to 3D).
 """
-function mkt2f(t::Matrix{Int})
+mkt2f(t::Matrix{Int}) = size(t, 2) == 3 ? _mkt2f_tri(t) : _mkt2f_tet(t)
+
+# tetrahedra: faces are sorted vertex triples; interior faces first, then
+# boundary faces, both in element-scan order (deterministic)
+function _mkt2f_tet(t::Matrix{Int})
+    nt = size(t, 1)
+    nv = 4
+
+    # gather the (element, local face) pairs sharing each sorted vertex triple
+    occ = Dict{NTuple{3, Int}, Vector{NTuple{2, Int}}}()
+    sizehint!(occ, 2 * nt)
+    for e in 1:nt, j in 1:nv
+        fv = face_vertices(Val(3), j)
+        key = _sort3(t[e, fv[1]], t[e, fv[2]], t[e, fv[3]])
+        push!(get!(() -> NTuple{2, Int}[], occ, key), (e, j))
+    end
+
+    ni = count(v -> length(v) == 2, values(occ))
+    nf = length(occ)
+
+    f = zeros(Int, nf, 5)
+    t2f = zeros(Int, nt, nv)
+    t2o = zeros(Int, nt, nv)
+
+    # two passes in element-scan order: interior faces first, then boundary
+    assigned = Dict{NTuple{3, Int}, Int}()
+    sizehint!(assigned, nf)
+    fi, fb = 0, ni
+    for e in 1:nt, j in 1:nv
+        fv = face_vertices(Val(3), j)
+        mine = (t[e, fv[1]], t[e, fv[2]], t[e, fv[3]])
+        key = _sort3(mine...)
+        idx = get(assigned, key, 0)
+        if idx == 0
+            interior = length(occ[key]) == 2
+            idx = interior ? (fi += 1) : (fb += 1)
+            assigned[key] = idx
+            # first encounter: this element is the left element; store its
+            # outward traversal as the face's canonical direction
+            f[idx, 1] = mine[1]
+            f[idx, 2] = mine[2]
+            f[idx, 3] = mine[3]
+            f[idx, 4] = e
+            t2o[e, j] = 1
+        else
+            f[idx, 5] = e
+            t2o[e, j] = face_orientation((f[idx, 1], f[idx, 2], f[idx, 3]), mine, Val(3))
+        end
+        t2f[e, j] = idx
+    end
+
+    return f, t2f, t2o
+end
+
+@inline function _sort3(a::Int, b::Int, c::Int)
+    a > b && ((a, b) = (b, a))
+    b > c && ((b, c) = (c, b))
+    a > b && ((a, b) = (b, a))
+    return (a, b, c)
+end
+
+function _mkt2f_tri(t::Matrix{Int})
     # Number of triangles
     nt = size(t, 1)
     # Matrix to store all edges (3 per triangle)
@@ -185,8 +261,9 @@ function mkt2f(t::Matrix{Int})
     # Create lookup table from vertex sets to face indices
     f_lookup = Dict(Set(f[i, 1:2]) => i for i in axes(f, 1))
     
-    # Create triangle-to-face mapping with orientation information
+    # Create triangle-to-face mapping with explicit orientation codes
     t2f = zeros(Int, nt, 3)
+    t2o = zeros(Int, nt, 3)
     for i in axes(t, 1), j in axes(t, 2)
         # Determine which edge of the triangle we're processing based on the current vertex
         if j == 1
@@ -196,22 +273,18 @@ function mkt2f(t::Matrix{Int})
         else
             look_index = [1, 2]  # Edge opposite to third vertex
         end
-        
+
         # Find the corresponding face in our face matrix
         face = t[i, look_index]
         triangle_loc = f_lookup[Set(t[i, look_index])]
-        
-        # Store face index with sign indicating orientation:
-        # Positive if edge orientation matches triangle orientation
-        # Negative if edge orientation is reversed relative to triangle
-        if face[1] == f[triangle_loc, 1]
-            t2f[i, j] = triangle_loc
-        else
-            t2f[i, j] = -triangle_loc
-        end
+
+        t2f[i, j] = triangle_loc
+        # orientation 1: the element's counterclockwise edge traversal matches
+        # the face's stored direction; orientation 2: it is reversed
+        t2o[i, j] = face[1] == f[triangle_loc, 1] ? 1 : 2
     end
-    
-    return f, t2f
+
+    return f, t2f, t2o
 end
 
 """ 
@@ -231,31 +304,38 @@ bndexpr = [lambda p: np.all(np.sqrt((p**2).sum(1))>1.0-1e-3)]
 f = setbndnbrs(p,f,bndexpr);
 """
 function setbndnbrs(p, f, bndexpr)
-    # Find the first index where column 4 of f contains 0
-    # This marks the beginning of boundary elements in the mesh
-    i_bnd = findfirst(x -> x == 0, f[:, 4])
-    
-    # Calculate midpoints of boundary edges by averaging their endpoint coordinates
-    # f[i_bnd:end, 1] and f[i_bnd:end, 2] contain indices of endpoints in point array p
-    midpoint = (p[f[i_bnd:end, 1], :] .+ p[f[i_bnd:end, 2], :]) ./ 2
-    
+    # the right-element column is the last one; the columns before the two
+    # element entries are the face's vertices (2 in 2D, 3 in 3D)
+    bcol = size(f, 2)
+    nvf = bcol - 2
+
+    # Find the first boundary face (right element still 0)
+    i_bnd = findfirst(x -> x == 0, f[:, bcol])
+
+    # Face centroids: average of the vertex coordinates (for 2D this is the
+    # edge midpoint, exactly as before)
+    midpoint = p[f[i_bnd:end, 1], :]
+    for v in 2:nvf
+        midpoint = midpoint .+ p[f[i_bnd:end, v], :]
+    end
+    midpoint = midpoint ./ nvf
+
     if length(bndexpr) == 1
-        # If only one boundary expression is provided, 
+        # If only one boundary expression is provided,
         # mark all boundary elements with -1 (single boundary type)
-        f[i_bnd:end, 4] .= -1
+        f[i_bnd:end, bcol] .= -1
     else
-        # For multiple boundary expressions, classify each boundary element
+        # For multiple boundary expressions, classify each boundary face
         for j in 1:length(bndexpr)
-            # Create boolean mask: false for non-boundary elements (before i_bnd),
-            # then apply boundary condition j to midpoints to determine which elements belong to boundary j
+            # Create boolean mask: false for interior faces (before i_bnd),
+            # then apply classifier j to the centroids
             is_boundary_j = vcat(falses(i_bnd - 1), bndexpr[j](midpoint))
-            
-            # Mark elements satisfying boundary condition j with value -j
-            # Negative values in column 4 indicate boundary types
-            f[is_boundary_j, 4] .= -j
+
+            # Mark faces satisfying boundary condition j with value -j
+            f[is_boundary_j, bcol] .= -j
         end
     end
-    
+
     # Return the mesh face array with updated boundary classifications
     return f
 end

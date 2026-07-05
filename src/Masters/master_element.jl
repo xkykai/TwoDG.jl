@@ -1,61 +1,151 @@
 using LinearAlgebra
-using TwoDG.Meshes: Mesh
+using TwoDG.Meshes: Mesh, face_vertices, orientation_permutations, norient
 
 """
     ReferenceElement(porder; pgauss=max(4porder, 1), nodetype=0)
     ReferenceElement(plocal, porder; pgauss=max(4porder, 1))
     ReferenceElement(mesh::Mesh, pgauss=nothing)
 
-Reference (master) triangle of polynomial order `porder`: tabulated shape
-functions, quadrature rules, and the local node orderings the solvers need.
-The element is mesh-independent; the `Mesh` convenience constructor just reads
-`mesh.porder`/`mesh.plocal` so the element's nodes match the mesh's `dgnodes`.
+Reference (master) simplex of polynomial order `porder` in `Dim` dimensions:
+tabulated shape functions, quadrature rules, and the local node orderings the
+solvers need. The face of the element is itself the `Dim-1`-dimensional
+reference simplex, stored whole in the `face` field (the triangle's face is
+the 1D segment; the tetrahedron's face is the full triangle element), so face
+quadrature, face shape functions, and the HDG trace basis come from one
+recursive structure. The element is mesh-independent; the `Mesh` convenience
+constructor just reads `mesh.porder`/`mesh.plocal` so the element's nodes
+match the mesh's `dgnodes`.
 
 `pgauss` is the polynomial degree integrated exactly by the quadrature rules;
 `nodetype` selects the node distribution (`0` uniform, `1`/`2` extended
 Chebyshev, see [`localpnts`](@ref)); `plocal` may be passed directly to use a
 custom node set.
 
-# Fields and conventions
-- `porder` — polynomial order; `npl = (porder+1)(porder+2)/2` nodes.
-- `plocal :: (npl, 3)` — node positions in barycentric coordinates.
-- `corner :: NTuple{3, Int}` — indices of the three vertex nodes in `plocal`.
-- `perm :: (porder+1, 3, 2)` — face-node orderings: `perm[:, j, 1]` lists the
-  nodes on local face `j` traversed counterclockwise, `perm[:, j, 2]` the
-  same nodes reversed (used when a neighboring element sees the shared face
-  with opposite orientation — the sign of `mesh.t2f`).
-- `ploc1d :: (porder+1, 2)` — 1D node positions on a face.
-- `gp1d`, `gw1d` — 1D (face) quadrature points and weights on ``[0, 1]``.
-- `gpts`, `gwgh` — 2D (volume) quadrature points and weights on the
-  reference triangle.
-- `sh1d :: (porder+1, 2, ng1d)` — 1D shape functions (`[:, 1, :]`) and their
-  derivatives (`[:, 2, :]`) at the face quadrature points.
-- `shap :: (npl, 3, ng2d)` — 2D shape functions (`[:, 1, :]`) and their
-  ``ξ``/``η`` derivatives (`[:, 2, :]` / `[:, 3, :]`) at the volume
-  quadrature points.
+# Fields and conventions (`nv = Dim + 1` vertices/faces, `npf` nodes per face,
+`norient` face orientations: 1 in 1D, 2 in 2D, 6 in 3D)
+- `porder` — polynomial order; `npl` nodes (`(porder+1)(porder+2)/2` for the
+  triangle, `(porder+1)(porder+2)(porder+3)/6` for the tetrahedron).
+- `plocal :: (npl, nv)` — node positions in barycentric coordinates.
+- `corner :: Vector{Int}` — indices of the `nv` vertex nodes in `plocal`.
+- `perm :: (npf, nv, norient)` — face-node orderings: `perm[:, j, o]` lists
+  the volume nodes on local face `j` matching the face's canonical traversal
+  under orientation `o` (`o = 1` canonical, `o = 2` reversed in 2D; the 6
+  triangle symmetries in 3D). Used with `mesh.t2o` when a neighboring element
+  sees the shared face in a different orientation.
+- `gpts :: (ng, Dim)`, `gwgh :: (ng,)` — volume quadrature points/weights.
+- `shap :: (npl, Dim+1, ng)` — shape functions (`[:, 1, :]`) and their
+  reference-coordinate derivatives (`[:, 1+d, :]` for direction `d`) at the
+  volume quadrature points.
 - `mass :: (npl, npl)` — reference-element mass matrix.
-- `conv :: (npl, npl, 2)` — reference convection matrices
-  (``∫ φᵢ ∂φⱼ/∂ξ`` and ``∫ φᵢ ∂φⱼ/∂η``).
-- `ma1d :: (porder+1, porder+1)` — 1D face mass matrix.
+- `conv :: (npl, npl, Dim)` — reference convection matrices
+  (``∫ φᵢ ∂φⱼ/∂ξ_d``).
+- `face` — the `Dim-1`-dimensional [`ReferenceElement`](@ref) of the faces
+  (`nothing` for the 1D segment), built with the matching node distribution
+  and quadrature degree.
+
+# Deprecated property aliases (2D)
+The pre-`Dim` 1D face tables remain readable as properties for one release:
+`master.sh1d == master.face.shap`, `master.ma1d == master.face.mass`,
+`master.gw1d == master.face.gwgh`, `master.gp1d == vec(master.face.gpts)`,
+`master.ploc1d == master.face.plocal`.
 """
-struct ReferenceElement{T <: AbstractFloat}
+struct ReferenceElement{Dim, T <: AbstractFloat, F}   # F: the face ReferenceElement, or Nothing in 1D
     porder :: Int
     plocal :: Matrix{T}
-    corner :: NTuple{3, Int}
+    corner :: Vector{Int}
       perm :: Array{Int, 3}
-    ploc1d :: Matrix{T}
-      gp1d :: Vector{T}
       gpts :: Matrix{T}
-      gw1d :: Vector{T}
       gwgh :: Vector{T}
-      sh1d :: Array{T, 3}
       shap :: Array{T, 3}
       mass :: Matrix{T}
       conv :: Array{T, 3}
-      ma1d :: Matrix{T}
+      face :: F
 end
 
-function ReferenceElement(plocal::AbstractMatrix{<:Real}, porder::Integer;
+# 1D face tables of the pre-Dim ReferenceElement, kept as property aliases for
+# one release (NEWS.md): they are exactly the face element's tables.
+@inline function Base.getproperty(m::ReferenceElement, s::Symbol)
+    s === :sh1d   && return getfield(m, :face).shap
+    s === :ma1d   && return getfield(m, :face).mass
+    s === :gw1d   && return getfield(m, :face).gwgh
+    s === :gp1d   && return vec(getfield(m, :face).gpts)
+    s === :ploc1d && return getfield(m, :face).plocal
+    return getfield(m, s)
+end
+
+Base.propertynames(m::ReferenceElement{2}) =
+    (fieldnames(ReferenceElement)..., :sh1d, :ma1d, :gw1d, :gp1d, :ploc1d)
+
+Base.ndims(::ReferenceElement{Dim}) where {Dim} = Dim
+Base.eltype(::ReferenceElement{Dim, T}) where {Dim, T} = T
+
+# the shared face-orientation vocabulary (face_vertices,
+# orientation_permutations, norient, face_orientation) lives in
+# `Meshes/orientation.jl` — one definition serving mkt2f/t2o, the reference
+# element's perm, and the HDG trace numbering
+
+"""
+    build_face_perm(::Val{Dim}, plocal, face_plocal) -> perm (npf, Dim+1, norient)
+
+Constructive face-node permutation table: for each local face `j` and
+orientation `o`, `perm[:, j, o]` lists the volume-node indices whose
+barycentric coordinates (restricted to the face's vertices) match the face
+element's nodes `face_plocal` under the `o`-th symmetry of the face simplex.
+No hand-tabulated index magic — works for every `porder`, provided the volume
+node set restricted to each face equals the face element's node set (true for
+the symmetrized [`localpnts`](@ref)/`localpnts3d` distributions; asserted).
+"""
+function build_face_perm(::Val{Dim}, plocal::AbstractMatrix{T},
+                         face_plocal::AbstractMatrix) where {Dim, T}
+    npf = size(face_plocal, 1)
+    orients = orientation_permutations(Val(Dim))
+    perm = zeros(Int, npf, Dim + 1, length(orients))
+    for j in 1:(Dim + 1)
+        onface = findall(<(1e-6), @view plocal[:, j])
+        length(onface) == npf ||
+            error("face $j has $(length(onface)) nodes; the face element has $npf — node set is not face-compatible")
+        fv = face_vertices(Val(Dim), j)
+        facebary = plocal[onface, collect(fv)]           # (npf, Dim)
+        for (o, σ) in enumerate(orients)
+            for k in 1:npf
+                target = ntuple(d -> face_plocal[k, σ[d]], Val(Dim))
+                idx = findfirst(1:npf) do m
+                    all(d -> abs(facebary[m, d] - target[d]) < 1e-8, 1:Dim)
+                end
+                idx === nothing &&
+                    error("face $j node set is not invariant under the face-simplex symmetry group (orientation $o, node $k)")
+                perm[k, j, o] = onface[idx]
+            end
+        end
+    end
+    return perm
+end
+
+# --- 1D segment element (the face of the triangle) ---------------------------
+function _segment_element(ploc1d::Matrix{T}, porder::Integer, gp1d::Vector{T},
+                          gw1d::Vector{T}, sh1d::Array{<:Real, 3}) where {T}
+    np = porder + 1
+    corner = [findfirst(<(1e-6), @view ploc1d[:, 2]),   # x = 0 vertex
+              findfirst(>(1 - 1e-6), @view ploc1d[:, 2])]
+    # faces of the segment are its endpoints: face j is where barycentric
+    # coordinate j vanishes (face 1 at x = 1, face 2 at x = 0); one node, one
+    # orientation.
+    perm = reshape([corner[2], corner[1]], 1, 2, 1)
+    sh1dT = Array{T, 3}(sh1d)
+    mass = sh1dT[:, 1, :] * Diagonal(gw1d) * sh1dT[:, 1, :]'
+    conv = Array{T, 3}(undef, np, np, 1)
+    conv[:, :, 1] .= sh1dT[:, 1, :] * Diagonal(gw1d) * sh1dT[:, 2, :]'
+    return ReferenceElement{1, T, Nothing}(Int(porder), ploc1d, corner, perm,
+                                           reshape(gp1d, :, 1), gw1d, sh1dT,
+                                           mass, conv, nothing)
+end
+
+# route by the barycentric width of plocal: 3 columns = triangle, 4 = tet
+ReferenceElement(plocal::AbstractMatrix{<:Real}, porder::Integer;
+                 pgauss::Integer=max(4porder, 1)) =
+    ReferenceElement(plocal, porder, Val(size(plocal, 2) - 1); pgauss)
+
+function ReferenceElement(plocal::AbstractMatrix{<:Real}, porder::Integer, ::Val{2};
                           pgauss::Integer=max(4porder, 1))
     T = float(eltype(plocal))
     plocal = Matrix{T}(plocal)
@@ -64,15 +154,17 @@ function ReferenceElement(plocal::AbstractMatrix{<:Real}, porder::Integer;
         throw(ArgumentError("plocal has $npl nodes; order $porder needs $((porder + 1) * (porder + 2) ÷ 2)"))
 
     # vertex nodes: the ones with a barycentric coordinate equal to 1
-    corner = ntuple(3) do i
+    corner = map(1:3) do i
         c = findfirst(>(1 - 1e-6), @view plocal[:, i])
         c === nothing && throw(ArgumentError("plocal has no vertex node for corner $i"))
         c
     end
 
     # face j is the edge where barycentric coordinate j vanishes; traverse it
-    # counterclockwise (sheet 1), and reversed (sheet 2) for the neighboring
-    # element that sees the shared face with opposite orientation
+    # counterclockwise (orientation 1), and reversed (orientation 2) for the
+    # neighboring element that sees the shared face with opposite orientation.
+    # (Equivalent to `build_face_perm` for symmetric node sets, but valid for
+    # any custom `plocal`; the equivalence is asserted in the test suite.)
     perm = zeros(Int, porder + 1, 3, 2)
     aux = (1, 2, 3, 1, 2)
     ploc1d = Matrix{T}(undef, porder + 1, 2)
@@ -96,19 +188,134 @@ function ReferenceElement(plocal::AbstractMatrix{<:Real}, porder::Integer;
     conv = Array{T}(undef, npl, npl, 2)
     conv[:, :, 1] .= shap[:, 1, :] * Diagonal(gwgh) * shap[:, 2, :]'
     conv[:, :, 2] .= shap[:, 1, :] * Diagonal(gwgh) * shap[:, 3, :]'
-    ma1d = sh1d[:, 1, :] * Diagonal(gw1d) * sh1d[:, 1, :]'
 
-    return ReferenceElement{T}(Int(porder), plocal, corner, perm, ploc1d,
-                               Vector{T}(gp1d), Matrix{T}(gpts), Vector{T}(gw1d),
-                               Vector{T}(gwgh), sh1d, shap, mass, conv, ma1d)
+    face = _segment_element(ploc1d, porder, Vector{T}(gp1d), Vector{T}(gw1d), sh1d)
+
+    return ReferenceElement{2, T, typeof(face)}(Int(porder), plocal, corner, perm,
+                                                Matrix{T}(gpts), Vector{T}(gwgh),
+                                                Array{T, 3}(shap), mass, conv, face)
 end
 
-ReferenceElement(porder::Integer; nodetype::Integer=0, pgauss::Integer=max(4porder, 1)) =
-    ReferenceElement(first(localpnts(porder, nodetype)), porder; pgauss)
+"""
+    ReferenceElement(porder; dim=2, nodetype=0, pgauss=max(4porder, 1))
+
+Reference simplex of order `porder`: the triangle for `dim = 2`, the
+tetrahedron for `dim = 3` (whose `face` field is the full triangle element).
+"""
+function ReferenceElement(porder::Integer; dim::Integer=2, nodetype::Integer=0,
+                          pgauss::Integer=max(4porder, 1))
+    dim == 2 && return ReferenceElement(first(localpnts(porder, nodetype)), porder; pgauss)
+    dim == 3 && return ReferenceElement(localpnts3d(porder, nodetype), porder; pgauss)
+    throw(ArgumentError("dim must be 2 or 3, got $dim"))
+end
 
 ReferenceElement(mesh::Mesh, pgauss=nothing) =
     ReferenceElement(mesh.plocal, mesh.porder;
                      pgauss=pgauss === nothing ? max(4 * mesh.porder, 1) : pgauss)
+
+# --- 3D tetrahedral element ---------------------------------------------------
+# Dispatched from the generic constructor by the barycentric width of plocal
+# (4 columns = tetrahedron). The face element is the *existing triangle*
+# element built from the face-restricted node set — face quadrature, face
+# shape functions, and the HDG trace basis in 3D come from the 2D code.
+function ReferenceElement(plocal::AbstractMatrix{<:Real}, porder::Integer,
+                          ::Val{3}; pgauss::Integer=max(4porder, 1))
+    T = float(eltype(plocal))
+    plocal = Matrix{T}(plocal)
+    npl = size(plocal, 1)
+    npl == (porder + 1) * (porder + 2) * (porder + 3) ÷ 6 ||
+        throw(ArgumentError("plocal has $npl nodes; order $porder needs $((porder + 1) * (porder + 2) * (porder + 3) ÷ 6)"))
+
+    corner = map(1:4) do i
+        c = findfirst(>(1 - 1e-6), @view plocal[:, i])
+        c === nothing && throw(ArgumentError("plocal has no vertex node for corner $i"))
+        c
+    end
+
+    # the face element: the triangle carrying the restriction of the volume
+    # node set to local face 1, in that face's own barycentric coordinates
+    onface = findall(<(1e-6), @view plocal[:, 1])
+    fv = face_vertices(Val(3), 1)
+    face_plocal = plocal[onface, collect(fv)]
+    face = ReferenceElement(face_plocal, porder; pgauss)
+
+    # face-node orderings for all 6 relative orientations, built
+    # constructively from the face-simplex symmetries (D7) — requires the
+    # node set to be invariant under them (true for the symmetric localpnts3d
+    # distributions; checked inside)
+    perm = build_face_perm(Val(3), plocal, face.plocal)
+
+    gpts, gwgh = gaussquad3d(pgauss)
+    shap = shape3d(porder, plocal, gpts)
+
+    mass = shap[:, 1, :] * Diagonal(gwgh) * shap[:, 1, :]'
+    conv = Array{T}(undef, npl, npl, 3)
+    for d in 1:3
+        conv[:, :, d] .= shap[:, 1, :] * Diagonal(gwgh) * shap[:, 1 + d, :]'
+    end
+
+    return ReferenceElement{3, T, typeof(face)}(Int(porder), plocal, corner, perm,
+                                                Matrix{T}(gpts), Vector{T}(gwgh),
+                                                Array{T, 3}(shap), mass, conv, face)
+end
+
+"""
+    shape3d(porder, plocal, pts)
+
+Nodal shape functions and derivatives on the master tetrahedron
+`[0,0,0]-[1,0,0]-[0,1,0]-[0,0,1]`: `nfs (npl, 4, npoints)` with values in
+`[:, 1, :]` and the ξ/η/ζ derivatives in `[:, 2:4, :]`. Same
+Vandermonde-solve pattern as [`shape2d`](@ref), on the [`koornwinder3d`](@ref)
+basis.
+"""
+function shape3d(porder, plocal, pts)
+    np = (porder + 1) * (porder + 2) * (porder + 3) ÷ 6
+    npoints = size(pts, 1)
+
+    W, _, _, _ = koornwinder3d(plocal[:, 2:4], porder)
+    A = W \ I
+
+    Λ, Λξ, Λη, Λζ = koornwinder3d(pts, porder)
+
+    nfs = zeros(np, 4, npoints)
+    nfs[:, 1, :] .= (Λ * A)'
+    nfs[:, 2, :] .= (Λξ * A)'
+    nfs[:, 3, :] .= (Λη * A)'
+    nfs[:, 4, :] .= (Λζ * A)'
+
+    return nfs
+end
+
+"""
+    localpnts3d(porder, nodetype=0) -> plocal (npl, 4)
+
+Node positions on the master tetrahedron in barycentric coordinates,
+`npl = (porder+1)(porder+2)(porder+3)/6`. `nodetype = 0` places nodes on the
+uniform barycentric lattice — which is invariant under the tetrahedron's
+symmetry group and restricts to the uniform triangle nodes on every face,
+the two properties `perm`/`t2o` depend on (asserted in the constructor).
+Warp-and-blend nodes (Warburton 2006) are a planned optimization for high
+`porder`.
+"""
+function localpnts3d(porder::Integer, nodetype::Integer=0)
+    nodetype == 0 ||
+        throw(ArgumentError("localpnts3d currently supports only the uniform node distribution (nodetype = 0)"))
+    npl = (porder + 1) * (porder + 2) * (porder + 3) ÷ 6
+    plocal = zeros(npl, 4)
+    if porder == 0
+        plocal[1, :] .= 0.25
+        return plocal
+    end
+    m = 0
+    for k in 0:porder, j in 0:(porder - k), i in 0:(porder - k - j)
+        m += 1
+        plocal[m, 2] = i / porder
+        plocal[m, 3] = j / porder
+        plocal[m, 4] = k / porder
+        plocal[m, 1] = 1 - (i + j + k) / porder
+    end
+    return plocal
+end
 
 """
     Master

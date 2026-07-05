@@ -20,9 +20,13 @@ with `nothing` fields.
   the element to the left, `f[i, 4]` the element to the right **or**
   `-k` when face `i` lies on boundary `k` (see [`boundary_names`](@ref)).
   Interior faces are listed first, then boundary faces grouped by tag.
-- `t2f :: (nt, 3)` — element-to-face map; local face `j` of element `it` is
-  `abs(t2f[it, j])`, and the sign records whether the face's stored direction
-  matches the element's counterclockwise traversal (`+`) or opposes it (`-`).
+- `t2f :: (nt, 3)` — element-to-face map (unsigned): local face `j` of
+  element `it` is `t2f[it, j]`.
+- `t2o :: (nt, 3)` — orientation code of each local face w.r.t. the face's
+  stored traversal (`1` matching, `2` reversed in 2D; up to 6 codes on
+  tetrahedra), indexing `master.perm[:, s, o]`. Replaces the former sign of
+  `t2f`; meshes constructed with a signed `t2f` and no `t2o` are migrated
+  automatically for one release.
 - `fcurved :: (nf,)`, `tcurved :: (nt,)` — flags marking faces/elements that
   touch a curved boundary (their high-order nodes are projected during
   [`createnodes`](@ref)).
@@ -41,11 +45,12 @@ with `nothing` fields.
 - `boundary_names :: Vector{Symbol}` — names of the boundary tags, in tag
   order (empty when the generator did not attach names).
 """
-struct Mesh{P, T, F, TF, FC, TC, PO, PL, TL, DG, PCG, TCG, ELC, FTF, BN}
+struct Mesh{Dim, P, T, F, TF, TO, FC, TC, PO, PL, TL, DG, PCG, TCG, ELC, FTF, BN}
                      p :: P
                      t :: T
                      f :: F
                    t2f :: TF
+                   t2o :: TO
                fcurved :: FC
                tcurved :: TC
                 porder :: PO
@@ -57,14 +62,39 @@ struct Mesh{P, T, F, TF, FC, TC, PO, PL, TL, DG, PCG, TCG, ELC, FTF, BN}
                  elcon :: ELC
                    f2f :: FTF
         boundary_names :: BN
+
+    function Mesh{Dim}(p::P, t::T, f::F, t2f::TF, t2o::TO, fcurved::FC, tcurved::TC,
+                       porder::PO, plocal::PL, tlocal::TL, dgnodes::DG, pcg::PCG,
+                       tcg::TCG, elcon::ELC, f2f::FTF, boundary_names::BN) where
+                      {Dim, P, T, F, TF, TO, FC, TC, PO, PL, TL, DG, PCG, TCG, ELC, FTF, BN}
+        return new{Dim, P, T, F, TF, TO, FC, TC, PO, PL, TL, DG, PCG, TCG, ELC, FTF, BN}(
+            p, t, f, t2f, t2o, fcurved, tcurved, porder, plocal, tlocal,
+            dgnodes, pcg, tcg, elcon, f2f, boundary_names)
+    end
 end
 
-function Mesh(; p, t, f=nothing, t2f=nothing, fcurved=nothing, tcurved=nothing, porder, plocal, tlocal, dgnodes=nothing, pcg=nothing, tcg=nothing, elcon=nothing, f2f=nothing, boundary_names=Symbol[])
-    return Mesh(p, t, f, t2f, fcurved, tcurved, porder, plocal, tlocal, dgnodes, pcg, tcg, elcon, f2f, boundary_names)
+"""
+    ndims(mesh) -> Int
+
+Spatial dimension of the mesh (the `Dim` type parameter): 2 for triangles,
+3 for tetrahedra.
+"""
+Base.ndims(::Mesh{Dim}) where {Dim} = Dim
+
+function Mesh(; p, t, f=nothing, t2f=nothing, t2o=nothing, fcurved=nothing, tcurved=nothing, porder, plocal, tlocal, dgnodes=nothing, pcg=nothing, tcg=nothing, elcon=nothing, f2f=nothing, boundary_names=Symbol[])
+    # migration path (one release): a signed t2f with no t2o carries the
+    # orientation in its sign — split it into the explicit representation
+    if t2o === nothing && t2f isa AbstractMatrix && any(<(0), t2f)
+        t2o = ifelse.(t2f .< 0, 2, 1)
+        t2f = abs.(t2f)
+    elseif t2o === nothing && t2f isa AbstractMatrix
+        t2o = fill(1, size(t2f))
+    end
+    return Mesh{size(p, 2)}(p, t, f, t2f, t2o, fcurved, tcurved, porder, plocal, tlocal, dgnodes, pcg, tcg, elcon, f2f, boundary_names)
 end
 
 function Mesh(mesh::Mesh; dgnodes=nothing, pcg=nothing, tcg=nothing, elcon=nothing, f2f=nothing, boundary_names=mesh.boundary_names)
-    return Mesh(; mesh.p, mesh.t, mesh.f, mesh.t2f, mesh.fcurved, mesh.tcurved, mesh.porder, mesh.plocal, mesh.tlocal, dgnodes, pcg, tcg, elcon, f2f, boundary_names)
+    return Mesh(; mesh.p, mesh.t, mesh.f, mesh.t2f, mesh.t2o, mesh.fcurved, mesh.tcurved, mesh.porder, mesh.plocal, mesh.tlocal, dgnodes, pcg, tcg, elcon, f2f, boundary_names)
 end
 
 """
@@ -96,7 +126,7 @@ function project_to_boundary(distance_function, x₀, s=0)
     grad = ForwardDiff.gradient(distance_function, x₀)
     
     # If gradient is zero, x₀ is already at a critical point
-    if grad[1] == 0 && grad[2] == 0
+    if iszero(grad)
         return x₀
     else
         # Normalize gradient to get direction vector
@@ -238,21 +268,74 @@ function project_vertex_to_boundary!(mesh::Mesh, distance_functions::Union{Nothi
 end
 
 """
-    mkelcon(t2f, porder)
+    orient_perm(nps, Val(2))          -> (nps, 2)  permutation table
+    orient_perm(face_plocal, Val(3))  -> (nps, 6)  permutation table
+
+Trace-node permutations of one face under each orientation code: an element
+seeing a face with orientation `o` couples its `k`-th local trace node (its
+own canonical face traversal) to the face's global trace node
+`op[k, o]`. In 2D this is the identity and the reversal; in 3D it is built
+constructively from the triangle face element's node barycentrics: `op[k, o]`
+is the canonical face node `m` whose coordinates permuted by the `o`-th
+triangle symmetry match node `k` (`face_plocal[m, σ_o] == face_plocal[k, :]`).
+"""
+orient_perm(nps::Integer, ::Val{2}) = hcat(1:nps, nps:-1:1)
+
+function orient_perm(face_plocal::AbstractMatrix, ::Val{3})
+    nps = size(face_plocal, 1)
+    orients = orientation_permutations(Val(3))
+    op = zeros(Int, nps, length(orients))
+    for (o, σ) in enumerate(orients), k in 1:nps
+        m = findfirst(1:nps) do i
+            all(d -> abs(face_plocal[i, σ[d]] - face_plocal[k, d]) < 1e-8, 1:3)
+        end
+        m === nothing &&
+            error("face node set is not invariant under the triangle symmetry group (orientation $o, node $k)")
+        op[k, o] = m
+    end
+    return op
+end
+
+"""
+    mkelcon(t2f, t2o, porder)
 
 Element-to-global trace-node connectivity `elcon (porder+1, 3, nt)` from the
-signed element-to-face map `t2f`: face `f` owns trace nodes
-`(|f|-1)*(porder+1)+1 : |f|*(porder+1)`, reversed when the element sees the
-face with negative orientation.
+element-to-face map `t2f` and orientation codes `t2o`: face `f` owns trace
+nodes `(f-1)*(porder+1)+1 : f*(porder+1)` in the face's canonical order, and
+each element traverses them through `orient_perm[:, t2o[it, s]]`.
 """
-function mkelcon(t2f, porder)
+function mkelcon(t2f, t2o, porder)
     nps = porder + 1
     nt = size(t2f, 1)
+    op = orient_perm(nps, Val(2))
     elcon = zeros(Int, nps, 3, nt)
     for it in 1:nt
-        for (iface, face) in enumerate(t2f[it, :])
-            global_face_nums = 1 + (abs(face) - 1) * nps : abs(face) * nps
-            elcon[:, iface, it] .= face > 0 ? global_face_nums : reverse(global_face_nums)
+        for iface in axes(t2f, 2)
+            face = t2f[it, iface]
+            base = (face - 1) * nps
+            elcon[:, iface, it] .= base .+ op[:, t2o[it, iface]]
+        end
+    end
+    return elcon
+end
+
+"""
+    mkelcon(t2f, t2o, porder, face_plocal) -> elcon (nps, 4, nt)
+
+3D (tetrahedral) trace connectivity: face `f` owns the `nps =
+(porder+1)(porder+2)/2` trace nodes `(f-1)nps+1 : f*nps` in the face's
+canonical node order (`face_plocal`, the triangle face element's nodes), and
+each element couples through [`orient_perm`](@ref) at its orientation code.
+"""
+function mkelcon(t2f, t2o, porder, face_plocal::AbstractMatrix)
+    nps = size(face_plocal, 1)
+    nt = size(t2f, 1)
+    op = orient_perm(face_plocal, Val(3))
+    elcon = zeros(Int, nps, 4, nt)
+    for it in 1:nt
+        for iface in axes(t2f, 2)
+            base = (t2f[it, iface] - 1) * nps
+            elcon[:, iface, it] .= base .+ op[:, t2o[it, iface]]
         end
     end
     return elcon
@@ -347,7 +430,7 @@ function createnodes(mesh, fd=nothing)
         end
     end
 
-    elcon = mkelcon(mesh.t2f, mesh.porder)
+    elcon = mkelcon(mesh.t2f, mesh.t2o, mesh.porder)
     f2f = mkf2f(mesh.f, mesh.t2f)
     
     # Create and return a new mesh with the same structure but using the computed high-order nodes
@@ -383,7 +466,10 @@ end
 """
     uniref(p, t, nref=1)
 
-Uniformly refine simplicial mesh.
+Uniformly refine a simplicial mesh: each triangle into 4 (edge midpoints),
+each tetrahedron into 8 (Bey's red refinement — 4 corner tets plus the
+interior octahedron split around its **shortest diagonal** for shape
+regularity; Bey, Computing 55, 1995).
 
 # Arguments
 - `p::Matrix{T}`: Nodes as a matrix of size (np, dim)
@@ -392,61 +478,128 @@ Uniformly refine simplicial mesh.
 
 # Returns
 - `p::Matrix{T}`: Refined nodes
-- `t::Matrix{Int}`: Refined triangulation
+- `t::Matrix{Int}`: Refined triangulation (positive orientation preserved)
 """
 function uniref(p::Matrix{T}, t::Matrix{Int}, nref::Int=1) where T <: AbstractFloat
     for _ in 1:nref
-        n = size(p, 1)
-        nt = size(t, 1)
-        
-        # Extract all edges from triangulation
-        pair = zeros(Int, 3*nt, 2)
-        for i in 1:nt
-            pair[i,:] = [t[i,1], t[i,2]]
-            pair[nt+i,:] = [t[i,1], t[i,3]]
-            pair[2*nt+i,:] = [t[i,2], t[i,3]]
-        end
-        
-        # Sort each row
-        for i in 1:size(pair, 1)
-            if pair[i,1] > pair[i,2]
-                pair[i,1], pair[i,2] = pair[i,2], pair[i,1]
-            end
-        end
-        
-        # Find unique edges and their inverse indices
-        unique_pair, pairj = unique_with_inverse(pair)
-        
-        # Calculate midpoints
-        pmid = zeros(T, size(unique_pair, 1), size(p, 2))
-        for i in 1:size(unique_pair, 1)
-            pmid[i,:] = (p[unique_pair[i,1],:] + p[unique_pair[i,2],:]) ./ 2
-        end
-        
-        # Create new triangulation
-        t1 = t[:,1]
-        t2 = t[:,2]
-        t3 = t[:,3]
-        
-        t12 = pairj[1:nt] .+ n
-        t13 = pairj[(nt+1):(2*nt)] .+ n
-        t23 = pairj[(2*nt+1):(3*nt)] .+ n
-        
-        # Construct new triangulation
-        t_new = zeros(Int, 4*nt, 3)
-        for i in 1:nt
-            t_new[i,:] = [t1[i], t12[i], t13[i]]
-            t_new[nt+i,:] = [t12[i], t23[i], t13[i]]
-            t_new[2*nt+i,:] = [t2[i], t23[i], t12[i]]
-            t_new[3*nt+i,:] = [t3[i], t13[i], t23[i]]
-        end
-        
-        # Update points and triangulation
-        p = vcat(p, pmid)
-        t = t_new
+        p, t = size(t, 2) == 3 ? _uniref_tri(p, t) : _uniref_tet(p, t)
     end
-    
     return p, t
+end
+
+function _uniref_tri(p::Matrix{T}, t::Matrix{Int}) where T
+    n = size(p, 1)
+    nt = size(t, 1)
+
+    # Extract all edges from triangulation
+    pair = zeros(Int, 3*nt, 2)
+    for i in 1:nt
+        pair[i,:] = [t[i,1], t[i,2]]
+        pair[nt+i,:] = [t[i,1], t[i,3]]
+        pair[2*nt+i,:] = [t[i,2], t[i,3]]
+    end
+
+    # Sort each row
+    for i in 1:size(pair, 1)
+        if pair[i,1] > pair[i,2]
+            pair[i,1], pair[i,2] = pair[i,2], pair[i,1]
+        end
+    end
+
+    # Find unique edges and their inverse indices
+    unique_pair, pairj = unique_with_inverse(pair)
+
+    # Calculate midpoints
+    pmid = zeros(T, size(unique_pair, 1), size(p, 2))
+    for i in 1:size(unique_pair, 1)
+        pmid[i,:] = (p[unique_pair[i,1],:] + p[unique_pair[i,2],:]) ./ 2
+    end
+
+    # Create new triangulation
+    t1 = t[:,1]
+    t2 = t[:,2]
+    t3 = t[:,3]
+
+    t12 = pairj[1:nt] .+ n
+    t13 = pairj[(nt+1):(2*nt)] .+ n
+    t23 = pairj[(2*nt+1):(3*nt)] .+ n
+
+    # Construct new triangulation
+    t_new = zeros(Int, 4*nt, 3)
+    for i in 1:nt
+        t_new[i,:] = [t1[i], t12[i], t13[i]]
+        t_new[nt+i,:] = [t12[i], t23[i], t13[i]]
+        t_new[2*nt+i,:] = [t2[i], t23[i], t12[i]]
+        t_new[3*nt+i,:] = [t3[i], t13[i], t23[i]]
+    end
+
+    return vcat(p, pmid), t_new
+end
+
+# Bey red refinement 1 → 8: four corner tets plus the interior octahedron of
+# edge midpoints, split into four tets around whichever of its three
+# diagonals is shortest (the choice that bounds the shape-regularity of the
+# refined family).
+function _uniref_tet(p::Matrix{T}, t::Matrix{Int}) where T
+    n = size(p, 1)
+    nt = size(t, 1)
+    edges = ((1, 2), (1, 3), (1, 4), (2, 3), (2, 4), (3, 4))
+
+    pair = zeros(Int, 6*nt, 2)
+    for i in 1:nt, (k, (a, b)) in enumerate(edges)
+        va, vb = t[i, a], t[i, b]
+        pair[(k - 1) * nt + i, 1] = min(va, vb)
+        pair[(k - 1) * nt + i, 2] = max(va, vb)
+    end
+    unique_pair, pairj = unique_with_inverse(pair)
+
+    pmid = zeros(T, size(unique_pair, 1), size(p, 2))
+    for i in 1:size(unique_pair, 1)
+        pmid[i, :] = (p[unique_pair[i, 1], :] + p[unique_pair[i, 2], :]) ./ 2
+    end
+    pnew = vcat(p, pmid)
+
+    # equatorial cycle of the octahedron for each choice of diagonal, as
+    # indices into (m12, m13, m14, m23, m24, m34); opposite midpoint pairs
+    # (the diagonals) are (m12,m34), (m13,m24), (m14,m23)
+    diags = ((1, 6), (2, 5), (3, 4))
+    cycles = ((2, 3, 5, 4), (1, 3, 6, 4), (1, 2, 6, 5))
+
+    t_new = zeros(Int, 8*nt, 4)
+    row = 0
+    for i in 1:nt
+        m = ntuple(k -> n + pairj[(k - 1) * nt + i], 6)   # m12 m13 m14 m23 m24 m34
+        v = ntuple(k -> t[i, k], 4)
+
+        # corner tets
+        corners = ((v[1], m[1], m[2], m[3]),
+                   (m[1], v[2], m[4], m[5]),
+                   (m[2], m[4], v[3], m[6]),
+                   (m[3], m[5], m[6], v[4]))
+
+        # shortest octahedron diagonal
+        len2(a, b) = sum(k -> (pnew[a, k] - pnew[b, k])^2, 1:size(pnew, 2))
+        kbest = argmin([len2(m[d[1]], m[d[2]]) for d in diags])
+        a, b = m[diags[kbest][1]], m[diags[kbest][2]]
+        c = ntuple(j -> m[cycles[kbest][j]], 4)
+        octs = ((a, c[1], c[2], b), (a, c[2], c[3], b),
+                (a, c[3], c[4], b), (a, c[4], c[1], b))
+
+        for tt in (corners..., octs...)
+            row += 1
+            t_new[row, 1] = tt[1]; t_new[row, 2] = tt[2]
+            t_new[row, 3] = tt[3]; t_new[row, 4] = tt[4]
+        end
+    end
+
+    # restore positive orientation (children of the octahedron split may come
+    # out either-handed depending on the diagonal chosen)
+    vols = simpvol(pnew, t_new)
+    for i in findall(<(0), vols)
+        t_new[i, 3], t_new[i, 4] = t_new[i, 4], t_new[i, 3]
+    end
+
+    return pnew, t_new
 end
 
 """
