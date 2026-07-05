@@ -1,7 +1,7 @@
 module Plotting
 
 export
-    meshplot, scaplot, meshplot_curved
+    meshplot, scaplot, meshplot_curved, save_vtk
 
 # The actual implementations live in the TwoDGMakieExt package extension and
 # are loaded automatically once a Makie backend is present. Keeping Makie out
@@ -39,5 +39,22 @@ Plot a curved (isoparametric) mesh, subdividing each element with order
 (e.g. `using CairoMakie`).
 """
 meshplot_curved(args...; kwargs...) = error("meshplot_curved ", _MAKIE_HINT)
+
+"""
+    save_vtk(mesh, u, filename; names=nothing) -> saved file paths
+    save_vtk(sol, filename)
+
+Write a solution as high-order Lagrange VTK cells for ParaView (the 3D
+visualization path, THREED_PLAN D10; works for 2D meshes too). `u` is a
+`(npl, nc, nt)` (or `(npl, nt)` scalar) field; `names` optionally labels the
+components. The solution-object form names components by
+`varnames(sol.prob.equation)`. Curved (isoparametric) elements are written
+with their true high-order geometry, which ParaView renders natively.
+
+Implemented in the `TwoDGWriteVTKExt` package extension: available once
+WriteVTK.jl is loaded (`using TwoDG, WriteVTK`).
+"""
+save_vtk(args...; kwargs...) =
+    error("save_vtk requires WriteVTK.jl. Load it first: `using WriteVTK`.")
 
 end
