@@ -1,62 +1,52 @@
 """
-elemmat_cg computes the elemental stiffness matrix and force vector.
-    pcg:           element node coordinates
-    mesh:         master structure
-    source:       forcing function
-    param:        kappa:   = diffusivity coefficient
-                    c      = convective velocity
-                    s      = source coefficient
-    ae(npl,npl):  local element matrix (npl - nodes perelement)
-    fe(npl):      local element force vector
+    elemmat_cg(pcg, master, source, param) -> (A, F)
+
+Elemental stiffness matrix and force vector of the continuous-Galerkin
+convection-diffusion(-reaction) operator — the per-element reference
+implementation the batched path ([`cg_element_system`](@ref)) is verified
+against. Dimension-generic (triangles and tetrahedra).
+
+- `pcg (npl, Dim)`: element node coordinates
+- `master`: reference element
+- `source`: forcing function, called with the coordinates splatted
+  (`source(x, y)` in 2D, `source(x, y, z)` in 3D)
+- `param`: named tuple with diffusivity `κ`, convective velocity `c`
+  (length `Dim`), and reaction coefficient `s`
+
+Returns the local element matrix `A (npl, npl)` and force vector `F (npl)`.
 """
 function elemmat_cg(pcg, master, source, param)
-    npl = size(pcg, 1)  # Number of nodes per element
-    κ = param.κ
-    c = param.c
-    s = param.s
-    A = zeros(npl, npl)  # Initialize elemental stiffness matrix
-    F = zeros(npl)       # Initialize elemental force vector
+    Dim = ndims(master)
+    npl = size(pcg, 1)
+    κ, c, s = param.κ, param.c, param.s
+
+    A = zeros(npl, npl)
+    F = zeros(npl)
     for k in eachindex(master.gwgh)
-        # Get shape functions and their derivatives at quadrature point k
-        ϕ = master.shap[:, 1, k]     # Shape functions
-        ∂ϕ∂ξ = master.shap[:, 2, k]  # Derivatives w.r.t. ξ (reference coordinate)
-        ∂ϕ∂η = master.shap[:, 3, k]  # Derivatives w.r.t. η (reference coordinate)
-        
-        # Compute Jacobian for mapping between reference and physical elements
-        J = master.shap[:, 2:3, k]' * pcg
-        detJ = det(J)  # Determinant for area/volume scaling
-        invJ = inv(J)  # Inverse Jacobian for gradient transformation
-        
-        # Calculate contributions to the stiffness matrix
-        for i in axes(A, 1), j in axes(A, 2)
-            # Transform derivatives from reference to physical coordinates using chain rule
-            ∂ϕᵢ∂x = ∂ϕ∂ξ[i] * invJ[1, 1] + ∂ϕ∂η[i] * invJ[1, 2]
-            ∂ϕᵢ∂y = ∂ϕ∂ξ[i] * invJ[2, 1] + ∂ϕ∂η[i] * invJ[2, 2]
-            ∂ϕⱼ∂x = ∂ϕ∂ξ[j] * invJ[1, 1] + ∂ϕ∂η[j] * invJ[1, 2]
-            ∂ϕⱼ∂y = ∂ϕ∂ξ[j] * invJ[2, 1] + ∂ϕ∂η[j] * invJ[2, 2]
-            
-            # Pre-compute convective terms with shape functions
-            cxϕⱼ = c[1] * ϕ[j]  # x-component of convection with basis function j
-            cyϕⱼ = c[2] * ϕ[j]  # y-component of convection with basis function j
-            
-            # Add diffusion term: κ∫(∇ϕᵢ·∇ϕⱼ)dΩ
-            A[i, j] += (∂ϕᵢ∂x * ∂ϕⱼ∂x + ∂ϕᵢ∂y * ∂ϕⱼ∂y) * κ * detJ * master.gwgh[k]
-            
-            # Add convection term: -∫(c·∇ϕᵢ)ϕⱼdΩ
-            A[i, j] += -(∂ϕᵢ∂x * cxϕⱼ + ∂ϕᵢ∂y * cyϕⱼ) * detJ * master.gwgh[k]
-            
-            # Add reaction term: s∫(ϕᵢϕⱼ)dΩ
-            A[i, j] += ϕ[i] * ϕ[j] * s * detJ * master.gwgh[k]
+        ϕ = @view master.shap[:, 1, k]
+        dϕ = @view master.shap[:, 2:(Dim + 1), k]   # reference derivatives (npl, Dim)
+
+        # isoparametric map: J[k, d] = ∂x_d/∂ξ_k, invJ[d, k] = ∂ξ_k/∂x_d
+        J = dϕ' * pcg
+        detJ = det(J)
+        invJ = inv(J)
+        ∇ϕ = dϕ * invJ'                             # ∇ϕ[i, d] = ∂ϕᵢ/∂x_d
+        w = detJ * master.gwgh[k]
+
+        # κ∫∇ϕᵢ·∇ϕⱼ  −  ∫(c·∇ϕᵢ)ϕⱼ  +  s∫ϕᵢϕⱼ
+        for j in 1:npl, i in 1:npl
+            diff = 0.0
+            conv = 0.0
+            for d in 1:Dim
+                diff += ∇ϕ[i, d] * ∇ϕ[j, d]
+                conv += ∇ϕ[i, d] * c[d]
+            end
+            A[i, j] += (κ * diff - conv * ϕ[j] + s * ϕ[i] * ϕ[j]) * w
         end
-        
-        # Map quadrature point to physical coordinates for source evaluation
-        gauss_coordinate = vec(master.shap[:, 1, k]' * pcg)
-       
-        # Evaluate source function at current quadrature point
-        f = source(gauss_coordinate...)
-        
-        # Add source contribution to force vector: ∫f·ϕᵢdΩ
-        F .+= master.shap[:, 1, k] .* detJ .* f .* master.gwgh[k]
+
+        # ∫f·ϕᵢ with f at the quadrature point
+        x = vec(ϕ' * pcg)
+        F .+= ϕ .* (w * source(x...))
     end
     return A, F
 end

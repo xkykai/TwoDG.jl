@@ -5,10 +5,12 @@ using LinearAlgebra
     cg_solve(mesh, master, source, param) -> (uh, energy)
 
 Solve the steady convection-diffusion(-reaction) equation with continuous
-Galerkin finite elements and homogeneous Dirichlet boundaries. `mesh` must
-carry the CG numbering (see `cgmesh`); `source(x, y)` is the source term;
-`param` is a named tuple `(; κ, c, s)` with diffusivity `κ`, convective
-velocity `c`, and reaction coefficient `s`.
+Galerkin finite elements and homogeneous Dirichlet boundaries, on triangles
+or tetrahedra. `mesh` must carry the CG numbering (see `cgmesh`); the source
+term is called with the coordinates splatted (`source(x, y)` in 2D,
+`source(x, y, z)` in 3D); `param` is a named tuple `(; κ, c, s)` with
+diffusivity `κ`, convective velocity `c` (length `Dim`), and reaction
+coefficient `s`.
 
 Element matrices are built batched ([`cg_element_system`](@ref)), assembled
 from triplets ([`cg_assemble`](@ref)), and factorized directly: Cholesky

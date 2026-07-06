@@ -1,10 +1,11 @@
 # Batched CG element system + matrix-free Krylov solver on any KA backend
-# (Phase 4 of GPU_PLAN.md). The element integrals of `elemmat_cg` restated as
-# per-element dense algebra over the Geometry module's tables:
+# (Phase 4 of GPU_PLAN.md; dimension-generic since THREED_PLAN Phase F). The
+# element integrals of `elemmat_cg` restated as per-element dense algebra over
+# the Geometry module's tables:
 #
-#   ae = κ (Sx Dxᵀ + Sy Dyᵀ) − (c₁ Sx + c₂ Sy) Φᵀ + s M,   fe = Φ (w .* f(pg))
+#   ae = κ Σ_d S_d D_dᵀ − (Σ_d c_d S_d) Φᵀ + s M,   fe = Φ (w .* f(pg))
 #
-# with Sx/Sy the quadrature+Jacobian-weighted derivative tables, Dx/Dy their
+# with S_d the quadrature+Jacobian-weighted derivative tables, D_d their
 # unweighted counterparts, Φ the shape values and M the element mass matrix.
 # Dirichlet conditions are imposed by *symmetric* elimination (rows and
 # columns), which for the homogeneous data supported here gives the same
@@ -41,6 +42,7 @@ parity tests).
 """
 function cg_element_system(mesh, master, source, param;
                            T::Type{<:AbstractFloat}=Float64, eliminate::Bool=true)
+    Dim = ndims(master)
     κ, c, s = param.κ, param.c, param.s
     npl = size(mesh.plocal, 1)
     nt = size(mesh.tcg, 1)
@@ -52,24 +54,25 @@ function cg_element_system(mesh, master, source, param;
 
     Tg = promote_type(eltype(mesh.pcg), eltype(rt.gwgh))   # geometry precision
     Threads.@threads for e in 1:nt
-        Sd = Array{Tg, 3}(undef, npl, ng, 2)
+        Sd = Array{Tg, 3}(undef, npl, ng, Dim)
         wjac = Vector{Tg}(undef, ng)
-        pg = Matrix{Tg}(undef, ng, 2)
+        pg = Matrix{Tg}(undef, ng, Dim)
         coords = mesh.pcg[mesh.tcg[e, :], :]
 
         # always the isoparametric (per-quad-point) path, matching elemmat_cg
         M = element_geometry!(Sd, wjac, pg, rt, coords; verts=nothing)
 
-        Sx = @view Sd[:, :, 1]
-        Sy = @view Sd[:, :, 2]
-        Dx = Sx ./ wjac'                       # unweighted physical derivatives
-        Dy = Sy ./ wjac'
-        A = κ .* (Sx * Dx' .+ Sy * Dy')        # diffusion
-        A .-= (c[1] .* Sx .+ c[2] .* Sy) * rt.shap'   # convection
-        A .+= s .* M                           # reaction
+        A = s .* M                             # reaction
+        Sc = zeros(Tg, npl, ng)                # Σ_d c_d S_d (convection)
+        for d in 1:Dim
+            Sv = @view Sd[:, :, d]
+            A .+= κ .* (Sv * (Sv ./ wjac')')   # diffusion (D_d = S_d unweighted)
+            iszero(c[d]) || (Sc .+= c[d] .* Sv)
+        end
+        A .-= Sc * rt.shap'
         ae[:, :, e] .= A
 
-        fq = [wjac[g] * source(pg[g, 1], pg[g, 2]) for g in 1:ng]
+        fq = [wjac[g] * source(pg[g, :]...) for g in 1:ng]
         fe[:, e] .= rt.shap * fq
     end
 
@@ -85,16 +88,17 @@ function cg_element_system(mesh, master, source, param;
         end
     end
 
-    symmetric = iszero(c[1]) && iszero(c[2])
+    symmetric = all(iszero, c)
     return ae, fe, dirichlet, symmetric
 end
 
 "Global mask of CG nodes on the (Dirichlet) boundary, from the face list."
 function cg_dirichlet_mask(mesh, master)
+    Dim = ndims(master)
     dirichlet = falses(size(mesh.pcg, 1))
-    for i in findall(<(0), mesh.f[:, 4])
-        el = mesh.f[i, 3]
-        ipl = sum(mesh.t[el, :]) - sum(mesh.f[i, 1:2])
+    for i in findall(<(0), @view mesh.f[:, end])
+        el = mesh.f[i, end - 1]
+        ipl = sum(mesh.t[el, :]) - sum(mesh.f[i, 1:Dim])
         isl = findfirst(==(ipl), mesh.t[el, :])
         dirichlet[mesh.tcg[el, master.perm[:, isl, 1]]] .= true
     end

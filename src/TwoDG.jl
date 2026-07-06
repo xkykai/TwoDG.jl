@@ -41,6 +41,7 @@ export
     inviscid_residual!, viscous_residual!, compute_gradient!,
     # HDG
     localprob, elemmat_hdg, hdg_solve, hdg_postprocess, hdg_parsolve,
+    match_geometry!,
     HDGSystem, hdg_gmres_ka, hdg_parsolve_ka,
     HDGBatch, hdg_local_solves, hdg_recover, hdg_parsolve_batched,
     hdg_direct_batched, hdg_trace_system,
