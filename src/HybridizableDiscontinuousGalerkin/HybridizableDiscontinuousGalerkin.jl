@@ -1,6 +1,7 @@
 module HybridizableDiscontinuousGalerkin
 
-export localprob, elemmat_hdg, hdg_solve, hdg_postprocess, hdg_parsolve
+export localprob, elemmat_hdg, hdg_solve, hdg_postprocess, hdg_parsolve,
+       match_geometry!
 export hdg_ns_step, hdg_ns_solve, hdg_cd_step, hdg_ns_postprocess
 export HDGSystem, hdg_gmres_ka, hdg_parsolve_ka
 export HDGBatch, hdg_local_solves, hdg_recover, hdg_parsolve_batched,

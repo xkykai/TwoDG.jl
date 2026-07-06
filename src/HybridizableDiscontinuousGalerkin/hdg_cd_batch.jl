@@ -10,31 +10,29 @@ Per-element constants of the batched scalar HDG transport step
 `A0 (npl, npl, nt)` and `B0 (npl, nfc + 1, nt)` carry the κ-viscous
 composites and the constant −τ⟨θ̂, ·⟩ trace stabilization; the
 state-dependent convection (volume `u`, trace λ) is added per call.
+Dimension-generic like the NS batch.
 """
 struct HDGCDBatch{T, A2 <: AbstractMatrix{T}, A3 <: AbstractArray{T, 3},
+                  A4 <: AbstractArray{T, 4},
                   I2 <: AbstractMatrix{Int32}, I3 <: AbstractArray{Int32, 3}}
     npl   :: Int
     nps   :: Int
     nfc   :: Int
     nt    :: Int
     ng    :: Int
-    nq1d  :: Int
+    nqf   :: Int
     shap  :: A2
-    sh1d  :: A2
-    shapx :: A3
-    shapy :: A3
+    shf   :: A2
+    shapd :: A4
     M     :: A3
     A0    :: A3
     B0    :: A3
     Hx    :: A3
     Hlam0 :: A3
-    MiE1  :: A3
-    MiE2  :: A3
-    MiCx  :: A3
-    MiCy  :: A3
+    MiE   :: A4
+    MiC   :: A4
     wds   :: A3
-    fn1   :: A3
-    fn2   :: A3
+    fn    :: A4
     perm  :: I2
     elcon :: I3
 end
@@ -42,100 +40,91 @@ end
 Adapt.@adapt_structure HDGCDBatch
 
 Base.eltype(::HDGCDBatch{T}) where {T} = T
+Base.ndims(batch::HDGCDBatch) = size(batch.fn, 2)
 
 function HDGCDBatch(master, mesh, κ, τ; T::Type{<:AbstractFloat}=Float64)
-    nps = master.porder + 1
-    nfc = 3 * nps
+    Dim = ndims(master)
+    nfe = Dim + 1
+    nps = size(master.perm, 1)
+    nfc = nfe * nps
     npl = size(mesh.dgnodes, 1)
     nt = size(mesh.t, 1)
     ng = length(master.gwgh)
-    nq1d = length(master.gw1d)
+    nqf = length(master.face.gwgh)
     ncB = nfc + 1
 
     shap2 = Matrix(master.shap[:, 1, :])
-    sh1d = Matrix(master.sh1d[:, 1, :])
+    shf = Matrix(master.face.shap[:, 1, :])
 
-    shapx = zeros(npl, ng, nt)
-    shapy = zeros(npl, ng, nt)
+    shapd = zeros(npl, ng, Dim, nt)
     M = zeros(npl, npl, nt)
     A0 = zeros(npl, npl, nt)
     B0 = zeros(npl, ncB, nt)
     Hx = zeros(nfc, npl, nt)
     Hlam0 = zeros(nfc, nfc, nt)
-    MiE1 = zeros(npl, nfc, nt)
-    MiE2 = zeros(npl, nfc, nt)
-    MiCx = zeros(npl, npl, nt)
-    MiCy = zeros(npl, npl, nt)
-    wdsb = zeros(nq1d, 3, nt)
-    fn1 = zeros(nq1d, 3, nt)
-    fn2 = zeros(nq1d, 3, nt)
+    MiE = zeros(npl, nfc, Dim, nt)
+    MiC = zeros(npl, npl, Dim, nt)
+    wdsb = zeros(nqf, nfe, nt)
+    fn = zeros(nqf, Dim, nfe, nt)
 
     @views Threads.@threads for it in 1:nt
         dg = mesh.dgnodes[:, :, it]
         vol = hdg_elem_volume(dg, master)
-        shapx[:, :, it] .= vol.shapx
-        shapy[:, :, it] .= vol.shapy
+        shapd[:, :, :, it] .= vol.shapd
         M[:, :, it] .= vol.M
 
-        E1 = zeros(npl, nfc)
-        E2 = zeros(npl, nfc)
-        FN1 = zeros(npl, npl)
-        FN2 = zeros(npl, npl)
+        E = zeros(npl, nfc, Dim)
+        FN = zeros(npl, npl, Dim)
         Fτ = zeros(npl, npl)
         Bλ0 = zeros(npl, nfc)
-        HN1 = zeros(nfc, npl)
-        HN2 = zeros(nfc, npl)
+        HN = zeros(nfc, npl, Dim)
         Hτ = zeros(nfc, npl)
         Hλf0 = zeros(nfc, nfc)
 
-        for s in 1:3
-            ed = hdg_elem_edge(dg, master, s)
+        for s in 1:nfe
+            fc = hdg_elem_face(dg, master, s)
             cols = (s - 1) * nps .+ (1:nps)
-            T0 = facemat(sh1d, ed.wds)
-            Tn1 = facemat(sh1d, ed.wds .* ed.n1)
-            Tn2 = facemat(sh1d, ed.wds .* ed.n2)
-            E1[ed.ps, cols] .+= Tn1
-            E2[ed.ps, cols] .+= Tn2
-            FN1[ed.ps, ed.ps] .+= Tn1
-            FN2[ed.ps, ed.ps] .+= Tn2
-            Fτ[ed.ps, ed.ps] .+= τ .* T0
-            Bλ0[ed.ps, cols] .-= τ .* T0
-            HN1[cols, ed.ps] .+= Tn1
-            HN2[cols, ed.ps] .+= Tn2
-            Hτ[cols, ed.ps] .+= τ .* T0
+            T0 = facemat(shf, fc.wds)
+            for d in 1:Dim
+                Tn = facemat(shf, fc.wds .* fc.n[:, d])
+                E[fc.ps, cols, d] .+= Tn
+                FN[fc.ps, fc.ps, d] .+= Tn
+                HN[cols, fc.ps, d] .+= Tn
+                fn[:, d, s, it] .= fc.n[:, d]
+            end
+            Fτ[fc.ps, fc.ps] .+= τ .* T0
+            Bλ0[fc.ps, cols] .-= τ .* T0
+            Hτ[cols, fc.ps] .+= τ .* T0
             Hλf0[cols, cols] .-= τ .* T0
-            wdsb[:, s, it] .= ed.wds
-            fn1[:, s, it] .= ed.n1
-            fn2[:, s, it] .= ed.n2
+            wdsb[:, s, it] .= fc.wds
         end
 
         MF = cholesky(Symmetric(Matrix(vol.M)))
-        MiCx_ = MF \ Matrix(vol.Cx')
-        MiCy_ = MF \ Matrix(vol.Cy')
-        MiE1_ = MF \ E1
-        MiE2_ = MF \ E2
-        MiE1[:, :, it] .= MiE1_
-        MiE2[:, :, it] .= MiE2_
-        MiCx[:, :, it] .= MiCx_
-        MiCy[:, :, it] .= MiCy_
-
-        G1 = κ .* (vol.Cx' .- FN1)
-        G2 = κ .* (vol.Cy' .- FN2)
-
-        A0[:, :, it] .= Fτ .- (G1 * MiCx_ .+ G2 * MiCy_)
-        B0[:, 1:nfc, it] .= G1 * MiE1_ .+ G2 * MiE2_ .+ Bλ0
-        Hx[:, :, it] .= κ .* (HN1 * MiCx_ .+ HN2 * MiCy_) .+ Hτ
-        Hlam0[:, :, it] .= .-κ .* (HN1 * MiE1_ .+ HN2 * MiE2_) .+ Hλf0
+        A0[:, :, it] .= Fτ
+        B0[:, 1:nfc, it] .= Bλ0
+        Hx[:, :, it] .= Hτ
+        Hlam0[:, :, it] .= Hλf0
+        for d in 1:Dim
+            MiCd = MF \ Matrix(vol.C[:, :, d]')
+            MiEd = MF \ E[:, :, d]
+            MiE[:, :, d, it] .= MiEd
+            MiC[:, :, d, it] .= MiCd
+            Gd = κ .* (vol.C[:, :, d]' .- FN[:, :, d])
+            A0[:, :, it] .-= Gd * MiCd
+            B0[:, 1:nfc, it] .+= Gd * MiEd
+            Hx[:, :, it] .+= κ .* (HN[:, :, d] * MiCd)
+            Hlam0[:, :, it] .-= κ .* (HN[:, :, d] * MiEd)
+        end
     end
 
     perm = Int32.(master.perm[:, :, 1])
     elcon = Int32.(mesh.elcon)
 
-    return HDGCDBatch(npl, nps, nfc, nt, ng, nq1d,
-                      T.(shap2), T.(sh1d), T.(shapx), T.(shapy), T.(M),
+    return HDGCDBatch(npl, nps, nfc, nt, ng, nqf,
+                      T.(shap2), T.(shf), T.(shapd), T.(M),
                       T.(A0), T.(B0), T.(Hx), T.(Hlam0),
-                      T.(MiE1), T.(MiE2), T.(MiCx), T.(MiCy),
-                      T.(wdsb), T.(fn1), T.(fn2), perm, elcon)
+                      T.(MiE), T.(MiC),
+                      T.(wdsb), T.(fn), perm, elcon)
 end
 
 # Scalar trace pattern: BC *types* per face are decided by `tbc` and assumed
@@ -150,8 +139,10 @@ struct HDGCDTracePattern
 end
 
 function HDGCDTracePattern(mesh, master, tbc)
-    nps = mesh.porder + 1
-    nfc = 3 * nps
+    Dim = ndims(master)
+    nfe = Dim + 1
+    nps = size(master.perm, 1)
+    nfc = nfe * nps
     nt = size(mesh.t, 1)
     nf = size(mesh.f, 1)
     ndof = nps * nf
@@ -159,8 +150,8 @@ function HDGCDTracePattern(mesh, master, tbc)
 
     isdbc = falses(ndof)
     for i in 1:nf
-        mesh.f[i, 4] >= 0 && continue
-        tag = -mesh.f[i, 4]
+        mesh.f[i, end] >= 0 && continue
+        tag = -mesh.f[i, end]
         Xq, _, _ = boundary_face_quad(mesh, master, i)
         if tbc(view(Xq, 1, :), tag)[1] == :d
             isdbc[(i - 1) * nps .+ (1:nps)] .= true
@@ -168,7 +159,7 @@ function HDGCDTracePattern(mesh, master, tbc)
     end
 
     gdofs = zeros(Int, nfc, nt)
-    for it in 1:nt, s in 1:3, a in 1:nps
+    for it in 1:nt, s in 1:nfe, a in 1:nps
         gdofs[(s - 1) * nps + a, it] = elcon[a, s, it]
     end
 
@@ -240,26 +231,27 @@ mutable struct HDGCDCache{B <: HDGCDBatch, W}
     τ     :: Float64
 end
 
-function _cd_make_work(backend, T, npl, nfc, ng, nt, nΛ, ndof)
+function _cd_make_work(backend, T, npl, nfc, ng, nt, nΛ, ndof, Dim)
     ncB = nfc + 1
     kz(dims...) = KernelAbstractions.zeros(backend, T, dims...)
-    return (; ug = kz(ng, 2, nt),
-            K1 = kz(npl, npl, nt), K2 = kz(npl, npl, nt),
+    return (; ug = kz(ng, Dim, nt),
+            K = kz(npl, npl, Dim, nt),
             A = kz(npl, npl, nt), B = kz(npl, ncB, nt),
             HxZ = kz(nfc, ncB, nt), Hlam = kz(nfc, nfc, nt),
-            lam = kz(2 * nfc, nt), th = kz(nfc, nt),
-            u_d = kz(npl, 2, nt), θold_d = kz(npl, nt),
+            lam = kz(Dim * nfc, nt), th = kz(nfc, nt),
+            u_d = kz(npl, Dim, nt), θold_d = kz(npl, nt),
             fsrc = kz(npl, nt), rext = kz(npl, nt),
             Λ_d = kz(nΛ), Θ_d = kz(ndof),
-            θn = kz(npl, nt), qn = kz(npl, 2, nt))
+            θn = kz(npl, nt), qn = kz(npl, Dim, nt))
 end
 
 function HDGCDCache(master, mesh, κ, τ, tbc; ArrayT=Array,
                     T::Type{<:AbstractFloat}=Float64)
+    Dim = ndims(master)
     batch_h = HDGCDBatch(master, mesh, κ, τ; T)
 
     npl, ng, nt = batch_h.npl, batch_h.ng, batch_h.nt
-    pgh = zeros(ng, 2, nt)
+    pgh = zeros(ng, Dim, nt)
     wjach = zeros(ng, nt)
     shaph = Matrix(master.shap[:, 1, :])
     @views Threads.@threads for it in 1:nt
@@ -271,9 +263,9 @@ function HDGCDCache(master, mesh, κ, τ, tbc; ArrayT=Array,
     batch = adapt(ArrayT, batch_h)
     pat = HDGCDTracePattern(mesh, master, tbc)
     backend = KernelAbstractions.get_backend(batch.M)
-    nΛ = 2 * batch.nps * size(mesh.f, 1)
+    nΛ = Dim * batch.nps * size(mesh.f, 1)
     work = _cd_make_work(backend, T, batch.npl, batch.nfc, batch.ng, batch.nt,
-                         nΛ, pat.ndof)
+                         nΛ, pat.ndof, Dim)
     return HDGCDCache(batch, pat, work, pgh, wjach, shaph,
                       zeros(length(pat.II)), zeros(pat.ndof), nothing,
                       Float64(κ), Float64(τ))
@@ -302,6 +294,7 @@ function hdg_cd_step_batched(master, mesh, κ, tbc; τ=1.0, u=nothing, Λ=nothin
     end
     batch, work, pat = cache.batch, cache.work, cache.pat
     backend = KernelAbstractions.get_backend(batch.M)
+    Dim = ndims(batch)
     npl, nps, nfc, ng, nt = batch.npl, batch.nps, batch.nfc, batch.ng, batch.nt
     ncB = nfc + 1
 
@@ -325,17 +318,24 @@ function hdg_cd_step_batched(master, mesh, κ, tbc; τ=1.0, u=nothing, Λ=nothin
     end
 
     # device: local systems
-    _ns_quadvel!(backend)(work.ug, batch.shap, work.u_d; ndrange=(ng, 2, nt))
-    _ns_wgemm!(backend)(work.K1, batch.shapx, work.ug, 1, batch.shap; ndrange=(npl, npl, nt))
-    _ns_wgemm!(backend)(work.K2, batch.shapy, work.ug, 2, batch.shap; ndrange=(npl, npl, nt))
-    work.A .= batch.A0 .- work.K1 .- work.K2 .+ T(dtinv) .* batch.M
+    _ns_quadvel!(backend)(work.ug, batch.shap, work.u_d; ndrange=(ng, Dim, nt))
+    for d in 1:Dim
+        _ns_wgemm!(backend)(view(work.K, :, :, d, :),
+                            view(batch.shapd, :, :, d, :), work.ug, d,
+                            batch.shap; ndrange=(npl, npl, nt))
+    end
+    work.A .= batch.A0 .+ T(dtinv) .* batch.M
+    for d in 1:Dim
+        work.A .-= view(work.K, :, :, d, :)
+    end
     copyto!(work.B, batch.B0)
     copyto!(work.Hlam, batch.Hlam0)
-    _ns_gather!(backend)(work.lam, work.Λ_d, batch.elcon, nps; ndrange=(2 * nfc, nt))
+    _ns_gather!(backend)(work.lam, work.Λ_d, batch.elcon, nps, Dim;
+                         ndrange=(Dim * nfc, nt))
     _cd_rhs!(backend)(work.B, batch.M, work.θold_d, work.fsrc, work.rext,
                       T(dtinv), ncB; ndrange=(npl, nt))
-    _cd_faces!(backend)(work.B, work.Hlam, work.lam, batch.sh1d, batch.wds,
-                        batch.fn1, batch.fn2, batch.perm, nps, ncB; ndrange=nt)
+    _cd_faces!(backend)(work.B, work.Hlam, work.lam, batch.shf, batch.wds,
+                        batch.fn, batch.perm, nps, ncB, Val(Dim); ndrange=nt)
     _blusolve!(backend)(work.A, work.B; ndrange=nt)           # B := Z
     _bgemm_nn!(backend)(work.HxZ, batch.Hx, work.B, one(T), zero(T);
                         ndrange=(nfc, ncB, nt))
@@ -348,18 +348,18 @@ function hdg_cd_step_batched(master, mesh, κ, tbc; τ=1.0, u=nothing, Λ=nothin
     # host: BC data (Dirichlet L2 projection / prescribed-flux lift) + solve
     gvals = zeros(pat.ndof)
     nrhs = zeros(pat.ndof)
-    sh1d = @view master.sh1d[:, 1, :]
+    shf = @view master.face.shap[:, 1, :]
     for i in axes(mesh.f, 1)
-        mesh.f[i, 4] >= 0 && continue
-        tag = -mesh.f[i, 4]
+        mesh.f[i, end] >= 0 && continue
+        tag = -mesh.f[i, end]
         Xq, wds, Tm = boundary_face_quad(mesh, master, i)
         bc = [tbc(view(Xq, g, :), tag) for g in axes(Xq, 1)]
         vals = Float64[b[2] for b in bc]
         if bc[1][1] == :d
-            gproj = Tm \ (sh1d * (wds .* vals))
+            gproj = Tm \ (shf * (wds .* vals))
             gvals[(i - 1) * nps .+ (1:nps)] .= gproj
         else
-            nrhs[(i - 1) * nps .+ (1:nps)] .+= sh1d * (wds .* vals)
+            nrhs[(i - 1) * nps .+ (1:nps)] .+= shf * (wds .* vals)
         end
     end
     cd_trace_fill!(cache.VV, cache.rhs, pat, Kes, res, gvals, nrhs)
@@ -375,8 +375,8 @@ function hdg_cd_step_batched(master, mesh, κ, tbc; τ=1.0, u=nothing, Λ=nothin
     copyto!(work.Θ_d, T.(Θ))
     _cd_gather!(backend)(work.th, work.Θ_d, batch.elcon, nps; ndrange=(nfc, nt))
     _cd_recover!(backend)(work.θn, work.B, work.th, ncB; ndrange=(npl, nt))
-    _cd_gradq!(backend)(work.qn, batch.MiE1, batch.MiE2, batch.MiCx,
-                        batch.MiCy, work.th, work.θn; ndrange=(npl, nt))
+    _cd_gradq!(backend)(work.qn, batch.MiE, batch.MiC, work.th, work.θn;
+                        ndrange=(npl, nt))
     KernelAbstractions.synchronize(backend)
 
     θn = Float64.(Array(work.θn))

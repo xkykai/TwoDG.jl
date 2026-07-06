@@ -13,44 +13,47 @@
 struct HDGNSTracePattern
     II    :: Vector{Int}
     JJ    :: Vector{Int}
-    gdofs :: Matrix{Int}     # (2nfc, nt)
+    gdofs :: Matrix{Int}     # (Dim·nfc, nt)
     isdbc :: BitVector
     ndof  :: Int
     nΛ    :: Int
 end
 
 function HDGNSTracePattern(mesh)
-    nps = mesh.porder + 1
-    nfc = 3 * nps
+    Dim = size(mesh.t, 2) - 1
+    nfe = Dim + 1
+    nps = size(mesh.elcon, 1)
+    nfc = nfe * nps
     nt = size(mesh.t, 1)
     nf = size(mesh.f, 1)
-    nΛ = 2 * nps * nf
+    nΛ = Dim * nps * nf
     ndof = nΛ + nt
     elcon = mesh.elcon
 
     isdbc = falses(ndof)
     for i in 1:nf
-        mesh.f[i, 4] >= 0 && continue
-        for k in 1:nps, c in 1:2
-            isdbc[2 * ((i - 1) * nps + k - 1) + c] = true
+        mesh.f[i, end] >= 0 && continue
+        for k in 1:nps, c in 1:Dim
+            isdbc[Dim * ((i - 1) * nps + k - 1) + c] = true
         end
     end
 
-    gdofs = zeros(Int, 2 * nfc, nt)
-    for it in 1:nt, s in 1:3, a in 1:nps
+    gdofs = zeros(Int, Dim * nfc, nt)
+    for it in 1:nt, s in 1:nfe, a in 1:nps
         ℓ = (s - 1) * nps + a
-        gdofs[ℓ, it] = 2 * elcon[a, s, it] - 1
-        gdofs[nfc + ℓ, it] = 2 * elcon[a, s, it]
+        for c in 1:Dim
+            gdofs[(c - 1) * nfc + ℓ, it] = Dim * (elcon[a, s, it] - 1) + c
+        end
     end
 
     II = Int[]
     JJ = Int[]
-    sizehint!(II, nt * (2 * nfc + 2)^2)
-    sizehint!(JJ, nt * (2 * nfc + 2)^2)
+    sizehint!(II, nt * (Dim * nfc + 2)^2)
+    sizehint!(JJ, nt * (Dim * nfc + 2)^2)
     for it in 1:nt
-        for jl in 1:2*nfc
+        for jl in 1:(Dim * nfc)
             gj = gdofs[jl, it]
-            for il in 1:2*nfc
+            for il in 1:(Dim * nfc)
                 gi = gdofs[il, it]
                 isdbc[gi] && continue
                 push!(II, gi); push!(JJ, gj)
@@ -59,7 +62,7 @@ function HDGNSTracePattern(mesh)
                 push!(II, nΛ + it); push!(JJ, gj)
             end
         end
-        for il in 1:2*nfc
+        for il in 1:(Dim * nfc)
             gi = gdofs[il, it]
             isdbc[gi] && continue
             push!(II, gi); push!(JJ, nΛ + it)
@@ -126,7 +129,7 @@ mutable struct HDGNSCache{B <: HDGNSBatch, W}
     work  :: W
     crowh :: Matrix{Float64}
     areah :: Vector{Float64}
-    pgh   :: Array{Float64, 3}    # (ng, 2, nt) quad coords for function sources
+    pgh   :: Array{Float64, 3}    # (ng, Dim, nt) quad coords for function sources
     wjach :: Matrix{Float64}      # (ng, nt)
     shaph :: Matrix{Float64}      # (npl, ng)
     VV    :: Vector{Float64}
@@ -136,29 +139,29 @@ mutable struct HDGNSCache{B <: HDGNSBatch, W}
     τ     :: Float64
 end
 
-function _ns_make_work(backend, T, npl, nps, nfc, ng, nt, nΛ)
-    nv = 3 * npl
-    ncB = 2 * nfc + 2
+function _ns_make_work(backend, T, npl, nfc, ng, nt, nΛ, Dim)
+    nv = (Dim + 1) * npl
+    ncB = Dim * nfc + 2
     kz(dims...) = KernelAbstractions.zeros(backend, T, dims...)
-    return (; ug = kz(ng, 2, nt),
-            X1 = kz(npl, npl, nt), X2 = kz(npl, npl, nt),
-            Y1 = kz(npl, npl, nt), Y2 = kz(npl, npl, nt),
+    return (; ug = kz(ng, Dim, nt),
+            X = kz(npl, npl, Dim, Dim, nt),
             A = kz(nv, nv, nt), Bhat = kz(nv, ncB, nt),
-            HxZ = kz(2 * nfc, ncB, nt), Hlam = kz(2 * nfc, 2 * nfc, nt),
-            rH = kz(2 * nfc, nt), lam = kz(2 * nfc, nt),
-            u_d = kz(npl, 2, nt), fsrc = kz(npl, 2, nt),
-            uold_d = kz(npl, 2, nt), rext = kz(npl, 2, nt),
+            HxZ = kz(Dim * nfc, ncB, nt), Hlam = kz(Dim * nfc, Dim * nfc, nt),
+            rH = kz(Dim * nfc, nt), lam = kz(Dim * nfc, nt),
+            u_d = kz(npl, Dim, nt), fsrc = kz(npl, Dim, nt),
+            uold_d = kz(npl, Dim, nt), rext = kz(npl, Dim, nt),
             Λ_d = kz(nΛ), ρ_d = kz(nt),
-            un = kz(npl, 2, nt), pn = kz(npl, nt), Ln = kz(npl, 4, nt))
+            un = kz(npl, Dim, nt), pn = kz(npl, nt), Ln = kz(npl, Dim * Dim, nt))
 end
 
 function HDGNSCache(master, mesh, ν, τ; ArrayT=Array, T::Type{<:AbstractFloat}=Float64)
+    Dim = ndims(master)
     batch_h = HDGNSBatch(master, mesh, ν, τ; T)
     crowh = Float64.(batch_h.crow)
     areah = Float64.(batch_h.area)
 
     npl, ng, nt = batch_h.npl, batch_h.ng, batch_h.nt
-    pgh = zeros(ng, 2, nt)
+    pgh = zeros(ng, Dim, nt)
     wjach = zeros(ng, nt)
     shaph = Matrix(master.shap[:, 1, :])
     @views Threads.@threads for it in 1:nt
@@ -170,9 +173,9 @@ function HDGNSCache(master, mesh, ν, τ; ArrayT=Array, T::Type{<:AbstractFloat}
     batch = adapt(ArrayT, batch_h)
     pat = HDGNSTracePattern(mesh)
     backend = KernelAbstractions.get_backend(batch.M)
-    nΛ = 2 * batch.nps * size(mesh.f, 1)
-    work = _ns_make_work(backend, T, batch.npl, batch.nps, batch.nfc, batch.ng,
-                         batch.nt, nΛ)
+    nΛ = Dim * batch.nps * size(mesh.f, 1)
+    work = _ns_make_work(backend, T, batch.npl, batch.nfc, batch.ng,
+                         batch.nt, nΛ, Dim)
     return HDGNSCache(batch, pat, work, crowh, areah, pgh, wjach, shaph,
                       zeros(length(pat.II)), zeros(pat.ndof), nothing,
                       Float64(ν), Float64(τ))
@@ -181,15 +184,16 @@ end
 # Dirichlet trace DOFs: λ = P_∂g, the face L2 projection of the data (same as
 # hdg_ns_step).
 function _ns_dirichlet_gvals!(gvals, mesh, master, dbc, nps)
-    sh1d = @view master.sh1d[:, 1, :]
+    Dim = ndims(master)
+    shf = @view master.face.shap[:, 1, :]
     for i in axes(mesh.f, 1)
-        mesh.f[i, 4] >= 0 && continue
+        mesh.f[i, end] >= 0 && continue
         Xq, wds, Tm = boundary_face_quad(mesh, master, i)
         gq = reduce(hcat, dbc(view(Xq, g, :)) for g in axes(Xq, 1))
-        for c in 1:2
-            gproj = Tm \ (sh1d * (wds .* gq[c, :]))
+        for c in 1:Dim
+            gproj = Tm \ (shf * (wds .* gq[c, :]))
             for k in 1:nps
-                gvals[2 * ((i - 1) * nps + k - 1) + c] = gproj[k]
+                gvals[Dim * ((i - 1) * nps + k - 1) + c] = gproj[k]
             end
         end
     end
@@ -205,7 +209,8 @@ Batched/KA counterpart of [`hdg_ns_step`](@ref) (same arguments, same returned
 fields plus `cache`): the per-element Newton assembly, local solves and
 (u, p, L) recovery run on the backend of `ArrayT` (e.g. `CuArray`); the
 condensed trace saddle-point system is solved on the CPU with a sparse LU
-whose sparsity pattern and factorization are reused across calls.
+whose sparsity pattern and factorization are reused across calls. Works on
+triangles and tetrahedra alike.
 
 Pass the returned `cache` back in on subsequent calls (same `master`, `mesh`,
 `ν`, `τ`) to skip all setup and reuse the factorization.
@@ -222,9 +227,10 @@ function hdg_ns_step_batched(master, mesh, ν, dbc; τ=1.0, source=nothing,
     end
     batch, work, pat = cache.batch, cache.work, cache.pat
     backend = KernelAbstractions.get_backend(batch.M)
+    Dim = ndims(batch)
     npl, nps, nfc, ng, nt = batch.npl, batch.nps, batch.nfc, batch.ng, batch.nt
-    nv = 3 * npl
-    ncB = 2 * nfc + 2
+    nv = (Dim + 1) * npl
+    ncB = Dim * nfc + 2
     nΛ = pat.nΛ
 
     # state and sources to the device
@@ -236,11 +242,12 @@ function hdg_ns_step_batched(master, mesh, ν, dbc; τ=1.0, source=nothing,
         fill!(work.rext, zero(T))
     elseif source isa Function
         fill!(work.fsrc, zero(T))
-        rext = zeros(npl, 2, nt)
+        rext = zeros(npl, Dim, nt)
         @views Threads.@threads for it in 1:nt
             fg = reduce(hcat, source(cache.pgh[g, :, it]) for g in 1:ng)
-            rext[:, 1, it] .= cache.shaph * (cache.wjach[:, it] .* fg[1, :])
-            rext[:, 2, it] .= cache.shaph * (cache.wjach[:, it] .* fg[2, :])
+            for c in 1:Dim
+                rext[:, c, it] .= cache.shaph * (cache.wjach[:, it] .* fg[c, :])
+            end
         end
         copyto!(work.rext, T.(rext))
     else
@@ -249,27 +256,29 @@ function hdg_ns_step_batched(master, mesh, ν, dbc; τ=1.0, source=nothing,
     end
 
     # device: Newton-linearized local systems + static condensation
-    _ns_quadvel!(backend)(work.ug, batch.shap, work.u_d; ndrange=(ng, 2, nt))
-    _ns_wgemm!(backend)(work.X1, batch.shapx, work.ug, 1, batch.shap; ndrange=(npl, npl, nt))
-    _ns_wgemm!(backend)(work.X2, batch.shapx, work.ug, 2, batch.shap; ndrange=(npl, npl, nt))
-    _ns_wgemm!(backend)(work.Y1, batch.shapy, work.ug, 1, batch.shap; ndrange=(npl, npl, nt))
-    _ns_wgemm!(backend)(work.Y2, batch.shapy, work.ug, 2, batch.shap; ndrange=(npl, npl, nt))
-    _ns_assemble_A!(backend)(work.A, batch.A0, work.X1, work.X2, work.Y1,
-                             work.Y2, batch.M, T(dtinv), npl; ndrange=(nv, nv, nt))
+    _ns_quadvel!(backend)(work.ug, batch.shap, work.u_d; ndrange=(ng, Dim, nt))
+    for d in 1:Dim, c in 1:Dim
+        _ns_wgemm!(backend)(view(work.X, :, :, d, c, :),
+                            view(batch.shapd, :, :, d, :), work.ug, c,
+                            batch.shap; ndrange=(npl, npl, nt))
+    end
+    _ns_assemble_A!(backend)(work.A, batch.A0, work.X, batch.M, T(dtinv), npl;
+                             ndrange=(nv, nv, nt))
     copyto!(work.Bhat, batch.Bhat0)
     copyto!(work.Hlam, batch.Hlam0)
     fill!(work.rH, zero(T))
-    _ns_gather!(backend)(work.lam, work.Λ_d, batch.elcon, nps; ndrange=(2 * nfc, nt))
-    _ns_rhs!(backend)(work.Bhat, batch.shapx, batch.shapy, work.ug, batch.M,
-                      work.fsrc, work.uold_d, work.rext, T(dtinv), npl, ncB;
-                      ndrange=(npl, 2, nt))
-    _ns_faces!(backend)(work.Bhat, work.Hlam, work.rH, work.lam, batch.sh1d,
-                        batch.wds, batch.fn1, batch.fn2, batch.perm, npl, nps,
-                        ncB; ndrange=nt)
+    _ns_gather!(backend)(work.lam, work.Λ_d, batch.elcon, nps, Dim;
+                         ndrange=(Dim * nfc, nt))
+    _ns_rhs!(backend)(work.Bhat, batch.shapd, work.ug, batch.M, work.fsrc,
+                      work.uold_d, work.rext, T(dtinv), npl, ncB;
+                      ndrange=(npl, Dim, nt))
+    _ns_faces!(backend)(work.Bhat, work.Hlam, work.rH, work.lam, batch.shf,
+                        batch.wds, batch.fn, batch.perm, npl, nps, ncB,
+                        Val(Dim); ndrange=nt)
     _blusolve!(backend)(work.A, work.Bhat; ndrange=nt)        # Bhat := Z
     _bgemm_nn!(backend)(work.HxZ, batch.Hx, work.Bhat, one(T), zero(T);
-                        ndrange=(2 * nfc, ncB, nt))
-    work.Hlam .-= view(work.HxZ, :, 1:2*nfc, :)               # Ke
+                        ndrange=(Dim * nfc, ncB, nt))
+    work.Hlam .-= view(work.HxZ, :, 1:(Dim * nfc), :)         # Ke
     work.rH .-= view(work.HxZ, :, ncB, :)                     # re
     KernelAbstractions.synchronize(backend)
 
@@ -296,11 +305,12 @@ function hdg_ns_step_batched(master, mesh, ν, dbc; τ=1.0, source=nothing,
     # device: batched recovery of (u, p, L)
     copyto!(work.Λ_d, T.(Λn))
     copyto!(work.ρ_d, T.(ρ))
-    _ns_gather!(backend)(work.lam, work.Λ_d, batch.elcon, nps; ndrange=(2 * nfc, nt))
+    _ns_gather!(backend)(work.lam, work.Λ_d, batch.elcon, nps, Dim;
+                         ndrange=(Dim * nfc, nt))
     _ns_recover!(backend)(work.un, work.pn, work.Bhat, work.lam, work.ρ_d, npl,
                           ncB; ndrange=(nv, nt))
-    _ns_gradient!(backend)(work.Ln, batch.MiE1, batch.MiE2, batch.MiCx,
-                           batch.MiCy, work.lam, work.un, nfc; ndrange=(npl, nt))
+    _ns_gradient!(backend)(work.Ln, batch.MiE, batch.MiC, work.lam, work.un,
+                           nfc; ndrange=(npl, nt))
     KernelAbstractions.synchronize(backend)
 
     un = Float64.(Array(work.un))
@@ -311,4 +321,3 @@ function hdg_ns_step_batched(master, mesh, ν, dbc; τ=1.0, source=nothing,
 
     return (u=un, gradu=Ln, p=pn, Λ=Λn, ρ=ρ, cache=cache)
 end
-

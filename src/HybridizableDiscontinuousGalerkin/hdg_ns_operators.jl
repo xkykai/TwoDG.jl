@@ -1,10 +1,10 @@
 # Batched HDG Navier-Stokes and scalar-transport assembly on any KA backend
-# (Phase 5 of GPU_PLAN.md). The per-element math of `hdg_ns_elemmat` /
-# `hdg_cd_elemmat` splits into
+# (Phase 5 of GPU_PLAN.md; dimension-generic since THREED_PLAN Phase E3).
+# The per-element math of `hdg_ns_elemmat` / `hdg_cd_elemmat` splits into
 #
-#   - geometry × (ν, τ) constants (mass, coupling, edge lifts and the
+#   - geometry × (ν, τ) constants (mass, coupling, face lifts and the
 #     eliminated-gradient viscous composites Avisc/Bvisc/Hvisc/Hλvisc),
-#     built once on the CPU with the same helpers the legacy path uses; and
+#     built once on the CPU with the same helpers the reference path uses; and
 #   - the Newton-/state-varying convection linearization (volume terms from
 #     `u` at the volume quadrature points, trace terms from λ at the face
 #     quadrature points), rebuilt each call as KA kernels + one batched
@@ -54,52 +54,50 @@ end
 
 Per-element constant operator matrices of the batched HDG Navier-Stokes
 Newton step, built once on the CPU (all fields plain arrays,
-`Adapt.@adapt_structure`). With `npl` volume nodes, `nps = porder + 1` face
-nodes per edge, `nfc = 3nps`, the local solve size `nv = 3npl` (u1, u2, p)
-and `ncB = 2nfc + 2` right-hand-side columns (trace columns + bρ + r):
+`Adapt.@adapt_structure`). Dimension-generic: with `npl` volume nodes, `nps`
+face nodes per face, `nfc = (Dim+1) nps`, the local solve size
+`nv = (Dim+1) npl` (u₁, …, u_Dim, p) and `ncB = Dim·nfc + 2`
+right-hand-side columns (trace columns + bρ + r):
 
-- `shap (npl, ng)`, `sh1d (nps, nq1d)`: shared shape values at quadrature.
-- `shapx/shapy (npl, ng, nt)`: weighted physical derivative matrices.
+- `shap (npl, ng)`, `shf (nps, nqf)`: shared shape values at quadrature.
+- `shapd (npl, ng, Dim, nt)`: weighted physical derivative tables.
 - `M (npl, npl, nt)`: element mass (the `dtinv·M` term is added per call).
 - `A0 (nv, nv, nt)`: constant part of the local Newton matrix, including the
   viscous composite and the mean-pressure gauge row.
 - `Bhat0 (nv, ncB, nt)`: constant part of the local RHS block `[B | bρ | r]`
   (`r` column zero).
-- `Hx (2nfc, nv, nt)`, `Hlam0 (2nfc, 2nfc, nt)`: flux-continuity test blocks
-  (fully constant, resp. constant part).
-- `MiE1/MiE2 (npl, nfc, nt)`, `MiCx/MiCy (npl, npl, nt)`: gradient-recovery
-  maps `M⁻¹E_j`, `M⁻¹C_jᵀ`.
-- `wds/fn1/fn2 (nq1d, 3, nt)`: face quadrature measure and unit normal.
-- `perm (nps, 3)`, `elcon (nps, 3, nt)` (`Int32`): edge-to-volume node map
-  and global face-node connectivity.
-- `crow (2nfc, nt)`, `area (nt)`: compatibility row and element area
+- `Hx (Dim·nfc, nv, nt)`, `Hlam0 (Dim·nfc, Dim·nfc, nt)`: flux-continuity
+  test blocks (fully constant, resp. constant part).
+- `MiE (npl, nfc, Dim, nt)`, `MiC (npl, npl, Dim, nt)`: gradient-recovery
+  maps `M⁻¹E_d`, `M⁻¹C_dᵀ`.
+- `wds (nqf, Dim+1, nt)`, `fn (nqf, Dim, Dim+1, nt)`: face quadrature
+  measure and unit normal per local face.
+- `perm (nps, Dim+1)`, `elcon (nps, Dim+1, nt)` (`Int32`): face-to-volume
+  node map and global face-node connectivity.
+- `crow (Dim·nfc, nt)`, `area (nt)`: compatibility row and element measure
   (consumed on the host during global assembly).
 """
 struct HDGNSBatch{T, A1 <: AbstractVector{T}, A2 <: AbstractMatrix{T},
-                  A3 <: AbstractArray{T, 3}, I2 <: AbstractMatrix{Int32},
-                  I3 <: AbstractArray{Int32, 3}}
+                  A3 <: AbstractArray{T, 3}, A4 <: AbstractArray{T, 4},
+                  I2 <: AbstractMatrix{Int32}, I3 <: AbstractArray{Int32, 3}}
     npl   :: Int
     nps   :: Int
     nfc   :: Int
     nt    :: Int
     ng    :: Int
-    nq1d  :: Int
+    nqf   :: Int
     shap  :: A2
-    sh1d  :: A2
-    shapx :: A3
-    shapy :: A3
+    shf   :: A2
+    shapd :: A4
     M     :: A3
     A0    :: A3
     Bhat0 :: A3
     Hx    :: A3
     Hlam0 :: A3
-    MiE1  :: A3
-    MiE2  :: A3
-    MiCx  :: A3
-    MiCy  :: A3
+    MiE   :: A4
+    MiC   :: A4
     wds   :: A3
-    fn1   :: A3
-    fn2   :: A3
+    fn    :: A4
     crow  :: A2
     area  :: A1
     perm  :: I2
@@ -109,133 +107,115 @@ end
 Adapt.@adapt_structure HDGNSBatch
 
 Base.eltype(::HDGNSBatch{T}) where {T} = T
+Base.ndims(batch::HDGNSBatch) = size(batch.fn, 2)
 
 function HDGNSBatch(master, mesh, ν, τ; T::Type{<:AbstractFloat}=Float64)
-    nps = master.porder + 1
-    nfc = 3 * nps
+    Dim = ndims(master)
+    nfe = Dim + 1
+    nps = size(master.perm, 1)
+    nfc = nfe * nps
     npl = size(mesh.dgnodes, 1)
     nt = size(mesh.t, 1)
     ng = length(master.gwgh)
-    nq1d = length(master.gw1d)
-    nv = 3 * npl
-    ncB = 2 * nfc + 2
+    nqf = length(master.face.gwgh)
+    nv = (Dim + 1) * npl
+    ncB = Dim * nfc + 2
 
     shap2 = Matrix(master.shap[:, 1, :])
-    sh1d = Matrix(master.sh1d[:, 1, :])
+    shf = Matrix(master.face.shap[:, 1, :])
 
-    shapx = zeros(npl, ng, nt)
-    shapy = zeros(npl, ng, nt)
+    shapd = zeros(npl, ng, Dim, nt)
     M = zeros(npl, npl, nt)
     A0 = zeros(nv, nv, nt)
     Bhat0 = zeros(nv, ncB, nt)
-    Hx = zeros(2 * nfc, nv, nt)
-    Hlam0 = zeros(2 * nfc, 2 * nfc, nt)
-    MiE1 = zeros(npl, nfc, nt)
-    MiE2 = zeros(npl, nfc, nt)
-    MiCx = zeros(npl, npl, nt)
-    MiCy = zeros(npl, npl, nt)
-    wdsb = zeros(nq1d, 3, nt)
-    fn1 = zeros(nq1d, 3, nt)
-    fn2 = zeros(nq1d, 3, nt)
-    crow = zeros(2 * nfc, nt)
+    Hx = zeros(Dim * nfc, nv, nt)
+    Hlam0 = zeros(Dim * nfc, Dim * nfc, nt)
+    MiE = zeros(npl, nfc, Dim, nt)
+    MiC = zeros(npl, npl, Dim, nt)
+    wdsb = zeros(nqf, nfe, nt)
+    fn = zeros(nqf, Dim, nfe, nt)
+    crow = zeros(Dim * nfc, nt)
     area = zeros(nt)
 
-    iu1, iu2, ip = 1:npl, npl .+ (1:npl), 2npl .+ (1:npl)
-    j1, j2 = 1:nfc, nfc .+ (1:nfc)
-    icp = 2npl + 1
+    iu = ntuple(c -> (c - 1) * npl .+ (1:npl), Dim)
+    ip = Dim * npl .+ (1:npl)
+    jλ = ntuple(c -> (c - 1) * nfc .+ (1:nfc), Dim)
+    icp = Dim * npl + 1
 
     @views Threads.@threads for it in 1:nt
         dg = mesh.dgnodes[:, :, it]
         vol = hdg_elem_volume(dg, master)
-        shapx[:, :, it] .= vol.shapx
-        shapy[:, :, it] .= vol.shapy
+        shapd[:, :, :, it] .= vol.shapd
         M[:, :, it] .= vol.M
         area[it] = sum(vol.wjac)
 
-        E1 = zeros(npl, nfc)
-        E2 = zeros(npl, nfc)
-        FN1 = zeros(npl, npl)
-        FN2 = zeros(npl, npl)
+        E = zeros(npl, nfc, Dim)
+        FN = zeros(npl, npl, Dim)
         Fτ = zeros(npl, npl)
         Eτ = zeros(npl, nfc)
-        HN1 = zeros(nfc, npl)
-        HN2 = zeros(nfc, npl)
+        HN = zeros(nfc, npl, Dim)
         Hτ = zeros(nfc, npl)
         Hλτ = zeros(nfc, nfc)
 
-        for s in 1:3
-            ed = hdg_elem_edge(dg, master, s)
+        for s in 1:nfe
+            fc = hdg_elem_face(dg, master, s)
             cols = (s - 1) * nps .+ (1:nps)
-            T0 = facemat(sh1d, ed.wds)
-            Tn1 = facemat(sh1d, ed.wds .* ed.n1)
-            Tn2 = facemat(sh1d, ed.wds .* ed.n2)
-            E1[ed.ps, cols] .+= Tn1
-            E2[ed.ps, cols] .+= Tn2
-            FN1[ed.ps, ed.ps] .+= Tn1
-            FN2[ed.ps, ed.ps] .+= Tn2
-            Fτ[ed.ps, ed.ps] .+= τ .* T0
-            Eτ[ed.ps, cols] .+= τ .* T0
-            HN1[cols, ed.ps] .+= Tn1
-            HN2[cols, ed.ps] .+= Tn2
-            Hτ[cols, ed.ps] .+= τ .* T0
+            T0 = facemat(shf, fc.wds)
+            for d in 1:Dim
+                Tn = facemat(shf, fc.wds .* fc.n[:, d])
+                E[fc.ps, cols, d] .+= Tn
+                FN[fc.ps, fc.ps, d] .+= Tn
+                HN[cols, fc.ps, d] .+= Tn
+                crow[(d - 1) * nfc .+ cols, it] .+= shf * (fc.wds .* fc.n[:, d])
+                fn[:, d, s, it] .= fc.n[:, d]
+            end
+            Fτ[fc.ps, fc.ps] .+= τ .* T0
+            Eτ[fc.ps, cols] .+= τ .* T0
+            Hτ[cols, fc.ps] .+= τ .* T0
             Hλτ[cols, cols] .+= τ .* T0
-            crow[cols, it] .+= sh1d * (ed.wds .* ed.n1)
-            crow[nfc .+ cols, it] .+= sh1d * (ed.wds .* ed.n2)
-            wdsb[:, s, it] .= ed.wds
-            fn1[:, s, it] .= ed.n1
-            fn2[:, s, it] .= ed.n2
+            wdsb[:, s, it] .= fc.wds
         end
 
         MF = cholesky(Symmetric(Matrix(vol.M)))
-        MiCx_ = MF \ Matrix(vol.Cx')
-        MiCy_ = MF \ Matrix(vol.Cy')
-        MiE1_ = MF \ E1
-        MiE2_ = MF \ E2
-        MiE1[:, :, it] .= MiE1_
-        MiE2[:, :, it] .= MiE2_
-        MiCx[:, :, it] .= MiCx_
-        MiCy[:, :, it] .= MiCy_
+        Avisc = zeros(npl, npl)
+        Bvisc = zeros(npl, nfc)
+        Hvisc = zeros(nfc, npl)
+        Hλvisc = zeros(nfc, nfc)
+        for d in 1:Dim
+            MiCd = MF \ Matrix(vol.C[:, :, d]')
+            MiEd = MF \ E[:, :, d]
+            MiE[:, :, d, it] .= MiEd
+            MiC[:, :, d, it] .= MiCd
+            Gd = ν .* (vol.C[:, :, d]' .- FN[:, :, d])
+            Avisc .-= Gd * MiCd
+            Bvisc .+= Gd * MiEd
+            Hvisc .+= ν .* (HN[:, :, d] * MiCd)
+            Hλvisc .-= ν .* (HN[:, :, d] * MiEd)
+        end
 
-        G1 = ν .* (vol.Cx' .- FN1)
-        G2 = ν .* (vol.Cy' .- FN2)
-        Avisc = .-(G1 * MiCx_ .+ G2 * MiCy_)
-        Bvisc = G1 * MiE1_ .+ G2 * MiE2_
-        Hvisc = ν .* (HN1 * MiCx_ .+ HN2 * MiCy_)
-        Hλvisc = .-ν .* (HN1 * MiE1_ .+ HN2 * MiE2_)
-
-        A0[iu1, iu1, it] .= Avisc .+ Fτ
-        A0[iu2, iu2, it] .= Avisc .+ Fτ
-        A0[iu1, ip, it] .= .-vol.Cx' .+ FN1
-        A0[iu2, ip, it] .= .-vol.Cy' .+ FN2
-        A0[ip, iu1, it] .= .-vol.Cx'
-        A0[ip, iu2, it] .= .-vol.Cy'
+        for c in 1:Dim
+            A0[iu[c], iu[c], it] .= Avisc .+ Fτ
+            A0[iu[c], ip, it] .= .-vol.C[:, :, c]' .+ FN[:, :, c]
+            A0[ip, iu[c], it] .= .-vol.C[:, :, c]'
+            Bhat0[iu[c], jλ[c], it] .= Bvisc .- Eτ
+            Bhat0[ip, jλ[c], it] .= E[:, :, c]
+            Hx[jλ[c], iu[c], it] .= Hvisc .+ Hτ
+            Hx[jλ[c], ip, it] .= HN[:, :, c]
+            Hlam0[jλ[c], jλ[c], it] .= Hλvisc .- Hλτ
+        end
         A0[icp, :, it] .= 0.0
         A0[icp, ip, it] .= shap2 * vol.wjac
-
-        Bhat0[iu1, j1, it] .= Bvisc .- Eτ
-        Bhat0[iu2, j2, it] .= Bvisc .- Eτ
-        Bhat0[ip, j1, it] .= E1
-        Bhat0[ip, j2, it] .= E2
         Bhat0[icp, :, it] .= 0.0
-        Bhat0[icp, 2 * nfc + 1, it] = -area[it]
-
-        Hx[j1, iu1, it] .= Hvisc .+ Hτ
-        Hx[j2, iu2, it] .= Hvisc .+ Hτ
-        Hx[j1, ip, it] .= HN1
-        Hx[j2, ip, it] .= HN2
-
-        Hlam0[j1, j1, it] .= Hλvisc .- Hλτ
-        Hlam0[j2, j2, it] .= Hλvisc .- Hλτ
+        Bhat0[icp, Dim * nfc + 1, it] = -area[it]
     end
 
     perm = Int32.(master.perm[:, :, 1])
     elcon = Int32.(mesh.elcon)
 
-    return HDGNSBatch(npl, nps, nfc, nt, ng, nq1d,
-                      T.(shap2), T.(sh1d), T.(shapx), T.(shapy), T.(M),
+    return HDGNSBatch(npl, nps, nfc, nt, ng, nqf,
+                      T.(shap2), T.(shf), T.(shapd), T.(M),
                       T.(A0), T.(Bhat0), T.(Hx), T.(Hlam0),
-                      T.(MiE1), T.(MiE2), T.(MiCx), T.(MiCy),
-                      T.(wdsb), T.(fn1), T.(fn2), T.(crow), T.(area),
+                      T.(MiE), T.(MiC),
+                      T.(wdsb), T.(fn), T.(crow), T.(area),
                       perm, elcon)
 end
-
