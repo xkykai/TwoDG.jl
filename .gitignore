@@ -22,6 +22,9 @@ docs/Manifest.toml
 
 # Model output
 /output/
+examples/*/output/
+*.vtu
+*.pvd
 *.dat
 *.data
 *.nc
