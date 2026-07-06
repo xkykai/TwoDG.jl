@@ -7,6 +7,7 @@
 # over all vertex orderings of the two-tet mesh.
 
 using TwoDG
+using TwoDG.ContinuousGalerkin: cg_element_system, cg_dirichlet_mask
 using Test
 using StaticArrays
 using LinearAlgebra
@@ -524,4 +525,244 @@ end
     sol = solve(prob)
     @test sol.iterations > 0
     @test l2error(sol, u_ex) < 0.01
+end
+
+@testset "HDG 3D curved: sphere-octant Poisson rates (THREED_PLAN E4)" begin
+    # Curved isoparametric HDG end-to-end: -Δu = 18xyz on the octant of the
+    # unit ball with u = xyz (1 - x² - y² - z²), which vanishes on the sphere
+    # and on all three symmetry planes — the Dirichlet data is exactly zero and
+    # the source is evaluated at quadrature points, so the superconvergence
+    # data rules are satisfied by construction.
+    #
+    # Two lessons this test encodes (both found by running it):
+    # 1. The mesh family must be shape-regular: the corner tet is refined
+    #    (Bey), then the smooth radial blend v ↦ v (1 - s + s²/|v|), s = Σvᵢ,
+    #    maps the hypotenuse plane exactly onto the sphere while deforming the
+    #    tet bi-Lipschitz-smoothly. Projecting only the hyp-plane vertices
+    #    *after* full refinement instead moves them O(1) across an O(h)
+    #    boundary layer — the tets there stretch like 1/h and every method's
+    #    rate stalls (measured 1.2 at p = 2).
+    # 2. mesh1 must carry the same discrete geometry as mesh
+    #    (match_geometry!), or u* degrades to O(h^{p+1}) (measured 2.1).
+    exact(x, y, z) = x * y * z * (1 - x^2 - y^2 - z^2)
+    source(p) = reshape(18 .* p[:, 1] .* p[:, 2] .* p[:, 3], :, 1)
+    dbc(p) = zeros(size(p, 1), 1)
+    param = Dict(:kappa => 1.0, :c => [0.0, 0.0, 0.0], :taud => 1.0)
+
+    function octant_geometry(nref)
+        p0 = [0.0 0 0; 1.0 0 0; 0 1.0 0; 0 0 1.0]
+        t0 = reshape([1, 2, 3, 4], 1, 4)
+        p1, t1 = uniref(p0, t0, nref)
+        for i in axes(p1, 1)
+            v = p1[i, :]
+            s, nv = sum(v), norm(v)
+            nv > 0 && (p1[i, :] .= v .* (1 - s + s^2 / nv))
+        end
+        ϵ = 1e-6
+        # classify by face centroid: plane faces have one coordinate ≡ 0, the
+        # sphere is everything else (a norm threshold misclassifies
+        # near-corner plane faces once the mesh is fine)
+        bnds = (sphere=p -> vec((p[:, 1] .> ϵ) .& (p[:, 2] .> ϵ) .& (p[:, 3] .> ϵ)),
+                xy=p -> p[:, 3] .< ϵ, xz=p -> p[:, 2] .< ϵ, yz=p -> p[:, 1] .< ϵ)
+        fds = (x -> sqrt(x[1]^2 + x[2]^2 + x[3]^2) - 1,
+               x -> x[3], x -> x[2], x -> x[1])
+        return MeshGeometry(p1, t1; boundaries=bnds, curved=[:sphere], fd=fds)
+    end
+
+    porder = 2
+    ngauss = 4 * (porder + 1)
+    errs_u, errs_ustar = Float64[], Float64[]
+    for nref in (1, 2, 3)   # h = 1/2, 1/4, 1/8
+        geo = octant_geometry(nref)
+        mesh = discretize(geo, porder)
+        master = ReferenceElement(mesh, ngauss)
+        mesh1 = discretize(geo, porder + 1)
+        master1 = ReferenceElement(mesh1, ngauss)
+        match_geometry!(master, mesh, master1, mesh1)
+
+        u, q, _ = hdg_direct_batched(master, mesh, source, dbc, param)
+        ustar = hdg_postprocess(master, mesh, master1, mesh1, u, q ./ param[:kappa])
+        push!(errs_u, l2error(mesh, u[:, 1, :], exact))
+        push!(errs_ustar, l2error(mesh1, ustar[:, 1, :], exact))
+    end
+    rates_u = log2.(errs_u[1:end-1] ./ errs_u[2:end])
+    rates_us = log2.(errs_ustar[1:end-1] ./ errs_ustar[2:end])
+    @test rates_u[end] > porder + 0.6        # measured 2.85 (design 3)
+    @test rates_us[end] > porder + 1.3       # measured 3.60 (design 4)
+    @test errs_ustar[end] < errs_u[end] / 5  # u* strictly better (measured 14×)
+end
+
+@testset "HDG 3D incompressible Navier-Stokes (THREED_PLAN E3)" begin
+    relerr(a, b) = norm(a .- b) / max(norm(b), eps())
+    porder = 2
+
+    # Kovasznay flow run *as 3D*: the exact steady 2D solution is z-invariant,
+    # so on (0,2) × (-0.5,1.5) × (0,0.5) with w = 0 it solves the 3D equations
+    # — every velocity component, all four local faces, and the front/back
+    # Dirichlet planes are exercised against a known solution.
+    Re = 20.0
+    ν = 1 / Re
+    λk = Re / 2 - sqrt(Re^2 / 4 + 4π^2)
+    u1e(x, y) = 1 - exp(λk * x) * cos(2π * y)
+    u2e(x, y) = λk / (2π) * exp(λk * x) * sin(2π * y)
+    pmean = -(exp(4λk) - 1) / (8λk)
+    dbc(p) = [u1e(p[1], p[2]), u2e(p[1], p[2]), 0.0]
+
+    mesh = mkmesh_box(5, 5, 2, porder)
+    mesh.p[:, 1] .= 2 .* mesh.p[:, 1]
+    mesh.p[:, 2] .= 2 .* mesh.p[:, 2] .- 0.5
+    mesh.p[:, 3] .= 0.5 .* mesh.p[:, 3]
+    mesh.dgnodes[:, 1, :] .= 2 .* mesh.dgnodes[:, 1, :]
+    mesh.dgnodes[:, 2, :] .= 2 .* mesh.dgnodes[:, 2, :] .- 0.5
+    mesh.dgnodes[:, 3, :] .= 0.5 .* mesh.dgnodes[:, 3, :]
+    master = ReferenceElement(mesh, 3 * (porder + 1))
+
+    @testset "Kovasznay-as-3D (reference Newton path)" begin
+        result = hdg_ns_solve(master, mesh, ν, dbc; τ=1.0, maxiter=10,
+                              tol=1e-10, verbose=false)
+        err_u = hypot(l2error(mesh, result.u[:, 1, :], (x, y, z) -> u1e(x, y)),
+                      l2error(mesh, result.u[:, 2, :], (x, y, z) -> u2e(x, y)))
+        @test err_u < 5e-2                                   # measured 3.1e-2
+        @test l2error(mesh, result.u[:, 3, :], (x, y, z) -> 0.0) < 5e-3
+        @test l2error(mesh, result.p,
+                      (x, y, z) -> -exp(2λk * x) / 2 - pmean) < 5e-2
+        # recovered gradient discretely divergence-free: tr(L) = L11+L22+L33
+        @test maximum(abs.(result.gradu[:, 1, :] .+ result.gradu[:, 5, :] .+
+                           result.gradu[:, 9, :])) < 1e-6    # measured 1.0e-7
+        @test abs(sum(result.ρ)) < 1e-8                      # zero-mean gauge
+    end
+
+    @testset "3D batched step parity (NS + CD transport)" begin
+        # all 6 face-orientation codes arise on the box; the batched kernels'
+        # Dim-generic index arithmetic must reproduce the reference assembly
+        npl, nt = size(mesh.dgnodes, 1), size(mesh.t, 1)
+        s1 = hdg_ns_step(master, mesh, ν, dbc; τ=1.0)
+        b1 = hdg_ns_step_batched(master, mesh, ν, dbc; τ=1.0)
+        scale = norm(s1.u)
+        @test relerr(b1.u, s1.u) < 1e-8
+        @test norm(b1.p .- s1.p) / scale < 1e-8
+        @test relerr(b1.Λ, s1.Λ) < 1e-8
+        @test norm(b1.gradu .- s1.gradu) / scale < 1e-7
+
+        # nonzero state + body force + backward Euler through the cached
+        # pattern and numeric refactorization
+        src = zeros(npl, 3, nt)
+        src[:, 2, :] .= sin.(mesh.dgnodes[:, 1, :])
+        src[:, 3, :] .= 0.3 .* cos.(mesh.dgnodes[:, 2, :])
+        s2 = hdg_ns_step(master, mesh, ν, dbc; τ=1.0, source=src,
+                         u=s1.u, Λ=s1.Λ, uold=s1.u, dtinv=2.0)
+        b2 = hdg_ns_step_batched(master, mesh, ν, dbc; τ=1.0, source=src,
+                                 u=s1.u, Λ=s1.Λ, uold=s1.u, dtinv=2.0,
+                                 cache=b1.cache)
+        @test relerr(b2.u, s2.u) < 1e-8
+        @test relerr(b2.p, s2.p) < 1e-8
+        @test relerr(b2.Λ, s2.Λ) < 1e-8
+        @test relerr(b2.gradu, s2.gradu) < 1e-7
+
+        # scalar transport with the NS velocity/trace and mixed BCs
+        κ = 0.05
+        tbc(p, tag) = tag == 1 ? (:d, 0.5) : tag == 2 ? (:d, -0.5) : (:n, 0.0)
+        θold = 0.5 .- mesh.dgnodes[:, 1, :] ./ 2
+        sc = hdg_cd_step(master, mesh, κ, tbc; τ=1.0, u=s1.u, Λ=s1.Λ,
+                         θold, dtinv=4.0)
+        bc = hdg_cd_step_batched(master, mesh, κ, tbc; τ=1.0, u=s1.u, Λ=s1.Λ,
+                                 θold, dtinv=4.0)
+        @test relerr(bc.θ, sc.θ) < 1e-8
+        @test relerr(bc.q, sc.q) < 1e-7
+        @test relerr(bc.Θ, sc.Θ) < 1e-8
+    end
+
+    @testset "Beltrami (Ethier-Steinman) steady: O(h^{p+1})" begin
+        # Genuinely 3D exact solution: the Beltrami field has vorticity
+        # parallel to velocity, so (u·∇)u = ∇(|u|²/2) is absorbed by the
+        # pressure p = -|u|²/2 and the steady momentum balance needs only the
+        # body force f = -νΔu_B = νd²u_B (Ethier & Steinman, IJNMF 19, 1994).
+        # All nine gradient components and the full convection linearization
+        # are exercised; Newton runs on the batched driver with cache reuse.
+        a, d = π / 4, π / 2
+        νb = 1.0
+        uB(x, y, z) = [-a * (exp(a * x) * sin(a * y + d * z) + exp(a * z) * cos(a * x + d * y)),
+                       -a * (exp(a * y) * sin(a * z + d * x) + exp(a * x) * cos(a * y + d * z)),
+                       -a * (exp(a * z) * sin(a * x + d * y) + exp(a * y) * cos(a * z + d * x))]
+        fB(p) = νb * d^2 .* uB(p[1], p[2], p[3])
+        dbcB(p) = uB(p[1], p[2], p[3])
+
+        errs = map((3, 5)) do n
+            meshb = mkmesh_box(n, n, n, porder)
+            masterb = ReferenceElement(meshb, 3 * (porder + 1))
+            u = Λ = cache = nothing
+            res = nothing
+            for _ in 1:10
+                res = hdg_ns_step_batched(masterb, meshb, νb, dbcB; τ=2.0,
+                                          source=fB, u, Λ, cache)
+                Δ = Λ === nothing ? Inf : relerr(res.Λ, Λ)
+                u, Λ, cache = res.u, res.Λ, res.cache
+                Δ < 1e-10 && break
+            end
+            sqrt(sum(abs2, [l2error(meshb, res.u[:, c, :],
+                                    (x, y, z) -> uB(x, y, z)[c]) for c in 1:3]))
+        end
+        @test log2(errs[1] / errs[2]) > porder + 0.5   # measured 2.98 (design 3)
+    end
+end
+
+@testset "CG 3D Poisson/convection-diffusion (THREED_PLAN Phase F)" begin
+    # -Δu = 3π² sin(πx)sin(πy)sin(πz) with homogeneous Dirichlet boundaries;
+    # the CG numbering (pcg/tcg) comes from discretize's cgmesh call.
+    exact(x, y, z) = sin(π * x) * sin(π * y) * sin(π * z)
+    source(x, y, z) = 3π^2 * exact(x, y, z)
+    param = (; κ=1.0, c=[0.0, 0.0, 0.0], s=0.0)
+
+    @testset "O(h^{p+1}) convergence (p = 2)" begin
+        porder = 2
+        errs = map((3, 5, 9)) do n   # h = 1/2, 1/4, 1/8
+            mesh = mkmesh_box(n, n, n, porder)
+            master = ReferenceElement(mesh, 4porder)
+            uh, energy = cg_solve(mesh, master, source, param)
+            @test isfinite(energy)
+            l2error(mesh, uh, exact)
+        end
+        rates = log2.(errs[1:end-1] ./ errs[2:end])
+        @test rates[end] > porder + 0.6   # measured 2.94, 3.01 (design 3)
+    end
+
+    mesh = mkmesh_box(3, 3, 3, 3)
+    master = ReferenceElement(mesh, 12)
+
+    @testset "batched ≡ elemmat_cg (3D, p = 3)" begin
+        paramc = (; κ=0.7, c=[1.5, -0.4, 0.8], s=0.3)
+        src(x, y, z) = exp(-2 * ((x - 0.3)^2 + (y - 0.6)^2 + z^2))
+        ae, fe, _, _ = cg_element_system(mesh, master, src, paramc; eliminate=false)
+        for e in (1, size(mesh.tcg, 1) ÷ 2, size(mesh.tcg, 1))
+            A, F = elemmat_cg(mesh.pcg[mesh.tcg[e, :], :], master, src, paramc)
+            @test ae[:, :, e] ≈ A rtol = 1e-12
+            @test fe[:, e] ≈ F rtol = 1e-12
+        end
+
+        # boundary mask: exactly the CG nodes on a box face
+        dirichlet = cg_dirichlet_mask(mesh, master)
+        onbnd = [any(≈(0; atol=1e-12), mesh.pcg[i, :]) ||
+                 any(≈(1; atol=1e-12), mesh.pcg[i, :]) for i in axes(mesh.pcg, 1)]
+        @test dirichlet == onbnd
+    end
+
+    @testset "cg_parsolve ≡ cg_solve (CG + GMRES paths)" begin
+        for p in ((; κ=1.0, c=[0.0, 0.0, 0.0], s=0.0),        # Krylov cg
+                  (; κ=0.7, c=[1.5, -0.4, 0.8], s=0.3))       # Krylov gmres
+            uh_d, energy_d = cg_solve(mesh, master, source, p)
+            uh_i, energy_i, niter = cg_parsolve(mesh, master, source, p; tol=1e-12)
+            @test niter > 0
+            @test norm(uh_i - uh_d) / norm(uh_d) < 1e-8
+            @test energy_i ≈ energy_d rtol = 1e-8
+        end
+    end
+
+    @testset "Interface: CGProblem + PoissonEquation{3}" begin
+        prob = CGProblem(PoissonEquation{3}(), mkmesh_box(5, 5, 5, 2); source)
+        sol_d = solve(prob, Direct())
+        sol_i = solve(prob, ConjugateGradient())
+        @test sol_i.iterations > 0
+        @test l2error(sol_d, exact) < 0.02
+        @test abs(l2error(sol_i, exact) - l2error(sol_d, exact)) < 1e-8
+    end
 end
