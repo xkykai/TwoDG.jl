@@ -7,7 +7,7 @@ using TwoDG.Geometry: face_normal, adjugate
 # HDG method for the incompressible Navier-Stokes equations following
 # Nguyen, Peraire & Cockburn, "An implicit high-order hybridizable discontinuous
 # Galerkin method for the incompressible Navier-Stokes equations", JCP 230 (2011).
-# Dimension-generic (THREED_PLAN Phase E3): the same element assembly serves
+# Dimension-generic: the same element assembly serves
 # triangles (Dim = 2) and tetrahedra (Dim = 3); the spatial direction is an
 # array axis and the velocity has Dim components.
 #

@@ -1,7 +1,7 @@
-# Batched HDG element assembly and local recovery on any KA backend
-# (Phase 3b of GPU_PLAN.md; dimension-generic since THREED_PLAN Phase E).
+# Batched HDG element assembly and local recovery on any KA backend,
+# dimension-generic across triangles and tetrahedra.
 # The per-element math of `localprob`/`elemmat_hdg` is restated as batched
-# dense linear algebra, with the spatial direction as an array axis (D5):
+# dense linear algebra, with the spatial direction as an array axis:
 #
 #   local solves:  K [U | u0] = [-Lu + Σ_d C_d M⁻¹ L_d | F_src],
 #                  K = D + Σ_d C_d M⁻¹ C_d',

@@ -1,5 +1,5 @@
-# Batched HDG Navier-Stokes and scalar-transport assembly on any KA backend
-# (Phase 5 of GPU_PLAN.md; dimension-generic since THREED_PLAN Phase E3).
+# Batched HDG Navier-Stokes and scalar-transport assembly on any KA backend,
+# dimension-generic across triangles and tetrahedra.
 # The per-element math of `hdg_ns_elemmat` / `hdg_cd_elemmat` splits into
 #
 #   - geometry × (ν, τ) constants (mass, coupling, face lifts and the

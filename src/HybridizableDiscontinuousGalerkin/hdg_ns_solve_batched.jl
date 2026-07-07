@@ -123,6 +123,21 @@ end
 # NS cache + driver
 # ------------------------------------------------------------------------------
 
+"""
+    HDGNSCache(master, mesh, ν, τ; ArrayT=Array, T=Float64)
+
+Preallocated workspace for [`hdg_ns_step_batched`](@ref) (and through it
+[`hdg_ns_solve`](@ref)): the batched element data (`batch::HDGNSBatch`, on
+the backend of `ArrayT`), the trace saddle-point sparsity pattern, the
+device work arrays of the Newton assembly/local solves/recovery, the
+host-side quadrature geometry used to evaluate function sources, and the
+reused UMFPACK factorization of the trace system (`F`).
+
+Built automatically on the first `hdg_ns_step_batched` call; pass the
+returned cache back in on subsequent calls with the same `master`, `mesh`,
+`ν`, `τ` to skip all setup and refactorize in place — across Newton
+iterations and time steps this dominates the cost of an unsteady NS run.
+"""
 mutable struct HDGNSCache{B <: HDGNSBatch, W}
     batch :: B
     pat   :: HDGNSTracePattern

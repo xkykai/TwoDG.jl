@@ -1,5 +1,5 @@
-# KernelAbstractions + Krylov.jl iterative solver for the HDG trace system
-# (Phase 3 of GPU_PLAN.md). Element assembly and local recovery stay on the
+# KernelAbstractions + Krylov.jl iterative solver for the HDG trace system.
+# Element assembly and local recovery stay on the
 # CPU (element-sequential, done once per solve); the GMRES iteration — the
 # face-parallel matvec and block-Jacobi preconditioner that dominate the
 # runtime — runs on any KA backend. Move the system to a GPU with

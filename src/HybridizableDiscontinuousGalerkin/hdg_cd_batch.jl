@@ -217,6 +217,20 @@ function cd_trace_fill!(VV, rhs, pat::HDGCDTracePattern, Kes, res, gvals, nrhs)
     return VV, rhs
 end
 
+"""
+    HDGCDCache(master, mesh, κ, τ, tbc; ArrayT=Array, T=Float64)
+
+Preallocated workspace for [`hdg_cd_step_batched`](@ref): the batched
+element data (`batch::HDGCDBatch`, on the backend of `ArrayT`), the trace
+sparsity pattern, the device work arrays of the local solves/recovery, the
+host-side quadrature geometry used to evaluate function sources, and the
+reused sparse-LU factorization of the trace system (`F`).
+
+Built automatically on the first `hdg_cd_step_batched` call; pass the
+returned cache back in on subsequent calls with the same `master`, `mesh`,
+`κ`, `τ`, and boundary-condition types to skip all setup and reuse the
+factorization (this reuse is what makes implicit time stepping cheap).
+"""
 mutable struct HDGCDCache{B <: HDGCDBatch, W}
     batch :: B
     pat   :: HDGCDTracePattern
