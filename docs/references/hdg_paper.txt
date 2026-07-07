@@ -1,0 +1,1468 @@
+            Journal of Computational Physics 230 (2011) 1147­1170
+
+              Contents lists available at ScienceDirect
+
+Journal of Computational Physics
+
+journal homepage: www.elsevier.com/locate/jcp
+
+An implicit high-order hybridizable discontinuous Galerkin method
+for the incompressible Navier­Stokes equations
+
+N.C. Nguyen a,, J. Peraire a, B. Cockburn b
+
+a Department of Aeronautics and Astronautics, Massachusetts Institute of Technology, Cambridge, MA 02139, USA
+b School of Mathematics, University of Minnesota, Minneapolis, MN 55455, USA
+
+article info                              abstract
+
+Article history:                          We present an implicit high-order hybridizable discontinuous Galerkin method for the
+Received 2 January 2010                   steady-state and time-dependent incompressible Navier­Stokes equations. The method
+Received in revised form 20 October 2010  is devised by using the discontinuous Galerkin discretization for a velocity gradient-pres-
+Accepted 25 October 2010                  sure­velocity formulation of the incompressible Navier­Stokes equations with a special
+Available online 2 November 2010          choice of the numerical traces. The method possesses several unique features which distin-
+                                          guish itself from other discontinuous Galerkin methods. First, it reduces the globally cou-
+Keywords:                                 pled unknowns to the approximate trace of the velocity and the mean of the pressure on
+Finite element methods                    element boundaries, thereby leading to a significant reduction in the degrees of freedom.
+Discontinuous Galerkin methods            Moreover, if the augmented Lagrangian method is used to solve the linearized system,
+Hybrid/mixed methods                      the globally coupled unknowns become the approximate trace of the velocity only. Second,
+Augmented Lagrangian                      it provides, for smooth viscous-dominated problems, approximations of the velocity, pres-
+Incompressible Navier­Stokes equations    sure, and velocity gradient which converge with the optimal order of k + 1 in the L2-norm,
+                                          when polynomials of degree kP0 are used for all components of the approximate solution.
+                                          And third, it displays superconvergence properties that allow us to use the above-men-
+                                          tioned optimal convergence properties to define an element-by-element postprocessing
+                                          scheme to compute a new and better approximate velocity. Indeed, this new approxima-
+                                          tion is exactly divergence-free, H (div)-conforming, and converges with order k + 2 for
+                                          k P 1 and with order 1 for k = 0 in the L2-norm. Moreover, a novel and systematic way is
+                                          proposed for imposing boundary conditions for the stress, viscous stress, vorticity and
+                                          pressure which are not naturally associated with the weak formulation of the method. This
+                                          can be done on different parts of the boundary and does not result in the degradation of the
+                                          optimal order of convergence properties of the method. Extensive numerical results are
+                                          presented to demonstrate the convergence and accuracy properties of the method for a
+                                          wide range of Reynolds numbers and for various polynomial degrees.
+
+                                                                                                                  Ó 2010 Elsevier Inc. All rights reserved.
+
+1. Introduction
+
+    In recent years, discontinuous Galerkin (DG) methods have emerged as a competitive alternative for numerically solving
+the incompressible Navier­Stokes equations [3,18,19,32,44]. The advantages of the DG methods over classical continuous
+Galerkin finite element, finite difference and finite volume methods are well-documented in the literature (see [5,6,21]
+and references therein): the DG methods work well on arbitrary meshes, result in stable high order discretizations of the
+convective and diffusive operators, allow for a simple and unambiguous imposition of boundary conditions and are well
+suited for parallelization and adaptivity. Despite all these advantages, there are still obstacles which prevent DG methods
+
+  Corresponding author. Tel.: +1 617 253 8080.
+
+     E-mail address: cuongng@mit.edu (N.C. Nguyen).
+
+0021-9991/$ - see front matter Ó 2010 Elsevier Inc. All rights reserved.
+doi:10.1016/j.jcp.2010.10.032
+1148  N.C. Nguyen et al. / Journal of Computational Physics 230 (2011) 1147­1170
+
+from becoming the method of choice for a wide class of applications. One such obstacle is the high computational cost asso-
+ciated with DG methods which can be traced to the larger number of globally coupled unknowns when compared to con-
+tinuous Galerkin finite elements, finite differences, or finite volume schemes.
+
+    In this paper, we introduce a hybridizable discontinuous Galerkin (HDG) method for the numerical solution of the incom-
+pressible Navier­Stokes equations. The HDG methods were first introduced for diffusion [13] and continuum mechanics
+[26,45] problems. They were analyzed in [7,15,17], see also [16], in the setting of diffusion problems, and then developed
+for linear and nonlinear convection­diffusion problems [8,37,38,46], Stokes flow [4,11,14,39,40]. The HDG method for the
+compressible Euler and Navier­Stokes equations is introduced in [43]. An overview of recent development of HDG methods
+is provided in [41]. The HDG methods retain the advantages of standard DG methods and provide a significantly reduced
+number of globally-coupled degrees of freedom, thereby allowing for a substantial reduction in the computational cost.
+
+    In this paper, we devise the first HDG method for the incompressible Navier­Stokes equations by extending the HDG
+methods for convection­diffusion [37,38] and the HDG methods for the Stokes system [14,39,40], and showing that the dis-
+tinctive advantages of those HDG methods are retained, namely:
+
+ Reduced number of degrees of freedom. Unlike all known other DG methods, which result in a final system involving
+  the degrees of freedom of the approximate velocity and pressure, the HDG method produces a final system involving the
+  degrees of freedom of the approximate trace of the velocity and the mean of pressure. Since the approximate trace is
+  defined on the element borders only and since the mean of pressure is a piece-constant function, the HDG method has
+  significantly less globally coupled unknowns than other DG methods, especially for high-degree polynomial approxima-
+  tions. Moreover, if the augmented Lagrangian method [23] is used to solve the linearized system, the globally coupled
+  unknowns become the approximate trace of the velocity only. This large reduction in the degrees of freedom leads to sig-
+  nificant savings for both computational time and memory storage.
+
+ Optimal convergence. The HDG method provides an approximate velocity, pressure and velocity gradient converging
+  with the optimal order k + 1 in the L2-norm for viscous-dominated flows with smooth solution; here k is the degree of
+  the polynomials used to represent all components of the approximate solution. This has to be contrasted with the fact
+  that all known DG methods display the suboptimal order of convergence of k for the approximate pressure and for the
+  velocity gradient or the vorticity. This includes, the first DG method for the Navier­Stokes equations [28,29], as well
+  as the family of DG methods for the Navier­Stokes equations proposed in [18,19].
+
+ Superconvergence and local postprocessing. The HDG method has superconvergence properties for the velocity which,
+  combined with the above-mentioned optimal converge properties, allows us to use an element-by-element postprocess-
+  ing, proposed in [14] for HDG methods for Stokes flow, to obtain a new and better approximation of the velocity. Unlike
+  the original velocity, the postprocessed velocity is exactly divergence-free, H (div)-conforming, and converges with order
+  k + 2 for k P 1. Since the postprocessing is performed at the element level, the computational cost involved in obtaining
+  the postprocessed velocity is very small.
+
+ Unified treatment of boundary conditions and the numerical fluxes. The HDG method entails a single numerical flux
+  formulae containing both the viscous and inviscid numerical fluxes. Different boundary conditions can be included in a
+  single framework by defining appropriate numerical fluxes on the boundaries of the physical domain. This novel and sys-
+  tematic manner of imposing boundary conditions allows for pressure, vorticity and stress boundary conditions to be pre-
+  scribed on different parts of the boundary.
+
+    Let us briefly emphasize the fact that, to the knowledge of the authors, no other known DG or mixed method for the Na-
+vier­Stokes equations has all the above four properties of these HDG methods. Note that, as we pointed out in [40], some DG
+methods provide velocities that are divergence-free inside each of the element which, however, do not lie on H (div) since
+their normal component has no interelement continuity. Examples are the first DG method proposed for the Stokes system
+[2] and for the Navier­Stokes equations in [28] and, more recently, and the DG method for the Stokes equations proposed in
+[33] and in [34] for the Navier­Stokes equations. Note also that there are DG methods that do provide velocities that are
+divergence-free and belong to H (div). A wide family DG methods with this property were introduced in [18] for the Na-
+vier­Stokes equations, even though only a particular case was treated in detail therein. Other particular cases were devel-
+oped later in [19] and (for the Stokes problem) in [47,49]; the latter method was then extended to the Navier­Stokes
+equation in [48]. Finally, note that the first DG method whose formulation involves H (div)-conforming velocities with are
+also divergence-free was proposed in [4] for the Stokes equations; see also [9,10] for an extension of this approach to a mixed
+method. However, their velocities converge with order at most k + 1 for k P 1.
+
+    Recently, there have been new developments in DG methods--the multiscale discontinuous Galerkin (MDG) method [27]
+and the embedded discontinuous Galerkin method (EDG) [13,26]--which aim to reduce the globally coupled degrees in a DG
+discretization. Like the HDG method, these DG methods solve for the approximate trace of the field variables. However, un-
+like the HDG method, the approximate trace in these methods resides in a C0 space. Therefore, neither the MDG nor the EDG
+method have the local conservativity property of the HDG method. As a consequence, see [16], these DG methods do not
+have some superconvergence properties of the HDG method and hence their approximate solution can not be postprocessed
+to yield a higher-order convergent approximation. Further development of the MDG method for the incompressible
+Navier­Stokes equations leads to the so-called Galerkin interface stabilisation (GIS) method [31]. As expected, the GIS
+method provides suboptimal convergence for the approximate pressure and stress even for the Stokes system.
+                                              N.C. Nguyen et al. / Journal of Computational Physics 230 (2011) 1147­1170                                           1149
+
+    The paper is organized as follows. In Section 2 we define the notation used throughout the paper. In Section 3 we intro-
+duce the HDG method for numerically solving the steady incompressible Navier­Stokes equations and present the element-
+by-element postprocessing to compute a new approximation of the velocity proposed in [14]. In this section, we also extend
+the method to treat different boundary conditions involving derivatives of the velocity and to solve the time-dependent
+incompressible Navier­Stokes equations. In Section 4 we describe two different strategies to implement the HDG method.
+In Section 5 we provide numerical results to assess the convergence and accuracy of the method. Finally, in Section 6 we
+present some concluding remarks.
+
+2. Governing equations and notation
+
+2.1. The incompressible Navier­Stokes equations
+
+     We consider the steady incompressible Navier­Stokes equations
+
+         À mDu þ rp þ r Á ðu  uÞ ¼ f ; in X;
+
+         r Á u ¼ 0; in X;                                                                                                                                          ð1Þ
+
+         u ¼ g; on @X;
+
+where u and p are velocity vector and pressure, respectively, anRd f is a known body force. It is assumed that the prescribed
+bR oundary velocity g                satisfies the incompressibility constraint @X g Á n      ¼ 0.   The  pressure is made unique                  by   requiring  that
+ X p ¼ 0. Here X is a                polygonal domain in Rd with Lipschitz boundary           @X,    and
+                                                                                                          m is a kinematic viscosity.
+
+     We introduce the velocity gradient tensor L = ru and rewrite the above equation as a first order system of equations as
+
+         L À ru ¼ 0; in X;
+
+         À mr Á L þ rp þ r Á ðu  uÞ ¼ f ; in X;
+
+                                                                                                                                                                   ð2Þ
+         r Á u ¼ 0; in X;
+
+         u ¼ g; on @X:
+
+Next, we introduce the notation we are going to use to describe the HDG method for numerically solving this system.
+
+2.2. Mesh and trace operators
+
+     We employ the notation used in [14,39]. We denote by T h a collection of disjoint regular elements K that partition X and
+
+set @T h :¼ f@K : K 2 T hg. For an element K of the collection T h; F ¼ @K \ @X is the boundary face if the d À 1 Lebesgue mea-
+
+sure of F is nonzero. For two elements K+ and KÀ of the collection T h; F ¼ @Kþ \ @KÀ is the interior face between K+ and KÀ if
+
+the d À 1 Lebesgue measure of F is nonzero. We denote by Eoh and E@h the set of interior and boundary faces, respectively. We
+               o
+set  Eh  ¼  E  h  [  E  @  .
+                        h
+     Let n+ and nÀ be the outward unit normal vectors on two neighboring elements K+ and KÀ, respectively. We use (G±, v±, q±)
+
+to denote the traces of (G, v, q) on F from the interior of the elements K±, where G, v, and q are second-order tensorial, vec-
+
+torial,  and      scalar         functions,  respectively.  Then,  we   define  the  jumps  sÁt  as  follows.  For  F  2  E  o  ,  we  set
+                                                                                                                             h
+
+         sGnt ¼ Gþnþ þ GÀnÀ;
+
+         sv  nt ¼ vþ  nþ þ vÀ  nÀ;
+
+         sqnt ¼ qþnþ þ qÀnÀ:
+
+Here     is    either         Á  or    which  denote  the   usual  dot  product  and  tensor  product,    respectively.      For   F   2  E  @  ,  the  set  of  boundary
+                                                                                                                                             h
+
+edges on which G, v and q are single valued, we set
+
+         sGnt ¼ Gn;
+
+         sv  nt ¼ v  n;
+
+         sqnt ¼ qn;
+
+where n is the unit outward normal to @X.
+
+2.3. Approximation spaces
+
+    Let PkðDÞ denote the space of polynomials of degree at most k on a domain D and let L2(D) be the space of square inte-
+grable functions on D. We set PkðDÞ ¼ ½PkðDÞd; PkðDÞ ¼ ½PkðDÞdÂd; L2ðDÞ ¼ ½L2ðDÞd, and L2(D) = [L2(D)]dÂd. We introduce the
+
+following discontinuous finite element approximation spaces for the gradient, velocity, and pressure:
+1150     N.C. Nguyen et al. / Journal of Computational Physics 230 (2011) 1147­1170
+
+        Gh ¼ fG 2 L2ðT hÞ : GjK 2 PkðKÞ; 8K 2 T hg;
+
+      Vh ¼ fv 2 L2ðT hÞ : vjK 2 PkðKÞ; 8K 2 T hg;
+
+        Ph ¼ fq 2 L2ðT hÞ : qjK 2 PkðKÞ; 8K 2 T hg:
+
+In addition, we introduce a finite element approximation space for the approximate trace of the velocity
+
+       Mh ¼ fl 2 L2ðEhÞ : ljF 2 PkðFÞ; 8F 2 Ehg
+and set Mh(g) = {l 2 Mh: l = P@g on @X}, where P@ is the L2(@X) projection into the space {lj@X, " l 2 Mh}. Note that Mh con-
+
+sists of functions which are continuous inside the faces (or edges) F 2 Eh and discontinuous at their borders. We further de-
+note by Wh the set of functions in L2ð@T hÞ that are constant on each @K for all elements K
+
+        Wh ¼ fr 2 L2ð@T hÞ : r 2 P0ð@KÞ; 8 K 2 T hg:
+
+LdThðgN2heð;n;e@fFZoiTmiÞn@tTTehaehÞhsla,l::ny¼t¼th,ohewP Pfeomeiddi;¼uji¼de1nr1haetðagnfieNpign;ipojrfe;fariZiolvq@ixjTaÞoiohrTm;infho,fauo@wtrsKevfgiopins,rrnofegevs2iresvwurMeprn,rehto,hbdwweyvuihlc2q"ldtejbs@VorKeemfhlo¼ohragnijoa,@ng1fKunijtrdDoRDfi@dtK&hneqNiinstR.e,oOsdtpeebalsZfvecoimte2orh.ueeGHswnhleity.n,r,stevpewtFga2heircneaePhalsmhal..olveyWfeaW ,gneq"feiww¼os vradeqieletsreffiootnðwrhwewerad;inrtvdaieyotÞseTmqfhoahi:ðln¼gliwon;Ww;fPDvihs@KÞ.T.&T2FhThoR:h¼:rð¼dwÀaP1P ;g.viKvdiÞ2¼KeT1,nðh wwhfguih;;nfevicri@ÞteKiTo(hwn ,aaqvnni)nddD
+
+3. The hybridizable discontinuous Galerkin method
+
+3.1. Definition of the HDG method
+
+We seek an approximation ðLh; uh; ph; u^hÞ of ðLjX; ujX; pjX; ujEh Þ in the space Gh Â Vh Â Ph Â Mh(g) such that
+
+      ðLh; GÞT h þ ðuh; r Á GÞT h À hu^h; Gni@T h ¼ 0;                                                            ð3aÞ
+                                                                                                                  ð3bÞ
+                                     D      ÀmLbh þ p^hI þ u^h  u^h  E
+      ðmLh À phI À uh  uh; rvÞT h þ                                  n; v     v ¼ ðf ;
+                                                                                        ÞT h ;
+                                                                           @T h
+
+      Àðuh; rqÞT h þ hu^h Á n; qi@T h ¼ 0;                                                                        ð3cÞ
+                                                                                                                  ð3dÞ
+      D  E
+         ÀmbLh þ p^hI þ u^h  u^h n; l ¼ 0;
+                                     @T h
+
+        ðph; 1ÞT h ¼ 0;                                                                                           ð3eÞ
+for all (G, v, q, l) 2 Gh Â Vh Â Ph Â Mh(0), where
+
+      ÀmbLh þ p^hI þ u^h  u^h ¼ ÀmLh þ phI þ u^h  u^h þ shðuh; u^hÞ  n:                                           ð4Þ
+
+Here I is the second-order identity tensor, and shðuh; u^hÞ is the stabilization vector-valued function. The choice of the stabil-
+ization function shðuh; u^hÞ is crucial since it does have an important effect on both the stability and accuracy of the method.
+We consider an extension of the expression for shðuh; u^hÞ proposed in [14,39] for the Stokes system as
+
+      shðuh; u^hÞ ¼ Sðuh; u^hÞðuh À u^hÞ;                                                                         ð5Þ
+
+where Sðuh; u^hÞ is the stabilization tensor which may depend on uh and u^h.
+    Let us briefly comment on the equations defining the HDG method. The first three equations are obtained by multiplying
+
+the first three equations in (2) by test functions and integrating by parts. The fourth Eq. (3d) enforces the continuity of the
+normal component of the numerical trace of the total stress (including both inviscid and viscous fluxes) on the interelement
+boundaries, that is,
+
+      sPððÀmLh þ phI þ u^h  u^hÞn þ shðuh; u^hÞÞt ¼ 0                                                             ð6Þ
+
+pointwise over the interior faces Eoh, where P is the L2-projection over (Mh)d. Finally, the last Eq. (3e) is just the average pres-
+sure constraint and is needed for the sake of well-posedness of the method.
+
+    It is important to note that the numerical trace u^h is single-valued over any F 2 Eh since u^h belongs to Mh. As a conse-
+
+quence, both numerical traces u^h and PðÀmLbh þ p^hI þ u^h  u^hÞ are conservative according to the definition in [1].
+
+    Note that when the nonlinear inertial term is eliminated and the stabilization tensor is independent of uh and u^h, the HDG
+method we obtain is exactly the one proposed in [39] for the Stokes flow.
+                                                  N.C. Nguyen et al. / Journal of Computational Physics 230 (2011) 1147­1170                 1151
+
+3.2. The general form of the numerical traces
+
+    When S is constant on each face F of @T h, we can rewrite the HDG method as a method given by the first three equations
+in (3) where all the numerical traces are expressed in terms of the approximation (Lh, uh, ph). Inserting (4) into the jump con-
+dition (6), we obtain that, on Eoh,
+
+       sðÀmLh þ phIÞnt þ Sþuhþ þ SÀuhÀ À ðSþ þ SÀÞu^h ¼ 0:
+
+Since  both     SÀ   and      S+  are    positive  definite,           and  SÀ  +    S+  is  invertible    we    obtain  that,  on  E  o  ,
+                                                                                                                                       h
+
+       u^h ¼ AðSþuþh þ SÀuÀh Þ þ AsðÀmLh þ phIÞnt;                                                                                           ð7Þ
+
+where  A     =  (SÀ  +  S+)À1.    Substituting     this      expression          into       (4)  yields   on  E  o  ,
+                                                                                                                 h
+
+       ÀmbLh þ p^hI ¼ SÀAðÀmLhþ þ pþh IÞ þ SþAðÀmLÀh þ phÀIÞ þ SÀASþuhþ  nþ þ SþASÀuÀh  nÀ:                                                  ð8Þ
+
+These two expressions define the numerical traces in terms of (Lh, uh, ph).
+    Therefore, we can view the HDG method as a DG method which seeks an approximate solution (Lh, uh, ph) 2 (Gh, Vh, Ph)
+
+such that
+
+       ðLh; GÞT h þ ðuh; r Á GÞT h À hu^h; DGni@T h ¼ 0;                                         E                                           ð9aÞ
+       ðmLh À phI À uh  uh; rvÞT h þ                         ÀmLbh þ p^hI þ u^h  u^h                n; v     v ¼ ðf ;                        ð9bÞ
+                                                                                                                       ÞT h ;                ð9cÞ
+                                                                                                          @T h                               ð9dÞ
+
+       À ðuh; rqÞT h þ hu^h Á n; qi@T h ¼ 0;
+
+       ðph; 1ÞT h ¼ 0
+
+for all (G, v, q) 2 (Gh, Vh, Ph), where the numerical traces, u^h and ÀmLbh þ p^hI, are given by Eqs. (7) and (8).
+   For example, for the choice S = sI, where s is a constant on Eh, the numerical traces become
+
+       u^ h  ¼  1  ðuhþ  þ    uhÀ Þ  þ   1     sðÀmLh     þ  phIÞnt;
+                2
+                                         2s                                                                                                  ð10Þ
+
+       À     mbLh  þ    p^hI  ¼   1  ðÀmLþh    þ  pþh IÞ  þ  1  ðÀmLhÀ      þ  phÀ IÞ   þ   s  suh    nt:
+                                  2                          2
+                                                                                            2
+
+These numerical traces of the HDG method are similar to those of the LDG method [20] except that u^h depends on the jump
+
+term s(ÀmLh + phI)nt for the HDG method, but not for the LDG method. This subtle difference is responsible for some signif-
+
+icant differences in the implementation aspect and approximation properties of the methods. As regards the implementation
+aspect, the HDG method can reduce the globally coupled unknowns to the approximate trace of the velocity and the average
+of the pressure by means of a hybridization technique, whereas the LDG method has the approximate velocity and pressure
+as the globally coupled unknowns. As regards the approximation properties, the HDG method yields optimal convergence for
+all the approximate variables, whereas the LDG method produces optimal convergence for the approximate velocity only.
+
+3.3. Local postprocessing
+
+We apply the element-by-element postprocessing proposed in [14] to obtain a new approximate velocity which is exactly
+
+divergence-free and H (div)-conforming.
+
+In the three dimensional case, we define the postprocessed approximate velocity uHh on the tetrahedron K 2 T h as the ele-
+
+ment of Pkþ1ðKÞ such that
+       À                Á
+        uHh À u^h Á           n; l       ¼  0  Àf8flLth2ggPnkÁð;FðÞn;                                                                        ð11aÞ
+        ðn Â rÞðuhH                   F  n  Â                          Â             ¼   0     8l 2 Pkþ1ðFÞ?                                 ð11bÞ
+                              Á nÞ
+                                     À                                    rÞl F
+
+for all faces F of K, and such that
+
+       À                      Á
+       ÀuHh À uh     ; rw        K ¼0       8w 2   P k ðK Þ;                                                                                 ð11cÞ
+        r Â uhH      À wh;       ðr Â    v      Á                      2  S k ðK Þ:                                                          ð11dÞ
+                                                   ¼ 0 8v
+                                            ÞBK K
+
+In (11b),
+
+       Pkþ1ðFÞ? :¼ Èl 2 Pkþ1ðFÞ : hl; l~iF ¼ 0;                                           É
+
+                                                                            8l~ 2 PkðFÞ ;
+
+n Â r is the tangential gradient and the function ffLht gg is the single-valued function on Eh equal to ððLthÞþ þ ðLthÞÀÞ=2 on the
+set Eh n @X and equal to Lht on @X. In (11d),
+
+       wh :¼ ðL32h À L23h; L13h À L31h; L21h À L12hÞ
+1152                                     N.C. Nguyen et al. / Journal of Computational Physics 230 (2011) 1147­1170
+
+is the approximation to the vorticity and BK is the so-called symmetric bubble matrix introduced in [12], namely,
+
+              X3
+      BK :¼ k`À3k`À2k`À1rk`  rk`;
+
+                   `¼0
+
+where ki  aPre`k¼t1hSe`ðbKaÞrwycheenrtericS`ciosotrhdeinsapteasceasosfocvieactteodr-wviatlhuethdehtoemtraohgeenderoonusK,ptohleynsoumbiinadlsicvesobf edineggrceoeu`nstuecdhmthoadtulvoÁ  4.  Finally,
+SkðKÞ :¼                                                                                                                                                                                  x   = 0, see
+
+[35,36].
+
+In the two dimensional case, the postprocessing is defined by the above equations if n Â r is replaced by the tangential
+
+derivative n2@1 + n1@2, n Â a is replaced by n1a2 À n2a1, if r Â u is replaced by r Â u :¼ @1u2 À @2u1, and if Eq. (11d) is re-
+
+placed by
+
+      À                     Á
+       r Â uhH À wh; wbK K ¼ 0 8w 2 PkÀ1ðKÞ;
+
+where bK :¼ k0k1k2 and wh :¼ L21h À L12h.
+    We refer the reader to [14] for a proof of the fact that uHh is a divergence-free approximate velocity in H(div, X).
+
+3.4. Imposing non-compatible boundary conditions
+
+Let us extend the method to treat boundary conditions of the form
+
+      Bn ¼ gN; on @XN;                                                                                                                                                                        ð12Þ
+
+where @XN is a part of the boundary @X such that @XN [ @XD = @X and @XN \ @XD = ;. Here B is a linear trace operator that
+depends on (L, u, p). Examples of the form of B are given in Table 1. Note that the boundary conditions are not necessarily
+
+compatible with the weak formulation defining the HDG method.
+
+    Note that the third and fourth examples in the above table provide boundary conditions on the vorticity. Indeed, we have
+
+that (L À Lt)n = x Â n, where x = (L32 À L23, L13 À L31, L21 À L12) is the vorticity vector.
+
+    In order to incorporate the above boundary condition, we redefine Mh(g) as
+
+      MhðgÞ ¼ fl 2 Mh : l ¼ P@g on @XDg                                                                                                                                                       ð13aÞ
+
+and, for the fourth example in Table 1, as
+
+      MhðgÞ ¼ fl 2 Mh : l ¼ P@XD g on @XD;                                                                                                                                                    ð13bÞ
+      l Á n ¼ P@XN g Á n on @XNg;
+
+with the obvious definitions for P@XD and P@XN . We then replace the fourth Eq. (3d) in (3) with
+      D                                  E
+          ÀmbLh þ p^hI þ u^h  u^h n; l @T hn@XN þ hBb hn; li@XN ¼ hgN; li@XN ; 8l 2 Mhð0Þ:
+                                                                                                                                                                                              ð14Þ
+
+Here the numerical flux Bbh is an approximation to B on @XN and is tabulated in Table 1. We thus obtain that
+ðLh; uh; ph; u^hÞ 2 Gh Â Vh Â Ph Â MhðgÞ satisfies
+
+      ðLh; GÞT h þ ðuh; r Á GÞT h À hu^h; DGni@T h ¼ 0;                             E
+      ðmLh À phI À uh  uh; rvÞT h þ                  ðÀmLbh þ p^hI þ u^h  u^hÞn; v      v ¼ ðf ;
+                                                                                                  ÞT h ;
+                                                                                     @T h
+                                                                                                                                                                                              ð15Þ
+      À   ðuh;  rqÞT     þ  hu^h  Á  n;  qi@T     ¼  0;
+      D               h                        h  E            D  E
+
+          ðÀmbLh þ p^hI þ u^h  u^hÞn; l           @T hn@XN  þ     Bbhn; l @XN ¼ hgN; li@XN
+
+for all (G, v, q, l) 2 Gh Â Vh Â Ph Â Mh(0).
+
+                                         Table 1
+                                         Examples of other boundary conditions for the incompressible Navier­Stokes
+                                         equations. Note that the asterisk symbol * indicates that the average pressure
+                                         condition (ph, 1)X = 0 is also imposed. The dagger symbol indicates that a Dirichlet
+                                         boundary condition for the normal component of the velocity has also to be
+                                         provided.
+
+                                         Condition type           B                 Bb h
+
+                                         Stress                   Àm(L + Lt) + pI   ÀmðLh þ Lht Þ þ phI þ shðuh; u^hÞ  n
+                                         Viscous stress*          Àm(L + Lt)        ÀmðLh þ LthÞ þ shðuh; u^hÞ  n
+                                         Vorticity + pressure     Àm(L À Lt) + pI   ÀmðLh À LthÞ þ phI þ shðuh; u^hÞ  n
+                                         Vorticity*,              Àm(L À Lt)        ÀmðLh À Lht Þ þ shðuh; u^hÞ  n
+                                         Gradient + pressure      ÀmL + pI          ÀmLh þ phI þ shðuh; u^hÞ  n
+                                         Gradient*                ÀmL               ÀmLh þ shðuh; u^hÞ  n
+                                       N.C. Nguyen et al. / Journal of Computational Physics 230 (2011) 1147­1170                                                    1153
+
+Finally, note that we can consider multiple boundary conditions
+
+Bjn ¼ gNj ; on @XNj ; 1 6 j 6 Q ;                                                                                                                                    ð16Þ
+
+where @XN  ¼  SQ      @  XjN  and Bj, 1 6 j 6 Q, are trace operators B whose image is evaluated on @XNj ;                                           1 6 j 6 Q , respectively. We
+
+                 j¼1
+
+enforce the boundary conditions (16) by replacing the last equation in (15) with
+
+D                                   E                           XQ   D  Bb  j       E            XQ D               E
+                                                                            h                              l gNj ;
+  ÀmbLh       þ p^hI þ u^h     u^h n; l                      þ  j¼1            n;  l          ¼                         ;    8l 2 Mhð0Þ                              ð17Þ
+                                                   @T hn@XN                             @XNj          j¼1
+                                                                                                                    @XNj
+
+and by suitably modifying the space Mh(Á). This allows for different boundary conditions to be prescribed on different parts of
+the boundary.
+
+3.5. Time-dependent incompressible Navier­Stokes equations
+
+    We end this section by extending the HDG method described above to the unsteady incompressible Navier­Stokes
+equations
+
+L À ru ¼ 0; in X Â ð0; T;
+
+@u  À      mr  Á  L   þ  rp   þ  r  Á  ðu    uÞ  ¼  f  ;     in X Â ð0; T;
+@t
+                                                                                                                                                                     ð18Þ
+r Á u ¼ 0; in X Â ð0; T;
+
+u ¼ g; on @X Â ð0; T;
+
+u ¼ u0; on X Â ft ¼ 0g:
+
+Using the backward-Euler scheme at time level tn with timestep Dtn we seek an approximation
+
+ðLhn; uhn; pnh; u^hnÞ 2 Gh Â V h Â Ph Â MhðgÞ such that
+v v v v v DðÀLDhnuð;tnhunGnh;Þ;TrhqþTÞhTðuþh nhþÀ; mrLu^nhÁhnGÀÁÞnTp;hhnqIÀÀ@Tuu^hEnhnh¼;G0nu; hn@;
+                                                       Th    ¼ 0;       D   ðÀmbL  n          p^nh I     u^ hn    u^ nh Þn;  E                      uhnÀ1     
+                                                              Á                    h                                               ¼ ðf ;             Dtn         ;
+                                                       r             þ                þ               þ                                    ÞT h  þ         ;
+                                                                 Th                                                            @T h                              Th
+
+                                                                                                                                                                     ð19Þ
+
+ðÀmLbnh þ p^nhI þ u^nh  u^hnÞn; l                ¼ 0;
+
+                                             @T h
+
+ðphn; 1ÞT h ¼ 0
+
+for all (G, v, q, l) 2 Gh Â Vh Â Ph Â Mh(0), where
+
+ÀmbLnh þ p^nhI þ u^hn  u^nh ¼ ÀmLhn þ phnI þ u^hn  u^nh þ shðunh; u^hnÞ  n:                                                                                          ð20Þ
+
+This discrete system is similar to the system (3) for the steady-state case except that there are two additional terms due to
+the backward difference discretization of the time derivative. We can thus apply the same solution procedure described in
+the next section for the steady-state case to the time-dependent case at every time level.
+
+    Furthermore, we note that using higher-order BDF schemes or diagonally implicit Runge­Kutta methods would yield a
+discrete system similar to (19). As a result, the HDG method for spatial discretization can be used with these implicit
+high-order time-stepping schemes to numerically solve the time-dependent incompressible Navier­Stokes system (18). This
+leads to the so-called implicit high-order HDG method.
+
+    Finally, we emphasize that the post-processing method described earlier for the steady-state case can also be applied to
+the time-dependent case without any modification. Moreover, the postprocessing only needs to be done at those time levels
+for which a more accurate result is desired.
+
+4. Implementation
+
+    In this section, we describe the implementation of the HDG method for the steady-state case since the same procedure
+can be applied to the time-dependent case at every time level.
+
+4.1. Newton­Raphson procedure
+
+    We consider the Newton­Raphson method for solving the nonlinear system (3): Given the mth current iterate
+ðLhm; uhm; pmh ; u^hmÞ, we find an increment ðdLhm; dumh ; dphm; du^mh Þ 2 Gh Â V h Â Ph Â Mhð0Þ such that
+1154                                                N.C. Nguyen et al. / Journal of Computational Physics 230 (2011) 1147­1170
+
+      ðdLmh ; GÞT h     þ  ðduhm; r       Á  GÞT h     À  du^hm      ;          T  h  ¼    r1ðGÞ;
+                                                                        Gn @
+
+      v v ðmdþLhmðÀÀdmpdmhLmhIÀ dumh                   umh 
+                             þ dphm     umh À           u^mh     dumh ; r          ÞT h    Þn;       
+                                       I þ du^mh                 þ u^hm            du^ hm
+                                                                                                        @T h
+            @1
+                                                                                        @T h        ¼ r2ð
+           v v þ
+                    sh  ðumh ;  u^ mh  Þdumh  þ @2shðuhm;            u^mh Þdu^mh ;                             Þ;                                                                                    ð21Þ
+                                   þ du^mh                                                           @1sh     ðumh
+      ÀðÀðdmudLmh mh; rþqdÞpT mhh  I þ du^mh                         r3ðqÞ;
+                                              Á n; q @T h ¼
+                                               u^hm þ u^hm              du^ hm             h  þ                        ;  u^ mh  Þdumh    þ  @   2shðumh ;   u^mh Þdu^mh  ;            h  ¼  r4ðlÞ;
+                                                                                Þn @T
+                                                                                                                                                                             l @T
+
+      ðdphm; 1ÞT h ¼ 0
+
+forall (G, v, q, l) 2 Gh Â Vh Â Ph Â Mh(0), where the right-hand side residuals are evaluated from (3) at the current iterate as
+
+      r1ðGÞ      ¼  ÀðLmh ; GÞT h      À  ðumh ; r     Á      GÞT h     þ  u^ hm  ;           T  h  ;
+                                                                                     Gn @
+
+      r2   ðv Þ  ¼  ðf  ; ðvÀÞTmhLmhÀ  ðmLmh À phmI           À  umh        v umh ; r ÞT h          Þ;  v        h  ;                                                                                ð22Þ
+      r3         ¼  À                                            u^ hm  Þn
+           ðqÞ                         þ phmI þ u^mh                        þ shðuhm; u^mh                   @T
+                                          u^mh             
+                    ðuDmh ; rqÞT h     À            Á  n; q @T h ;                                         E
+
+      r4ðlÞ ¼ À         ðÀmbL      m   þ  p^mh I    þ  u^ hm     u^ hm Þn   þ   sh ðuhm ;     u^mh Þ;   l        :
+                                   h
+                                                                                                              @T h
+
+Note that @1sh and @2sh denote the partial derivatives of sh(Á, Á) with respect to the first and second arguments, respectively.
+
+    Below we describe two different solution strategies for solving the above linearized system. The first strategy involves
+
+introducing the mean of the pressure increment dqhm 2 W and applying a hybridization technique to obtain a reduced system
+in terms of ðdu^hm; dqmh Þ only. The second strategy involves introducing a pseudo timestepping for the pressure increment and
+
+applying the hybridization technique to obtain a reduced system in terms of du^mh at each pseudo subiteration. The first ap-
+
+proach requires only one solution of the linear system for ðdu^hm; dqhmÞ, while the second approach requires the linear system to
+
+be solved several times for different right-hand sides. However, the system of the second approach is smaller than that of the
+
+first approach.
+
+4.2. Solution strategy A
+
+    We observe that the first three equations in (21) define the following what we call the local solver. The local solver LhA
+
+maps any given ðr; g; wÞ 2 Lh Â Mh Â Wh, where Lh denotes the space of linear functionals r :¼ (r1, r2, r3) over Gh Â Vh Â Ph,
+
+to the function ðLh; uh; phÞ 2 Gh Â V h Â Ph satisfying
+
+      ðLh; GÞK þ ðuh; r Á GÞK ¼ l1K ðGÞ;                                    þ                    þ     v phIÞn þ @1shðuhm; u^mh Þuh;                         ¼  lK2 ðvÞ;                             ð23Þ
+
+      ðmLh À phI À uh  umh À umh  uh; rvÞK                                       ðÀmLh                                                               @K
+
+      À ðuh; rqÞK ¼ lK3 ðqÞ;
+
+      p"h ¼ w
+
+for all (G, v, q) 2 Pk(K) Â Pk(K) Â Pk(K), where
+
+      l1K ðGÞ       r1K ðGÞ  þ     hgÀg; Gniu^@hmK ;þ  u^ mh      Á         v         À          2  sh  ðumh  ;  u^mh Þg;  v           ;
+                             À                                                              @
+      lK2 ðvÞ       rK2 ðvÞ                                      g n;             @K                                               @K
+
+      lK3 ðqÞ  r3K ðqÞ:
+
+for each element K 2 T h. We take the following particular case of linear functionals:
+
+      rK1 ðGÞ    ¼  ÀðLmh ;  GÞK       À  ðuhm;     div GÞK      þ      u^mh ;                         ÀÀmLmh                                      u^ hm Án                               
+                                                                                Gn @K ;
+                                                                                                                                                                                            @K
+      rK2  ðv Þ  ¼  ððuf hm; v; rÞKqþÞKðÀÀmLu^mhmh  þ pmh I þ umh           uhm    ;  rv   ÞK    À                     þ  phmI   þ        u^ hm              þ  shðumh ;     u^ hm Þ;  v        ;
+      rK3        ¼                                  Á n; q À q" @K :
+           ðqÞ
+
+We recall here that the space Wh was defined in Section 2.3 and that q" indicates the mean of q 2 Ph.
+    Setting
+
+         ðLhr ; urh; prhÞ :¼ LAh ðr; 0; 0Þ;
+
+       ðLgh; uhg; phgÞ :¼ LhAð0; g; 0Þ;
+
+         ðLwh ; uhw; pwh Þ :¼ LAh ð0; 0; wÞ;
+
+we obtain the following result proceeding; see [39] for details.
+                                              N.C. Nguyen et al. / Journal of Computational Physics 230 (2011) 1147­1170                                                                                                                                                                                                                                                  1155
+
+Lemma 4.1. Let ÀdLhm; duhm; dpmh ; du^hmÁ solve the linearized system (21). Then we have                                                                                                                                                                                                                                                                                  ð24Þ
+                                                                                                                                                                                                                                                                                                                                                                          ð25Þ
+dLhm  ¼  Lrh        þ  Ldkhm  þ  Lhdqhm ;
+                          h
+
+dumh  ¼  urh        þ  udkmh  þ  uhdqmh ;
+                         h
+
+dphm  ¼  phr  þ        pdkmh  þ  pdhqhm ;
+                         h
+
+du^hm ¼ dkhm;
+
+where ðdkmh ; dqhmÞ 2 Mhð0Þ Â W is the solution of the following weak formulation
+       ahðdkhm; lÞ þ bhðdqmh ; lÞ ¼ `hðlÞ; 8l 2 Mhð0Þ;
+        bhðw; dkmh Þ ¼ 0; 8w 2 W:
+
+Here the forms are given by
+
+ahðg;  lÞ  ¼        ðÀmLgh       þ phgI    þ  g    u^ hm  þ  u^ mh    gÞn;             h  þ  @1shðumh ;                                                                                                                                                                                                               u^ hm Þuhg  þ  @ 2 sh ðuhm ;  u^ hm  Þg;         ;
+
+                                                                                 l @T                                                                                                                                                                                                                                                                           l @T  h
+
+bhðw;  lÞ  À¼ðÀÀmwL; lhr þÁ nphr@ITÞnh ;   þ  @1shðumh ;     u^ hm Þurh ;        h  þ     r4ðlÞ                                                                                                                                                                                                                                                                           ð26Þ
+                                                                                                                                                                                                                                                                                                                                                                          ð27Þ
+`hðlÞ  ¼                                                                   l @T
+
+for all g, l 2 Mh.
+
+The weak formulation (25) gives rise to a matrix system typical of the saddle point problem as
+
+Am BT ! dKm   Rm 
+                       dÇ m ¼                   ;
+B0                                         0
+
+where dKm and dÇm represent the vectors of degrees of freedom of dkmh and dqmh , respectively. Once dKm and dÇm are ob-
+
+tained by solving (27), we compute the increment ðdLhm; duhm; dpmh ; du^hmÞ from (24).
+    We briefly discuss the computational complexity and memory storage required by the HDG method. In each Newton iter-
+
+ation, we need to form and solve the matrix system (27). The formation of the linear system (27) requires us to solve the local
+
+solver (23) for every K 2 T h. We solve (23) by eliminating the approximate velocity gradient and pressure to arrive at a smal-
+ler system in terms of the approximate velocity only. The cost of the local solver per element is thus OðN3uÞ, where
+Nu ¼ dimðPkðKÞÞ is the degrees of freedom of the approximate velocity per element. Hence, the total cost of the local solver
+is OðNK N3uÞ, where NK is the number of elements of the triangulation.
+
+    We now describe the size and sparsity structure of the linear system (27), restricting our attention to the case of a con-
+forming triangulation T h (no hanging nodes). To this end, we note that the matrix Am has a block structure in which the num-
+
+ber of block rows and block columns is equal to the number of interior faces NF. On each block row, there are at most (2d + 1)
+
+non-zero blocks since one interior face is connected to 2d neighboring faces and the size of each block is equal to Nk Â Nk
+
+with Nk ¼ dimðPkðFÞÞ being the degrees of freedom of the approximate trace of the velocity per face. Therefore, the size
+of Am is NA Â NA with NA = NFNk and the number of nonzero entries of Am is NF ð2d þ 1ÞN2k ¼ ð2d þ 1ÞNkNA. In addition, B
+has NK rows and NA columns, and each row of B has exactly (d + 1)Nk nonzero entries. Therefore, the matrix in (27) is of
+
+dimension (NA + NK) Â (NA + NK) and has (2d + 1)NkNA + 2(d + 1)NkNK nonzero entries.
+
+   In general, the solution of the linear system (27) will cost O((NA + NK)c) with c $ 2 typically. Therefore, the computational
+
+complexity of the HDG method will be dominated by the cost of solving the linear system(27) since the operation count of
+
+the local solver scales linearly with NK.
+
+4.3. Solution strategy B
+
+We consider the augmented Lagrangian approach [23] for solving the linearized system (21). In this approach the solution
+
+of the system (21) is computed in an iterative fashion until convergence: given the previous iterate of the pressure increment
+dphm;nÀ1 with dphm;0 ¼ 0, we find ðdLhm;n; dumh ;n; dphm;n; du^mh ;nÞ 2 Gh Â V h Â Ph Â Mhð0Þ such that
+
+ðdLhm;n; GÞT h         þ ðduhm;n; r Á GÞT h      À  du^mh ;n  ;            T  h  ¼  r1ðGÞ;
+                                                                    Gn @
+
+vv v v ðbmððÀddþþþLpmmhhmd;;L@@ðnnÀmh11ÀÀss;mnhhdddððþppLuumhhmhmhmmhd;;;pnnn;;ÀImhuu^^þ1À;mhhmn;dIÞÞqdddpþÞuuuTmhmhhdmmhh;n;u^;;ÀnInnmhþþþð;nddu@@uu^mh22mhhmssu^;Ànhh;nhm;ððuuruþhhmmmhqu^;;u^Þmhuu^^ThmhmmhhdþÞÞþuddu^mhduu^^mh;u^ndmhmh;mhu;;^nnr;hmn;;dÞl;nnu^ÞÁhm@T@n@TT;hnTh;hÞhqn¼¼;@rrT42hðð@l¼T ÞhÞr; 3ðqÞ                                                      ð28Þ
+1156                                             N.C. Nguyen et al. / Journal of Computational Physics 230 (2011) 1147­1170
+
+for all (G, v, q, l) 2 Gh Â Vh Â Ph           Â  Mh(0).          Here     b  is  a  given      positive    constant.          Note  also  that  ðdphm;n; 1ÞT h                           ¼  0  is    always  satisfied
+
+since we start with dphm;0 ¼ 0.
+
+We stop the iterations when the error in the pressure increment is less than a prescribed tolerance etol, that is, when
+      bdphm;n                      
+                   À    dpmh ;nÀ1       T     <  etol :                                                                                                                                                      ð29Þ
+
+                                           h
+
+The final iterate of (28) is then an approximate solution of the original system (21). It remains to describe how to solve the
+
+linear system (28).
+    Toward that end, we observe that the first three equations in (28) define the following local solver: The local solver LBh
+
+maps any given (r, g, u) 2 Lh Â Mh Â Ph, where Lh denotes the space of linear functionals r :¼ (r1, r2, r3) over Gh Â Vh Â Ph,
+
+to the function ðLh; uh; phÞ 2 Gh Â V h Â Ph satisfying
+
+      ðLh; GÞK þ ðuh; r Á GÞK ¼ lK1 ðGÞ;                               þ                þ      v phIÞn þ @1shðumh ; u^hmÞuh;              ¼  lK2 ðvÞ;                                                        ð30Þ
+
+      ðmLh À phI À uh  uhm À uhm  uh; rvÞK                                 ðÀmLh                                                      @K
+
+      bðph; qÞT h À ðuh; rqÞK ¼ lK3;bðqÞ
+
+for all (G, v, q) 2 Pk(K) Â Pk(K) Â Pk(K), where
+
+      l1K ðGÞ      rK1 ðGÞ  þ  hgðg; Gniu^@mhK  ;       u^ mh    gÞn;  v         À      2  sh  ðumh  ;  u^mh Þg;  v        ;
+                            À                   þ                                    @
+      lK2 ðvÞ      rK2 ðvÞ                                                  @K                                         @K
+
+      lK3;bðqÞ  r3K ðqÞ þ bðu; qÞT h
+
+for each element K 2 T h.
+    Again, setting
+
+      ðLrh; uhr ; prhÞ :¼ LhBðr; 0; 0Þ;
+
+      ðLhg; ugh; phgÞ :¼ LhBð0; g; 0Þ;
+      ðLhu; uuh ; phuÞ :¼ LhBð0; 0; uÞ;
+
+we obtain the following result proceeding; see [39] for details.
+
+Lemma 4.2. Let ðdLhm;n; duhm;n; dphm;n; du^hm;nÞ solve the linear system (28). Then we have
+
+      dLhm;n   ¼   Lhr  þ  Ldpmh ;nÀ1  þ      L ; dkmh ;n
+                              h                  h
+
+      dumh ;n  ¼   uhr  þ  udphm;nÀ1   þ   udkhm;n  ;                                                                                                                                                        ð31Þ
+                             h               h                                                                                                                                                               ð32Þ
+
+      dphm;n   ¼   prh  þ  pdphm;nÀ1   þ   p ; dkmh ;n
+                             h               h
+      du^mh ;n ¼ dkmh ;n;
+
+where dkmh ;n 2 Mhð0Þ is the solution of the following weak formulation
+
+       chðdkhm;n; lÞ ¼ fhðlÞ; 8l 2 Mhð0Þ:
+
+Here the forms are given by
+
+      chðg;    lÞ  ¼ ÀÀmL(hgþphgI             þ g  u^hm          þ  u^ mh     Á                            sh)ðumh      ;Àu^hm(Þ@u1hgsþhÀ@u2hms;hu^ðumh hmÁ; u^uhmhr  Þg; l           ;
+      fhðlÞ        r4ðlÞ þ m Lrh                                                                þ@                                                                                    
+               ¼                              þ Ldpmh ;nÀ1                   g n;   l @T       h        1                                                                      @T  h      )
+                                                      h
+                                                                          p þ p r   dpmh ;nÀ1                                                                         þ u ; dphm;nÀ1     l
+                                                                    l À                                                                                                      h
+                                                                             h      h          I n;
+
+                                                                                                                  @T h                                                                         @T h
+
+for all g, l 2 Mh.
+
+    The weak formulation (32) gives rise to a matrix system of the form
+
+      CmdKm;n ¼ Fm;n;                                                                                                                                                                                        ð33Þ
+
+where dKm,n represents the vectors of degrees of freedom of dkmh ;n. It is important to note that the matrix Cm does not change
+during the augmented Lagrangian iteration as it is formed once for every Newton­Raphson iteration. The matrix Cm has the
+same size and sparsity structure as the matrix Am of (27), so that the system (33) is smaller than (27). However, this sub-
+
+timestepping approach requires a number of sub-iterations to converge to the solution of the system (27).
+
+5. Numerical results
+
+    In this section, we present numerical results to assess the performance of the HDG method for several problems including
+the Kovasznay flow [30], lid-driven cavity flow [25], channel expansion flow [42], Taylor vortex flow [44], and natural
+                                                                                    N.C. Nguyen et al. / Journal of Computational Physics 230 (2011) 1147­1170                             1157
+
+convective flow in a cavity [24]. We also examine the convergence and accuracy properties of the method for a wide range of
+Reynolds numbers and for various polynomial degrees.
+
+    We have implemented both the solution strategies. The first strategy requires only one solution of the system (27), while
+the second strategy requires a number of sub-iterations to converge. However, the number of sub-iterations depends only on
+b and the timestep Dtn, not on the mesh size h and polynomial degree k. In our experiments we select b = 0.01 and observe
+that the number of sub-iterations required is about 10 in all cases. Moreover, we use a sparse direct solver for solving the
+resulting linear systems.
+
+    In all the presented examples, the stabilization tensor S has the form
+
+           s 0
+       S¼ 0 s ;
+
+where s is some positive constant defined on Eh and typically chosen such that
+
+       s % m þ juj:                                                                                                                                                                        ð34Þ
+             `
+
+Here ` is a representative length scale and juj is the magnitude of the velocity. This choice is based on dimensional analysis
+
+which shows that s has the same dimensions as the ratio m/` and the velocity magnitude: the former accounts for the dif-
+
+fusion effect and the latter accounts for the convection effect. We refer to [37,38] for a detailed discussion on the choice
+
+of the stabilization parameter s for convection­diffusion problems and to [14] for the Stokes equations.
+
+5.1. Kovasznay flow
+
+We consider the Kovasznay flow [30] with the analytical solution
+
+       u1 ¼ 1 À expðkx1Þ cosð2px2Þ;
+
+       u2  ¼     k  expðkx1Þ  sinð2px2Þ;
+
+                2p
+
+       p  ¼  À   1  expð2kx1Þ þ                                                 C;
+                    qffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffi
+                 2
+
+where  k  ¼  Re  À  Re2   þ  4p2  and                                               Re  ¼  1  is  the  Reynolds  number.  We  take  Dirichlet  boundary  conditions    for  the  velocity  as  the
+             2       4
+                                                                                           m
+
+restriction of the exact solution to the domain boundary and the Reynolds number Re = 20 so that m = 0.05. The computa-
+
+tional domain is X = (0, 2) Â (À0.5, 1.5).
+
+    In our experiments, we consider triangular meshes that are obtained by splitting a regular n Â n Cartesian grid into a total
+of 2n2 triangles, giving uniform element sizes of h = 2/n. On these meshes, we consider polynomials of degree k to represent
+
+all the approximate variables using a nodal basis within each element, with the nodes uniformly distributed.
+
+   We present the error and order of convergence in L2-norm in Table 2 for s = 1. We observe that all the approximate vari-
+
+ables converge optimally with order k + 1 for k = 1, 2, 3. It is also seen that the postprocessed velocity uhÃ converges with order
+k + 2, which is one order higher than the original velocity uh. We further show plots of streamline of the approximate velocity
+
+and the postprocessed velocity in Fig. 1 for k = 1 on the grid 8 Â 8. We see that the approximate velocity can be significantly
+
+Table 2
+
+History of convergence of the HDG method for s = 1 for the Kovasznay problem with Reynolds number Re = 20.
+
+Degree              Mesh          ku À uhkT h                                                     Order  kp À phkT h      Order     kL À LhkT h                 Order  ku À uhHkT h  Order
+k
+1                   n             Error                                                           ­      Error            ­         Error                       ­      Error         ­
+                                                                                                  1.51                    2.02                                  1.27                 2.02
+2                    4            3.88e À 1                                                       2.20   3.27e À 1        2.15      3.82e À 0                   1.70   3.35e À 1     2.87
+                     8            1.37e À 1                                                       2.07   8.03e À 2        2.13      1.59e À 0                   1.81   8.26e À 2     2.85
+3                   16            2.96e À 2                                                       2.03   1.81e À 2        2.06      4.90e À 1                   1.90   1.13e À 2     2.91
+                    32            7.06e À 3                                                              4.14e À 3                  1.39e À 1                          1.57e À 3
+                    64            1.73e À 3                                                       ­      9.96e À 4        ­         3.74e À 2                   ­      2.09e À 4     ­
+                                                                                                  3.66                    4.03                                  3.19                 4.05
+                     4            2.09e À 1                                                       3.13   1.48e À 1        3.27      2.16e À 0                   2.81   1.38e À 1     3.92
+                     8            1.66e À 2                                                       3.04   9.02e À 3        3.06      2.37e À 1                   2.87   8.28e À 3     3.87
+                    16            1.90e À 3                                                       3.02   9.32e À 4        3.02      3.37e À 2                   2.93   5.47e À 4     3.93
+                    32            2.30e À 4                                                              1.12e À 4                  4.62e À 3                          3.75e À 5
+                    64            2.85e À 5                                                       ­      1.38e À 5        ­         6.08e À 4                   ­      2.46e À 6     ­
+                                                                                                  3.98                    4.31                                  3.60                 4.64
+                     4            2.45e À 2                                                       4.06   1.57e À 2        3.98      3.00e À 1                   3.83   1.42e À 2     4.91
+                     8            1.55e À 3                                                       4.02   7.93e À 4        3.98      2.47e À 2                   3.90   5.68e À 4     4.89
+                    16            9.30e À 5                                                       4.01   5.01e À 5        3.99      1.73e À 3                   3.95   1.89e À 5     4.94
+                    32            5.74e À 6                                                              3.18e À 6                  1.16e À 4                          6.37e À 7
+                    64            3.57e À 7                                                              2.00e À 7                  7.52e À 6                          2.07e À 8
+1158  N.C. Nguyen et al. / Journal of Computational Physics 230 (2011) 1147­1170
+
+Fig. 1. Streamline of the approximate velocity uh (left) and the postprocessed velocity uÃh (right) for the Kovasznay problem using k = 1 on the grid 8 Â 8.
+
+Fig. 2. Newton convergence of the HDG method (left) and the number of sub-iterations versus the number of Newton iterations (right) on the grid 16 Â 16.
+
+improved by the local postprocessing since the postprocessed velocity uÃh is clearly superior to the original velocity uh. More-
+over, unlike the original velocity, the postprocessed velocity is exactly divergence-free and H (div)-conforming.
+
+    Using the augmented Lagrangian method (solution strategy B) we show the Newton convergence and the number of sub-
+iterations required in Fig. 2. Here the norm of the residual is defined as the two-norm of the right-hand-side vector of (27) or
+(28). We observe that the Newton method converges very rapidly to the norm of the residual of 10À10 in 7 iterations. Fur-
+thermore, the number of sub-iterations is small (less than 7) and tends to decrease with the Newton steps. Note that using
+the solution strategy A, we obtain the same results in terms of the Newton convergence and accuracy. As the linear systems
+are solved using direct methods, the solution strategy A is faster than the solution strategy B since it requires only one linear
+solve per Newton step. We shall thus consider the solution strategy A for the other examples.
+
+    In summary, the HDG method yields the (k + 1) th-order of convergence for the pressure and velocity gradient, and in
+conjunction with the local postprocessing produces the (k + 2) th-order of convergence for the velocity (when k P 1). In con-
+trast, for many other DG methods, the approximate pressure and velocity gradient converges with order k, while the approx-
+imate velocity converges with order k + 2. Moreover, the HDG method has less the globally coupled degrees of freedom than
+other DG methods since it solves for the approximate trace of the velocity and the mean of the pressure.
+5.2. Lid-driven cavity flow
+
+    The lid-driven cavity flow has been widely used as a validation case for numerical methods of the incompressible Navier­
+Stokes equations. The problem has simple geometry and boundary conditions. The standard case is fluid contained in a
+square domain X = (0, 1) Â (0, 1) with homogeneous Dirichlet boundary conditions on all sides except on the upper side,
+where the velocity is prescribed as (1, 0). Despite its simple geometry, the lid-driven cavity problem poses some difficulties
+for any numerical method due to the singularity of the solution at the upper corners, the rapid change of the flow at high
+Reynolds number, and the appearance of rotating vortices with significantly different sizes.
+N.C. Nguyen et al. / Journal of Computational Physics 230 (2011) 1147­1170  1159
+
+    Fig. 3 shows a computational grid 32 Â 32 on which our numerical solutions are obtained for Reynolds numbers Re = 100,
+200, 400, 1000, 2500, and Re = 5000. The number of elements is thus 2048. The grid is refined along the wall in order to cap-
+ture the boundary layer and the complex fluid structure near the wall. The minimum grid spacing is hmin = 3.8 Â 10À3 and the
+maximum grid spacing is hmax = 1.0 Â 10À1. The steady-state solution is computed by the HDG method described in Section 3.
+The approximate solution for the lowest Reynolds Re = 100 is computed from the solution of the corresponding Stokes prob-
+lem as initial guess, meanwhile the approximate solution for a higher Reynolds number is computed from the approximate
+
+solution for a lower Reynolds numbers as initial guess. The stabilization parameter s = 1 is used for all cases.
+
+    We next show the profiles of the velocity along the centerlines for Re = 1000 and Re = 5000 in Fig. 4. The horizontal veloc-
+ity profiles exhibit a kink near the upper wall y = 1, while a similar behavior is observed for the vertical velocity profiles near
+the right wall x = 1. Such behavior has been reported in [3,25]. Moreover, we observe that our numerical results are in very
+good agreement with the results previously reported in [25]. Note for Re = 1000 that the results for k = 1 are very good de-
+spite the fact that our computational grid 32 Â 32 is quite coarse. However, for Re = 5000, the velocity profiles for k = 1 are
+slightly different near the wall due to the boundary layer effect for higher Reynolds number. We also present in Fig. 5 the
+pressure profiles along the centerlines for Re = 1000 and Re = 5000. We observe a similar trend of convergence: the approx-
+imate pressure converges rapidly with increasing k. Unlike the case of the velocity profiles which have larger errors near the
+wall than at the center of the domain, the pressure profiles have larger error at the center of the domain than at the wall. This
+is because the grid is refined along the wall in order to resolve the boundary layer.
+
+    Finally, we display in Fig. 6 the streamline contours of the postprocessed velocity uhÃ and in Fig. 7 the approximate pres-
+sure for Re = 1000 and Re = 5000. We clearly observe the typical structure of the steady-state solution for the lid-driven cav-
+ity flow [3,25]: there are various secondary vortices near the corners and the size of the secondary vortices increases with the
+Reynolds number. Moreover, these structures remain clearly observed for k = 1 even though our mesh 32 Â 32 is significantly
+
+                                                                    Fig. 3. Finite element mesh for the lid-driven cavity flow.
+
+Fig. 4. The u- and v- components of the approximate velocity uh along the horizontal and vertical centerlines for Re = 1000 (left) and Re = 5000 (right) on the
+
+grid 32 Â 32 for the lid-driven cavity flow.
+1160                                      N.C. Nguyen et al. / Journal of Computational Physics 230 (2011) 1147­1170
+
+Fig. 5. The pressure along the horizontal and vertical centerlines for Re = 1000 (left) and Re = 5000 (right) on the grid 32 Â 32 for the lid-driven cavity flow.
+
+coarser than the meshes (129 Â 129 and 257 Â 257) used in the previous calculation [25]. However, we note that our local
+postprocessing is not as effective as it was in the previous example in improving the accuracy of the velocity approximation.
+In particular, the postprocessed velocity looks very similar to the original velocity. This is due to the presence of singularities
+at the corners as well as to the relatively high Reynolds numbers.
+
+5.3. Laminar flow in a channel expansion
+
+    Laminar flow in a channel expansion has also been studied by many authors as a test for numerical schemes. We choose
+the same geometry and boundary conditions given in [42] in order to compare our results with those presented in [42]. The
+channel geometry and computational mesh are shown in Fig. 8. The governing equations are given by
+
+      À   1   Du  þ  rp  þ  r    Á  ðu    uÞ  ¼  0;   in X;
+          Re
+
+      r Á u ¼ 0; in X;
+
+      u ¼ ð0; 0Þ; on Cwall;
+
+      u ¼ ð1 À y2; 0Þ; on Cin;
+
+      1   run     À  pn  ¼  ð0;  0Þ;    on Cout:
+      Re
+
+These equations are nondimensionalized with respect to the inlet channel half-width H and the maximum velocity at inflow
+
+U0. The Reynolds number is defined as Re = U0H/m. The approximate solution of the corresponding Stokes problem is used as
+
+an initial solution in the HDG method for solving the governing equations. The numerical results are obtained for Re = 109.5
+
+with the stabilization parameter being set to s = 1.
+
+    We present in Fig. 9 the contour of the approximate pressure and its zoom near the step corner for k = 2 and k = 3, and in
+Fig. 10 the contour of the streamline of the postprocessed velocity. We observe that the high pressure at the step and the
+effect of recirculation on the vorticity distribution in the corner are all consistent with physical intuition. Moreover, we
+see that the reattachment point is located at the point (xr, yr) = (5, À2). This figure is the same as the value reported in
+[42]. We also find that the streamfunction attains its minimum at the center of the vortex, which is (xm, ym) = (1.5, À1.4). This
+figure agrees with the experimental value and numerical value obtained using finite differences [22]. In Fig. 11 we display
+the streamwise velocity profiles at several locations downstream of the step. The agreement with [42] is very good.
+
+5.4. Taylor vortex problem
+
+The Taylor vortex problem [44] is a well-known example of the unsteady incompressible Navier­Stokes equations. The
+
+exact solution is
+
+      ux  ¼  À  cosðpxÞ  sinðpyÞ        exp  À2p2       ;
+                                                     t
+
+                                                 Re
+                                         À2p2     
+      uy  ¼   sinðpxÞ  cosðpyÞ      exp          t
+                                              Re ;
+                                                      À4p2     
+      p  ¼  À  1  ðcosð2pxÞ  þ      cosð2pyÞÞ    exp          t
+               4                                          Re
+                                                                 ;
+N.C. Nguyen et al. / Journal of Computational Physics 230 (2011) 1147­1170  1161
+
+Fig. 6. Streamline of the postprocessed velocity uÃh for Re = 1000 (left) and Re = 5000 (right) using k = 1 (top), k = 2 (middle), and k = 3 (bottom) on the grid
+32 Â 32 for the lid-driven cavity flow.
+
+where Re = 1/m is the Reynolds number. We consider the above problem on X = (0, 1)2 with Reynolds number Re = 20 and
+
+final time T = 1. We take the Dirichlet boundary condition for the velocity as the restriction of the exact solution to the do-
+main boundary and the initial condition as an instantiation of the exact solution at t = 0.
+1162  N.C. Nguyen et al. / Journal of Computational Physics 230 (2011) 1147­1170
+
+Fig. 7. Plots of the approximate pressure for Re = 1000 (left) and Re = 5000 (right) using k = 1 (top), k = 2 (middle), and k = 3 (bottom) on the grid 32 Â 32 for
+the lid-driven cavity flow.
+
+    We consider triangular meshes that are obtained by splitting a regular n Â n Cartesian grid into a total of 2n2 triangles,
+giving uniform element sizes of h = 1/n. We use the third-order backward difference formula (BDF3) for the temporal discret-
+
+ization. The stabilization parameter s is set to 1 on @T h.
+
+    We first look at the convergence and accuracy in terms of both k and h refinements. For this purpose, we select a small
+constant timestep of Dt = 0.005, so that the spatial error is dominant and the temporal error is negligible. We present in
+Table 3 the history of convergence of the HDG method at the final time t = 1. We observe that the approximate velocity,
+pressure, and velocity gradient converge with the optimal order k + 1 for k = 1, 2, 3. The fact that the HDG method yields
+N.C. Nguyen et al. / Journal of Computational Physics 230 (2011) 1147­1170        1163
+
+Fig. 8. Geometry configuration and computational mesh for the channel expansion.
+
+Fig. 9. Plots of the approximate pressure and its zoom near the step corner for k = 2 (left) and k = 3 (right) for the channel expansion flow. The improved
+resolution obtained with k = 3 is apparent from the figure.
+
+                               Fig. 10. Plots of the postprocessed streamline for k = 2 (left) and k = 3 (right) for the channel expansion flow.
+
+optimal convergence for both the approximate pressure and velocity gradient is a very important advantage since all known
+DG methods provide suboptimal convergence of order k for the approximate pressure and velocity gradient.
+
+    Equally important is the fact that the postprocessed velocity uÃh converges with the order k + 2, which is one order higher
+than the original approximate velocity uh. Furthermore, we emphasize that uhÃ is an exactly divergence-free and H(div)-con-
+forming velocity field. To visualize the effect of the local postprocessing, we show in Fig. 12 the plots of the approximate
+1164          N.C. Nguyen et al. / Journal of Computational Physics 230 (2011) 1147­1170
+
+        Fig. 11. A plot of the streamwise velocity profiles for k = 2 (left) and k = 3 (right) for the channel expansion flow.
+
+Table 3
+History of convergence of the HDG method for the Taylor vortex problem when the velocity Dirichlet condition is applied on the entire boundary.
+
+Degree  Mesh  ku À uhkT h  Order  kp À phkT h  Order  kL À LhkT h                         Order  ku À uHh kT h                                   Order
+k
+1       1/h   Error        ­      error        ­      Error                               ­      Error                                           ­
+                           1.89                2.00                                       1.39                                                   2.08
+2        4    4.73e À 2    2.11   3.44e À 2    2.01   3.29e À 1                           1.71   3.40e À 2                                       2.59
+         8    1.27e À 2    2.08   8.59e À 3    1.99   1.26e À 1                           1.84   8.04e À 3                                       2.82
+3       16    2.94e À 3    2.03   2.14e À 3    1.99   3.85e À 2                           1.91   1.34e À 3                                       2.92
+        32    6.95e À 4           5.38e À 4           1.07e À 2                                  1.89e À 4
+        64    1.70e À 4    ­      1.36e À 4    ­      2.85e À 3                           ­      2.50e À 5                                       ­
+                           3.17                2.98                                       2.60                                                   3.77
+         4    1.14e À 2    3.06   6.67e À 3    2.98   1.04e À 1                           2.73   8.35e À 3                                       3.91
+         8    1.26e À 3    3.01   8.43e À 4    3.00   1.72e À 2                           2.84   6.12e À 4                                       3.91
+        16    1.51e À 4    3.00   1.07e À 4    3.00   2.60e À 3                           2.91   4.07e À 5                                       3.94
+        32    1.87e À 5           1.33e À 5           3.64e À 4                                  2.70e À 6
+        64    2.33e À 6    ­      1.67e À 6    ­      4.85e À 5                           ­      1.76e À 7                                       ­
+                           4.06                3.84                                       3.54                                                   4.70
+         2    1.81e À 3    4.04   1.00e À 3    4.01   2.01e À 2                           3.74   1.22e À 3                                       4.84
+         4    1.08e À 4    4.01   7.00e À 5    4.01   1.72e À 3                           3.85   4.67e À 5                                       4.89
+         8    6.59e À 6    4.00   4.33e À 6    4.00   1.29e À 4                           3.92   1.63e À 6                                       4.91
+        16    4.08e À 7           2.68e À 7           8.92e À 6                                  5.48e À 8
+        32    2.55e À 8           1.67e À 8           5.88e À 7                                  1.82e À 9
+
+velocity and the postprocessed velocity for k = 2 on the grid h = 1/2. We observe that the local postprocessing does provide a
+significant improvement in the approximation of the velocity field, since uÃh is clearly superior to uh.
+
+    Moreover, since the local postprocessing is performed at the element level and only at the timestep where higher accu-
+racy is desired, it adds very little to the overall computational cost. As a result, with the HDG method, the (k + 2)-convergent
+velocity, (k + 1)-convergent pressure, and (k + 1)-convergent velocity gradient can be computed at the cost of a DG approx-
+imation using polynomials of degree k.
+
+5.5. Testing other boundary conditions
+
+    We now look at the effect of applying different boundary conditions on different parts of the boundary on the accuracy of
+the HDG method. We use the Taylor vortex problem presented above for our investigation. We denote by Cleft, Cbottom, Cright,
+and Ctop the left, bottom, right, and top sides of the domain, respectively. We consider six cases of boundary conditions as
+shown in Table 4. The first three cases correspond to a Neumann condition on one side and three velocity Dirichlet condi-
+tions on the other three sides, while the last three cases correspond to two Neumann conditions on two sides and two veloc-
+ity Dirichlet conditions on the other two sides.
+
+    We present the results in Table 5 for the first three cases and in Table 6 for the last three cases. We observe that all the
+approximate variables converge with the optimal order k + 1 for all six cases. Furthermore, the postprocessed velocity con-
+verges with order k + 2 for the first case, but with order k + 1 for the other cases. This can be explained by noting that the
+gradient-pressure condition in the first case is compatible with the weak formulation of the HDG method, whereas the vor-
+ticity-pressure and stress-pressure conditions in the other cases are not.
+                N.C. Nguyen et al. / Journal of Computational Physics 230 (2011) 1147­1170  1165
+
+Fig. 12. The approximate velocity uh (left) and the postprocessed velocity uÃh (right) obtained using k = 2 on the grid h = 1/2 for the Taylor vortex problem.
+The horizontal velocity is placed at the top, while the vertical velocity at the bottom.
+
+Table 4
+Six cases of boundary conditions for the Taylor vortex problem.
+
+Case  Cleft     Cbottom                                          Cright                     Ctop
+
+1     Velocity  Gradient-pressure                                Velocity                   Velocity
+2     Velocity  Velocity                                         Vorticity-pressure         Velocity
+3     Velocity  Velocity                                         velocity                   Stress
+4     Velocity  Gradient-pressure                                Vorticity-pressure         Velocity
+5     Velocity  Gradient-pressure                                velocity                   Stress
+6     Velocity  Velocity                                         Vorticity-pressure         Stress
+
+5.6. The effect of Fixing Dt/h
+
+    We revisit the Taylor vortex example to illustrate the effect of taking a fixed ratio Dt/h. However, for this purpose we
+consider the Reynolds number Re = 100 and the final time T = 10. We use the BDF3 scheme for the temporal discretiza-
+tion and take the timestep to be Dt = 10h, so that Dt/h = 10. We present in Table 7 the history of convergence of the HDG
+method at the final time. Unlike the previous results obtained by taking Dt very small, the convergence rates are affected
+by the accuracy order of the BDF3 method when we fix the ratio Dt/h. More specifically, for k = 1 and k = 2, all the
+approximate variables converge with the optimal order k + 1. However, for k = 3 and k = 3, all the approximate variables
+converge with order 3 only, which is the same order of accuracy as the BDF3 scheme. These results indicate that when
+Dt/h is kept fixed we should use a k + 1-order time-stepping method in order to obtain optimal convergence properties.
+Moreover, as expected, the order of convergence of the postprocessed velocity is also affected in the same way. In par-
+ticular, the postprocessed converges with order at most 3 for all k. As a result, it converges with order k + 2 for only k = 1.
+Therefore, the time-stepping method must be accurate with order k + 2 in order to obtain super-convergence of the post-
+processed velocity.
+1166                                   N.C. Nguyen et al. / Journal of Computational Physics 230 (2011) 1147­1170
+
+Table 5
+History of convergence of the HDG method for the Taylor vortex problem for the first three cases of boundary conditions shown in Table 4.
+
+Degree       Mesh          ku À uhkT h        Order     kp À phkT h    Order             kL À LhkT h               Order  ku À uhHkT h     Order
+k
+Case 1       1/h           Error              ­         Error          ­                 Error                     ­      Error            ­
+1                                             2.02                     2.09                                        1.45                    2.33
+              2            5.11e À 2          2.08      3.85e À 2      2.06              3.53e À 1                 1.72   3.97e À 2        2.47
+2             4            1.26e À 2          2.09      9.05e À 3      2.01              1.29e À 1                 1.85   7.91e À 3        2.76
+              8            2.98e À 3          2.04      2.17e À 3      2.00              3.92e À 2                 1.92   1.43e À 3        2.89
+Case 2       16            7.00e À 4                    5.40e À 4                        1.09e À 2                        2.11e À 4
+1            32            1.70e À 4          ­         1.35e À 4      ­                 2.87e À 3                 ­      2.83e À 5        ­
+                                              3.26                     3.15                                        2.75                    3.83
+2             2            1.28e À 2          3.13      7.56e À 3      3.02              1.19e À 1                 2.75   1.06e À 2        4.09
+              4            1.33e À 3          3.02      8.53e À 4      2.99              1.77e À 2                 2.84   7.43e À 4        3.99
+Case 3        8            1.52e À 4          3.00      1.05e À 4      2.99              2.62e À 3                 2.91   4.36e À 5        3.96
+1            16            1.87e À 5                    1.32e À 5                        3.66e À 4                        2.75e À 6
+             32            2.33e À 6          ­         1.66e À 6      ­                 4.86e À 5                 ­      1.77e À 7        ­
+2                                             1.88                     2.16                                        1.37                    2.02
+              2            4.96e À 2          2.14      4.07e À 2      2.01              3.36e À 1                 1.72   3.80e À 2        2.55
+              4            1.35e À 2          2.10      9.13e À 3      1.99              1.30e À 1                 1.84   9.37e À 3        2.67
+              8            3.06e À 3          2.03      2.26e À 3      1.99              3.95e À 2                 1.92   1.60e À 3        2.37
+             16            7.14e À 4                    5.71e À 4                        1.10e À 2                        2.52e À 4
+             32            1.75e À 4          ­         1.44e À 4      ­                 2.92e À 3                 ­      4.85e À 5        ­
+                                              3.21                     3.11                                        2.60                    3.80
+              2            1.20e À 2          3.07      7.74e À 3      3.00              1.10e À 1                 2.73   9.63e À 3        3.78
+              4            1.29e À 3          3.02      8.95e À 4      3.01              1.81e À 2                 2.86   6.90e À 4        3.56
+              8            1.54e À 4          3.01      1.12e À 4      3.01              2.72e À 3                 2.92   5.03e À 5        3.48
+             16            1.90e À 5                    1.39e À 5                        3.75e À 4                        4.25e À 6
+             32            2.36e À 6          ­         1.72e À 6      ­                 4.94e À 5                 ­      3.80e À 7        ­
+                                              2.07                     1.92                                        1.43                    2.50
+              2            5.03e À 2          2.01      4.29e À 2      2.08              3.48e À 1                 1.69   3.88e À 2        2.28
+              4            1.20e À 2          1.97      1.14e À 2      2.06              1.29e À 1                 1.84   6.85e À 3        1.95
+              8            2.98e À 3          1.96      2.69e À 3      2.02              4.00e À 2                 1.92   1.41e À 3        1.86
+             16            7.63e À 4                    6.45e À 4                        1.12e À 2                        3.67e À 4
+             32            1.96e À 4          ­         1.59e À 4      ­                 2.97e À 3                 ­      1.01e À 4        ­
+                                              3.12                     3.13                                        2.62                    3.76
+              2            1.08e À 2          3.02      7.25e À 3      2.94              1.09e À 1                 2.73   7.84e À 3        3.50
+              4            1.25e À 3          2.98      8.28e À 4      2.95              1.77e À 2                 2.84   5.8e À 4         3.04
+              8            1.54e À 4          2.98      1.08e À 4      2.97              2.66e À 3                 2.91   5.12e À 5        2.89
+             16            1.95e À 5                    1.39e À 5                        3.71e À 4                        6.22e À 6
+             32            2.47e À 6                    1.78e À 6                        4.92e À 5                        8.37e À 7
+
+5.7. Natural convective flow in a cavity
+
+    Finally, we consider the natural convective flow in a laterally heated cavity presented in [24]. The geometry and boundary
+
+conditions are depicted in Fig. 13. We investigate the numerical solution of this problem by the HDG method for the Prandtl
+number Pr = 0 and Grashof number Gr = 106. In this case the governing equations are given by
+
+      @u  À  Du  þ  rp  þ  r  Á  ðu    uÞ  ¼  Grh  ey;  in X Â ð0; T;
+      @t
+
+      r Á u ¼ 0; in X Â ð0; T;
+
+      u ¼ 0; on @X Â ð0; T;
+
+      u ¼ 0; on X Â ft ¼ 0g;
+
+where h = 1 À x/4 is the temperature distribution in the rectangular cavity and ey = (0, 1) is the unit vector in the vertical
+
+direction. Here the final time is T = 0.1.                             pffiffiffiffiffi                                                    pffiffiffiffiffi
+
+In this example, since the magnitude of the velocity scales like Gr, we choose the stabilization parameter s ¼ Gr, in
+
+agreement with (34). Furthermore, we use the second-order backward difference formula (BDF2) for the temporal discret-
+ization and take the timestep to be Dt = 2 Â 10À4. The finite element mesh shown in Fig. 13 is uniform with h = 0.1, giving the
+cell Peclet number about 100. Because this mesh is relatively coarse for the Grashof number Gr = 106, we compute the
+
+numerical solution by using high polynomial degrees k = 3 and k = 4.
+
+We present in Fig. 14 the postprocessed approximate velocity for k = 3, 4 at the spatial point (2, 0.8). We observe the onset
+
+of oscillatory instability in the flow and that the flow becomes periodic unstable after t = 0.08. Note that for Pr = 0 considered
+
+here, the temperature is not perturbed at all. Hence, the instability is of purely hydrodynamic origin. Fig. 15 shows the
+
+streamline of the approximate velocity at different time levels. We see that the periodic unstable flows consists of three pri-
+
+mary convective rolls. As seen from the streamline patterns, the oscillations of the streamlines are most noticeable between
+              N.C. Nguyen et al. / Journal of Computational Physics 230 (2011) 1147­1170                                                       1167
+
+Table 6                                                                                                                                   Order
+History of convergence of the HDG method for the Taylor vortex problem for the last three cases of boundary conditions shown in Table 4.
+                                                                                                                                          ­
+Degree  Mesh  ku À uhkT h  Order  kp À phkT h  Order  kL À LhkT h                                             Order  ku À uHh kT h        2.40
+k                                                                                                                                         2.33
+Case 4  1/h   Error        ­      Error        ­      Error                                                   ­      Error                2.27
+1                          2.21                2.13                                                           1.54                        2.12
+         2    7.17e À 2    2.13   3.63e À 2    1.97   3.85e À 1                                               1.72   6.44e À 2            ­
+2        4    1.55e À 2    2.09   8.31e À 3    1.97   1.32e À 1                                               1.85   1.22e À 2            3.55
+         8    3.55e À 3    2.03   2.13e À 3    1.98   4.01e À 2                                               1.92   2.42e À 3            3.62
+Case 5  16    8.33e À 4           5.44e À 4           1.11e À 2                                                      5.01e À 4            3.47
+1       32    2.04e À 4    ­      1.38e À 4    ­      2.93e À 3                                               ­      1.15e À 4            3.34
+                           3.25                3.00                                                           2.70
+2        2    1.52e À 2    3.21   6.60e À 3    2.99   1.20e À 1                                               2.75   1.36e À 2            ­
+         4    1.60e À 3    3.09   8.28e À 4    2.98   1.85e À 2                                               2.86   1.16e À 3            1.92
+Case 6   8    1.73e À 4    3.04   1.05e À 4    2.99   2.75e À 3                                               2.93   9.44e À 5            1.90
+1       16    2.03e À 5           1.32e À 5           3.78e À 4                                                      8.50e À 6            2.02
+        32    2.47e À 6    ­      1.67e À 6    ­      4.96e À 5                                               ­      8.42e À 7            1.99
+2                          1.84                1.92                                                           1.45                        ­
+         2    5.61e À 2    1.90   3.75e À 2    2.03   3.72e À 1                                               1.70   4.64e À 2            4.16
+         4    1.57e À 2    2.00   9.93e À 3    2.01   1.37e À 1                                               1.86   1.23e À 2            3.60
+         8    4.20e À 3    1.99   2.44e À 3    2.00   4.20e À 2                                               1.93   3.28e À 3            2.74
+        16    1.05e À 3           6.03e À 4           1.16e À 2                                                      8.09e À 4            2.75
+        32    2.64e À 4    ­      1.51e À 4    ­      3.04e À 3                                               ­      2.04e À 4
+                           3.48                3.11                                                           2.82                        ­
+         2    1.46e À 2    3.07   7.16e À 3    2.99   1.28e À 1                                               2.76   1.28e À 2            2.65
+         4    1.31e À 3    2.94   8.31e À 4    2.96   1.81e À 2                                               2.85   7.15e À 4            2.21
+         8    1.57e À 4    2.94   1.04e À 4    2.97   2.68e À 3                                               2.92   5.90e À 5            2.13
+        16    2.05e À 5           1.35e À 5           3.73e À 4                                                      8.82e À 6            2.00
+        32    2.67e À 6    ­      1.72e À 6    ­      4.94e À 5                                               ­      1.31e À 6            ­
+                           2.41                1.90                                                           1.50                        3.74
+         2    8.32e À 2    2.07   3.97e À 2    1.98   3.90e À 1                                               1.70   7.76e À 2            3.51
+         4    1.57e À 2    2.04   1.07e À 2    2.01   1.37e À 1                                               1.87   1.24e À 2            2.70
+         8    3.72e À 3    1.99   2.7e À 3     1.99   4.24e À 2                                               1.93   2.67e À 3            2.49
+        16    9.04e À 4           6.71e À 4           1.16e À 2                                                      6.10e À 4
+        32    2.27e À 4    ­      1.68e À 4    ­      3.03e À 3                                               ­      1.53e À 4
+                           3.23                3.14                                                           2.65
+         2    1.27e À 2    3.07   7.06e À 3    2.94   1.17e À 1                                               2.75   1.06e À 2
+         4    1.35e À 3    2.91   8.04e À 4    2.92   1.87e À 2                                               2.85   7.95e À 4
+         8    1.61e À 4    2.83   1.05e À 4    2.91   2.79e À 3                                               2.81   6.98e À 5
+        16    2.14e À 5           1.38e À 5           3.87e À 4                                                      1.08e À 5
+        32    3.01e À 6           1.83e À 6           5.51e À 5                                                      1.91e À 6
+
+Table 7
+History of convergence of the HDG method for the Taylor vortex problem using the BDF3 scheme with Dt/h = 10.
+
+Degree  Mesh  ku À uhkT h  Order  kp À phkT h  Order  kL À LhkT h                                             Order  ku À uHh kT h        Order
+k
+1       1/h   Error        ­      Error        ­      Error                                                   ­      Error                ­
+                           1.20                2.05                                                           0.81                        1.04
+2        2    1.91e À 2    2.31   1.09e À 2    1.93   1.66e À 1                                               1.41   1.57e À 2            2.43
+         4    8.29e À 3    2.31   2.63e À 3    1.94   9.50e À 2                                               1.52   7.66e À 3            2.55
+3        8    1.67e À 3    2.25   6.89e À 4    1.95   3.57e À 2                                               1.67   1.42e À 3            2.73
+        16    3.38e À 4    2.13   1.79e À 4    1.97   1.24e À 2                                               1.80   2.44e À 4            2.84
+4       32    7.09e À 5           4.64e À 5           3.90e À 3                                                      3.67e À 5
+        64    1.62e À 5    ­      1.19e À 5    ­      1.12e À 3                                               ­      5.15e À 6            ­
+                           2.98                2.81                                                           2.10                        3.06
+         2    5.16e À 3    3.34   1.71e À 3    2.88   5.66e À 2                                               2.39   4.55e À 3            3.74
+         4    6.54e À 4    3.11   2.43e À 4    2.93   1.32e À 2                                               2.52   5.46e À 4            3.52
+         8    6.44e À 5    3.05   3.31e À 5    2.94   2.52e À 3                                               2.68   4.07e À 5            3.45
+        16    7.45e À 6    3.02   4.35e À 6    2.96   4.38e À 4                                               2.80   3.54e À 6            3.30
+        32    9.00e À 7           5.65e À 7           6.84e À 5                                                      3.25e À 7
+        64    1.11e À 7    ­      7.27e À 8    ­      9.80e À 6                                               ­      3.31e À 8            ­
+                           3.17                2.72                                                           2.85                        3.12
+         2    1.06e À 3    3.08   5.01e À 4    2.91   1.42e À 2                                               3.15   9.85e À 4            3.05
+         4    1.18e À 4    2.96   7.62e À 5    2.94   1.96e À 3                                               3.12   1.14e À 4            2.95
+         8    1.39e À 5    2.97   1.01e À 5    2.97   2.21e À 4                                               3.07   1.37e À 5            2.97
+        16    1.79e À 6           1.32e À 6           2.55e À 5                                                      1.78e À 6
+        32    2.27e À 7    ­      1.68e À 7    ­      3.03e À 6                                               ­      2.27e À 7            ­
+                           1.88                2.68                                                           2.01                        1.87
+         2    3.99e À 4    3.00   4.73e À 4    2.88   5.58e À 3                                               2.99   3.97e À 4            3.00
+         4    1.09e À 4    2.94   7.41e À 5    2.94   1.39e À 3                                               2.94   1.09e À 4            2.94
+         8    1.36e À 5    2.97   1.01e À 5    2.97   1.75e À 4                                               2.97   1.36e À 5            2.97
+        16    1.78e À 6           1.32e À 6           2.28e À 5                                                      1.78e À 6
+        32    2.27e À 7           1.68e À 7           2.91e À 6                                                      2.27e À 7
+1168  N.C. Nguyen et al. / Journal of Computational Physics 230 (2011) 1147­1170
+
+      Fig. 13. Geometry, boundary conditions, and finite element mesh for the natural convective flow in a laterally heated cavity.
+
+Fig. 14. The postprocessed approximate velocity for k = 3, 4 at the spatial point (2, 0.8) as a function of t for the natural convective flow. The horizontal
+velocity is shown on the left, while the vertical velocity on the right.
+
+      1
+
+      0.5
+
+      00   1  2  3  4
+
+      1
+
+      0.5
+
+      00   1  2  3  4
+
+      1
+
+      0.5
+
+      00   1  2  3  4
+
+      1
+
+      0.5
+
+      00   1  2  3  4
+
+Fig. 15. Streamline of the postprocessed approximate velocity for k = 4 at time t = 0.095 (top), t = 0.096 (second), t = 0.097 (third), and t = 0.098 (bottom) for
+the natural convective flow.
+
+the primary rolls. This indicates that the oscillatory instability is caused by a hydrodynamic interaction between the rolls.
+These general observations agree well with the previous calculations based on the standard Galerkin and finite-volume
+methods [24].
+                N.C. Nguyen et al. / Journal of Computational Physics 230 (2011) 1147­1170  1169
+
+6. Conclusions
+
+    We have presented a hybridizable discontinuous Galerkin method for the numerical solution of the incompressible Na-
+vier­Stokes equations. As indicated in the Introduction, the method holds important advantages over many existing DG
+methods in terms of the reduction of the number of globally-coupled degrees of freedom, in the convergence and accuracy
+properties of the approximation and in the ability to handle a wide variety of boundary conditions. The numerical results
+show that the HDG method is efficient for solving the steady and unsteady incompressible Navier­Stokes equations.
+
+    We are currently developing efficient iterative methods for solving the linear system arising from application of the New-
+ton­Raphson procedure. The problems being addressed include natural convection flows, boundary layers, stability and
+transition in general curved geometries. The theoretical analysis of the method also constitutes the subject of ongoing work.
+
+Acknowledgements
+
+    J. Peraire and N. C. Nguyen would like to acknowledge the Singapore-MIT Alliance and the Air Force Office of Scientific
+Research under the MURI project on Biologically Inspired Flight for partially supporting this work. B. Cockburn would like
+to acknowledge the National Science Foundation for partially supporting this work through Grant DMS-0712955.
+
+References
+
+ [1] D.N. Arnold, F. Brezzi, B. Cockburn, L.D. Marini, Unified analysis of discontinuous Galerkin methods for elliptic problems, SIAM J. Numer. Anal. 39 (5)
+       (2001) 1749­1779.
+
+ [2] G.A. Baker, W.N. Jureidini, O.A. Karakashian, Piecewise solenoidal vector fields and the Stokes problem, SIAM J. Numer. Anal. 27 (1990) 1466­1485.
+ [3] F. Bassi, A. Crivellini, D.A. Di Pietro, S. Rebay, An artificial compressibility flux for the discontinuous Galerkin solution of the incompressible Navier­
+
+       Stokes equation, J. Comput. Phys. 218 (2) (2006) 794­815.
+ [4] J. Carrero, B. Cockburn, D. Schötzau, Hybridized globally divergence-free LDG methods. I. The Stokes problem, Math. Comput. 75 (2006) 533­563.
+ [5] B. Cockburn, Discontinuous Galerkin methods, ZAMM Z. Angew. Math. Mech. 83 (2003) 731­754.
+ [6] B. Cockburn, Discontinuous Galerkin Methods for Computational Fluid Dynamics, in: R. de Borst, E. Stein, T.J.R. Hughes (Eds.), Encyclopedia of
+
+       Computational Mechanics, vol. 3, John Wiley & Sons, Ltd., England, 2004, pp. 91­123.
+ [7] B. Cockburn, B. Dong, J. Guzmán, A superconvergent LDG-hybridizable Galerkin method for second-order elliptic problems, Math. Comput. 77 (2008)
+
+       1887­1916.
+ [8] B. Cockburn, B. Dong, J. Guzmán, M. Restelli, R. Sacco, Superconvergent and optimally convergent LDG-hybridizable discontinuous Galerkin methods
+
+       for convection­diffusion­reaction problems, SIAM J. Sci. Comput. 31 (2009) 3827­3846.
+ [9] B. Cockburn, J. Gopalakrishnan, Incompressible finite elements via hybridization. Part I: the Stokes system in two space dimensions, SIAM J. Numer.
+
+       Anal. 43 (4) (2005) 1627­1650.
+[10] B. Cockburn, J. Gopalakrishnan, Incompressible finite elements via hybridization. Part II: the stokes system in three space dimensions, SIAM J. Numer.
+
+       Anal. 43 (4) (2005) 1651­1672.
+[11] B. Cockburn, J. Gopalakrishnan, The derivation of hybridizable discontinuous Galerkin methods for Stokes flow, SIAM J. Numer. Anal. 47 (2009) 1092­
+
+       1125.
+[12] B. Cockburn, J. Gopalakrishnan, J. Guzmán, A new elasticity element made for enforcing weak stress symmetry, Math. Comput. 79 (2010) 1331­1349.
+[13] B. Cockburn, J. Gopalakrishnan, R. Lazarov, Unified hybridization of discontinuous Galerkin, mixed and continuous Galerkin methods for second order
+
+       elliptic problems, SIAM J. Numer. Anal. 47 (2009) 1319­1365.
+[14] B. Cockburn, J. Gopalakrishnan, N.C. Nguyen, J. Peraire, F.-J. Sayas, Analysis of an HDG method for Stokes flow, Math. Comput. Posted on: 2nd
+
+       September, 2010. PII S 0025-5718-2010-02410-X-1, in press.
+[15] B. Cockburn, J. Gopalakrishnan, F.-J. Sayas, A projection-based error analysis of HDG methods, Math. Comput. 79 (2010) 1351­1367.
+[16] B. Cockburn, J. Guzmán, S.-C. Soon, H.K. Stolarski, An analysis of the embedded discontinuous Galerkin method for second-order elliptic problems,
+
+       SIAM J. Numer. Anal. 47 (2009) 2686­2707.
+[17] B. Cockburn, J. Guzmán, H. Wang, Superconvergent discontinuous Galerkin methods for second-order elliptic problems, Math. Comput. 78 (2009) 1­
+
+       24.
+[18] B. Cockburn, G. Kanschat, D. Schötzau, A locally conservative LDG method for the incompressible Navier­Stokes equations, Math. Comput. 74 (2005)
+
+       1067­1095.
+[19] B. Cockburn, G. Kanschat, D. Schötzau, A note on discontinuous Galerkin divergence-free solutions of the Navier­Stokes equations, J. Sci. Comput. 31
+
+       (2007) 61­73.
+[20] B. Cockburn, G. Kanschat, D. Schötzau, C. Schwab, Local discontinuous Galerkin methods for the Stokes system, SIAM J. Numer. Anal. 40 (1) (2002) 319­
+
+       343.
+[21] B. Cockburn, C.-W. Shu, Runge­Kutta discontinuous Galerkin methods for convection-dominated problems, J. Sci. Comput. 16 (2001) 173­261.
+[22] M.K. Denham, M.A. Patrick, Laminar flow over a downstream-facing step in a two-dimensional flow channel, Trans. Inst. Chem. Eng. 52 (1974) 361­
+
+       367.
+[23] M. Fortin, R. Glowinski, Augmented Lagrangian methods, Studies in Mathematics and its Applications, vol. 15, North-Holland Publishing Co.,
+
+       Amsterdam, 1983 (Applications to the numerical solution of boundary value problems. Translated from the French by B. Hunt and D.C. Spicer).
+[24] A. Yu. Gelfgat, P.Z. Bar-Yoseph, A.L. Yarin, Stability of multiple steady states of convection in laterally heated cavities, J. Fluid Mech. 388 (1999) 315­
+
+       334.
+[25] U. Ghia, K.N. Ghia, C.T. Shin, High-Re solutions for incompressible flow using the Navier­Stokes equations and a multigrid method, J. Comput. Phys. 48
+
+       (1982) 387­411.
+[26] S. Güzey, B. Cockburn, H. Stolarski, The embedded discontinuous Galerkin methods: application to linear shells problems, Int. J. Numer. Meth. Eng. 70
+
+       (2007) 757­790.
+[27] T.J.R. Hughes, G. Scovazzi, P. Bochev, A. Buffa, A multiscale discontinuous Galerkin method with the computational structure of a continuous Galerkin
+
+       method, Comput. Meth. Appl. Mech. Eng. 195 (2006) 2761­2787.
+[28] O.A. Karakashian, W.N. Jureidini, A nonconforming finite element method for the stationary Navier­Stokes equations, SIAM J. Numer. Anal. 35 (1998)
+
+       93­120.
+[29] O.A. Karakashian, T. Katsaounis, A discontinuous Galerkin method for the incompressible Navier­Stokes equations, in: B. Cockburn, G.E. Karniadakis,
+
+       C.-W. Shu (Eds.), Discontinuous Galerkin Methods. Theory, Computation and Applications, Lect. Notes Comput. Sci. Eng., vol. 11, Springer Verlag, Berlin,
+       2000, pp. 157­166.
+[30] L.I.G. Kovasznay, Laminar flow behind two-dimensional grid, Proc. Cambridge Philos. Soc. 44 (1948) 58­62.
+1170  N.C. Nguyen et al. / Journal of Computational Physics 230 (2011) 1147­1170
+
+[31] R.J. Labeur, G.N. Wells, A Galerkin interface stabilisation method for the advection­diffusion and incompressible Navier­Stokes equations, Comput.
+       Meth. Appl. Mech. Eng. 196 (2007) 4985­5000.
+
+[32] J.-G. Liu, C.-W. Shu, A high-order discontinuous Galerkin method for 2D incompressible flows, J. Comput. Phys. 160 (2000) 577­596.
+[33] A. Montlaur, S. Fernández-Méndez, A. Huerta, Discontinuous Galerkin methods for the Stokes equations using divergence-free approximations
+
+       Internat, J. Numer. Meth. Fluids 57 (2008) 1071­1092.
+[34] A. Montlaur, S. Fernández-Méndez, J. Peraire, A. Huerta, Discontinuous Galerkin methods for the Navier­Stokes equations using solenoidal
+
+       approximations, I, nt. J. Numer. Meth. Fluids 64 (2010) 549­564.
+[35] J.-C. Nédélec, Mixed finite elements in R3, Numer. Math. 35 (1980) 315­341.
+[36] J.-C. Nédélec, A new family of mixed finite elements in R3, Numer. Math. 50 (1986) 57­81.
+[37] N.C. Nguyen, J. Peraire, B. Cockburn, An implicit high-order hybridizable discontinuous Galerkin method for linear convection­diffusion equations, J.
+
+       Comput. Phys. 228 (2009) 3232­3254.
+[38] N.C. Nguyen, J. Peraire, B. Cockburn, An implicit high-order hybridizable discontinuous Galerkin method for nonlinear convection­diffusion equations,
+
+       J. Comput. Phys. 228 (2009) 8841­8855.
+[39] N.C. Nguyen, J. Peraire, B. Cockburn, A hybridizable discontinuous Galerkin method for Stokes flow, Comput. Meth. Appl. Mech. Eng. 199 (2010) 582­
+
+       597.
+[40] N.C. Nguyen, J. Peraire, B. Cockburn, A comparison of HDG methods for Stokes flow, J. Sci. Comput. 45 (2010) 215­237.
+[41] N.C. Nguyen, J. Peraire, B. Cockburn, Hybridizable discontinuous Galerkin methods, in: Proceedings of the International Conference on Spectral and
+
+       High Order Methods, Trondheim, Norway, June 2009, Lecture Notes in Computational Science and Engineering, 76 (2011) 63­84.
+[42] A.T. Patera, A spectral element method for fluid dynamics: laminar flow in a channel expansion, J. Comput. Phys. 54 (1984) 468­488.
+[43] J. Peraire, N.C. Nguyen, B. Cockburn, A hybridizable discontinuous Galerkin method for the compressible Euler and Navier­Stokes equations (AIAA
+
+       Paper 2010-363), in: Proceedings of the 48th AIAA Aerospace Sciences Meeting and Exhibit, Orlando, Florida, January 2010.
+[44] K. Shahbazi, P. F Fischer, C.R. Ethier, A high-order discontinuous Galerkin method for the unsteady incompressible Navier­Stokes equations, J. Comput.
+
+       Phys. 222 (2007) 391­407.
+[45] S.-C. Soon, B. Cockburn, H.K. Stolarski, A hybridizable discontinuous Galerkin method for linear elasticity Internat, J. Numer. Meth. Eng. 80 (2009)
+
+       1058­1092.
+[46] M.P. Ueckermann, P.F.J. Lermusiaux, High order schemes for 2D unsteady biogeochemical ocean models, Ocean Dynam. in press, doi:10.1007/s10236-
+
+       010-0351-x.
+[47] J. Wang, X. Ye, New finite element methods in computational fluid dynamics by H(div) elements, SIAM J. Numer. Anal. 45 (2007) 1269­1286.
+[48] J. Wang, X. Wang, X. Ye, Finite element methods for the Navier­Stokes equations by H(div) elements, J. Comput. Math. 26 (2008) 410­436.
+[49] J. Wang, X. Wang, X. Ye, A robust numerical method for Stokes equations based on divergence-free H(div) finite element methods, SIAM J. Sci. Comput.
+
+       31 (2009) 2784­2802.
+
