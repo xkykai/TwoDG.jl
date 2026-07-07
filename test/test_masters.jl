@@ -3,6 +3,7 @@
 using TwoDG
 using Test
 using LinearAlgebra
+import NodesAndModes
 
 @testset "Master element" begin
     @testset "1D Gauss quadrature integrates degree $d exactly" for d in (1, 4, 7, 12)
@@ -60,7 +61,9 @@ using LinearAlgebra
                                             master.face.plocal) == master.perm
     end
 
-    @testset "3D collapsed Gauss-Jacobi quadrature (degree $d)" for d in (2, 5, 9)
+    # d ≤ 10 exercises the tabulated symmetric (Witherden-Vincent) rules,
+    # d = 12 the collapsed Gauss-Jacobi product fallback
+    @testset "3D tet quadrature (degree $d)" for d in (2, 4, 5, 9, 10, 12)
         x, w = gaussquad3d(d)
         # ∫_T ξ^a η^b ζ^c dV = a! b! c! / (a+b+c+3)! on the unit tetrahedron
         exact(a, b, c) = Float64(factorial(big(a)) * factorial(big(b)) *
@@ -68,7 +71,9 @@ using LinearAlgebra
         @test all(abs(sum(w .* x[:, 1] .^ a .* x[:, 2] .^ b .* x[:, 3] .^ c) -
                       exact(a, b, c)) < 1e-13
                   for a in 0:d for b in 0:(d - a) for c in 0:(d - a - b))
-        @test all(>(0), w)   # Gauss-Jacobi product weights are positive
+        @test all(>(0), w)                       # positive weights
+        @test all(>(0), x) && all(<(1), sum(x; dims=2))   # interior points
+        d <= 10 && @test size(x, 1) < ceil(Int, (d + 1) / 2)^3   # fewer than product rule
     end
 
     @testset "3D Koornwinder (PKD) basis is orthonormal (p = $p)" for p in (2, 4)
@@ -132,5 +137,70 @@ using LinearAlgebra
         ops = TwoDG.Masters.orientation_permutations(Val(3))
         compose(a, b) = ntuple(i -> a[b[i]], 3)
         @test all(compose(a, b) in ops for a in ops, b in ops)
+    end
+
+    @testset "NodesAndModes.jl oracle (p = $p)" for p in (2, 4)
+        # Independent cross-validation of the in-house reference-element code
+        # against NodesAndModes.jl. Conventions differ — NodesAndModes uses the
+        # bi-unit simplex (vertices at ±1), TwoDG the unit simplex — so nodes
+        # map by x = (r + 1)/2 and an orthonormal basis picks up the volume
+        # ratio: on the tet dr = 8 dx, so ψ(x) = √8 φ_NM(2x - 1) is orthonormal
+        # on the unit tet (factor 2 on the triangle).
+        #
+        # The cross-Gram C_ij = ∫ φ_i ψ_j over the unit simplex, evaluated with
+        # TwoDG's quadrature, must be orthogonal (C Cᵀ = I): both bases are
+        # orthonormal and span the same polynomial space, and the rule is exact
+        # at degree 2p. This validates basis normalization, completeness, AND
+        # quadrature in one shot, against an implementation we don't own.
+
+        # --- tetrahedron ---
+        gp, gw = gaussquad3d(2p)
+        r, s, t = (2 .* gp[:, i] .- 1 for i in 1:3)
+        Vnm = NodesAndModes.basis(NodesAndModes.Tet(), p, r, s, t)[1] .* sqrt(8)
+        Vtd = koornwinder3d(gp, p)[1]
+        C = Vtd' * (gw .* Vnm)
+        @test norm(C * C' - I) < 1e-10
+        @test size(C, 1) == (p + 1) * (p + 2) * (p + 3) ÷ 6
+
+        # equispaced node sets coincide as point sets
+        re, se, te = NodesAndModes.equi_nodes(NodesAndModes.Tet(), p)
+        nm_nodes = sortslices([re se te] ./ 2 .+ 0.5; dims=1)
+        td_nodes = sortslices(localpnts3d(p)[:, 2:4]; dims=1)
+        @test maximum(abs, nm_nodes - td_nodes) < 1e-12
+
+        # --- triangle (the face element of the tet) ---
+        gp2, gw2 = gaussquad2d(2p)
+        r2, s2 = (2 .* gp2[:, i] .- 1 for i in 1:2)
+        Vnm2 = NodesAndModes.basis(NodesAndModes.Tri(), p, r2, s2)[1] .* 2
+        Vtd2 = koornwinder2d(gp2, p)[1]
+        C2 = Vtd2' * (gw2 .* Vnm2)
+        @test norm(C2 * C2' - I) < 1e-10
+    end
+
+    @testset "3D warp-and-blend nodes (nodetype = 1)" begin
+        # set distance (roundoff noise makes row-sorting comparisons unusable)
+        setdist(A, B) = maximum(minimum(sqrt(sum(abs2, A[i, :] .- B[j, :]))
+                                        for j in axes(B, 1)) for i in axes(A, 1))
+
+        # p ≤ 3: the warp is uniquely determined and must match the
+        # NodesAndModes.jl warp-and-blend nodes exactly
+        for p in (2, 3)
+            nm = hcat(NodesAndModes.nodes(NodesAndModes.Tet(), p)...) ./ 2 .+ 0.5
+            @test setdist(nm, localpnts3d(p, 1)[:, 2:4]) < 1e-12
+        end
+
+        # higher p: NodesAndModes uses the interpolatory variant so the sets
+        # differ; assert the properties that matter instead — Vandermonde
+        # conditioning beats the uniform lattice, and the set satisfies the
+        # symmetry-group/face-restriction requirements (the constructor
+        # asserts both while building perm)
+        for p in (6, 8)
+            Vu, = koornwinder3d(localpnts3d(p, 0)[:, 2:4], p)
+            plw = localpnts3d(p, 1)
+            Vw, = koornwinder3d(plw[:, 2:4], p)
+            @test cond(Vw) < 0.85 * cond(Vu)   # measured 26 vs 33 (p=6), 56 vs 92 (p=8)
+            master = ReferenceElement(plw, p; pgauss=2p)
+            @test master isa ReferenceElement{3}
+        end
     end
 end

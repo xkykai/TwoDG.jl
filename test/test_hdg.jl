@@ -53,6 +53,74 @@ using LinearAlgebra
     @test norm(vec(up) .- vec(upn)) / norm(vec(upn)) < 1e-8
 end
 
+@testset "HDG curved 2D: quarter-disk Poisson rates" begin
+    # Curved isoparametric HDG rates in 2D, the planar analog of the 3D
+    # sphere-octant study: -Δu = 12xy on the quarter disk with
+    # u = xy (1 - x² - y²), which vanishes on the circular arc and on both
+    # axes, so the Dirichlet data is exactly zero and no boundary-projection
+    # error enters.
+    #
+    # The mesh family follows the two curved-convergence rules:
+    # 1. Shape regularity: the corner triangle is refined uniformly, then the
+    #    smooth blend v ↦ v (1 - s + s²/|v|), s = x + y, maps the hypotenuse
+    #    exactly onto the arc while deforming every triangle bi-Lipschitz-
+    #    smoothly (projecting only boundary vertices after refinement
+    #    stretches the boundary layer like 1/h and stalls the rate).
+    # 2. mesh1 must carry the p-mesh's isoparametric map (match_geometry!):
+    #    with independently projected maps, u* here degrades to ~O(h^2.7) at
+    #    p = 3 and is *worse* than u.
+    #
+    # At p = 2 both design rates are met (measured u 3.13, u* 4.32, u* 12×
+    # better). At p = 3 the degree-p geometry limits u* to the geometry order
+    # O(h^{p+1}) (measured u 3.6, u* 4.2, u* still 4× better than u) — full
+    # h^{p+2} superconvergence on curved domains needs geometry one degree
+    # higher than the solution, which the postprocessing pipeline does not
+    # currently provide. The test pins the p = 2 rates.
+    exact(x, y) = x * y * (1 - x^2 - y^2)
+    source(p) = reshape(12 .* p[:, 1] .* p[:, 2], :, 1)
+    dbc(p) = zeros(size(p, 1), 1)
+    param = Dict(:kappa => 1.0, :c => [0.0, 0.0], :taud => 1.0)
+
+    function quarterdisk_geometry(nref)
+        p0 = [0.0 0.0; 1.0 0.0; 0.0 1.0]
+        t0 = reshape([1, 2, 3], 1, 3)
+        p1, t1 = uniref(p0, t0, nref)
+        for i in axes(p1, 1)
+            v = p1[i, :]
+            s, nv = sum(v), norm(v)
+            nv > 0 && (p1[i, :] .= v .* (1 - s + s^2 / nv))
+        end
+        ϵ = 1e-6
+        bnds = (circle=p -> vec((p[:, 1] .> ϵ) .& (p[:, 2] .> ϵ)),
+                xaxis=p -> p[:, 2] .< ϵ,
+                yaxis=p -> p[:, 1] .< ϵ)
+        fds = (x -> sqrt(x[1]^2 + x[2]^2) - 1, x -> x[2], x -> x[1])
+        return MeshGeometry(p1, t1; boundaries=bnds, curved=[:circle], fd=fds)
+    end
+
+    porder = 2
+    ngauss = 4 * (porder + 1)
+    errs_u, errs_ustar = Float64[], Float64[]
+    for nref in (2, 3, 4)   # h = 1/4, 1/8, 1/16
+        geo = quarterdisk_geometry(nref)
+        mesh = discretize(geo, porder)
+        master = ReferenceElement(mesh, ngauss)
+        mesh1 = discretize(geo, porder + 1)
+        master1 = ReferenceElement(mesh1, ngauss)
+        match_geometry!(master, mesh, master1, mesh1)
+
+        u, q, _ = hdg_direct_batched(master, mesh, source, dbc, param)
+        ustar = hdg_postprocess(master, mesh, master1, mesh1, u, q ./ param[:kappa])
+        push!(errs_u, l2error(mesh, u[:, 1, :], exact))
+        push!(errs_ustar, l2error(mesh1, ustar[:, 1, :], exact))
+    end
+    rates_u = log2.(errs_u[1:end-1] ./ errs_u[2:end])
+    rates_us = log2.(errs_ustar[1:end-1] ./ errs_ustar[2:end])
+    @test rates_u[end] > porder + 0.6        # measured 3.13 (design 3)
+    @test rates_us[end] > porder + 1.6       # measured 4.32 (design 4)
+    @test errs_ustar[end] < errs_u[end] / 5  # u* strictly better (measured 12×)
+end
+
 @testset "HDG KA/Krylov trace solver (Phase 3)" begin
     # convection-diffusion so the trace system is nonsymmetric
     source(p) = reshape(2π^2 .* sin.(π .* p[:, 1]) .* sin.(π .* p[:, 2]), :, 1)
