@@ -2,7 +2,7 @@
 # the reference element (perm), and the HDG trace numbering (elcon): which
 # vertices span each local face, the symmetry group of the face simplex, and
 # the detection of an element's orientation code relative to a face's stored
-# traversal (THREED_PLAN D7). Defined once, here — Masters imports it.
+# traversal. Defined once, here — Masters imports it.
 
 """
     norient(Dim) -> Int

@@ -61,22 +61,6 @@ function pascalindex(npol::Integer)
     return pq
 end
 
-"""     
-koornwinder2d vandermonde matrix for koornwinder polynomials in 
-           the master triangle [0,0]-[1,0]-[0,1]
-[f,fx,fy]=koornwinder(x,p)
-
-   x:         coordinates of the points wherethe polynomials 
-              are to be evaluated (npoints,dim)
-   p:         maximum order of the polynomials consider. that
-              is all polynomials of complete degree up to p,
-              npoly = (porder+1)*(porder+2)/2
-   f:         vandermonde matrix (npoints,npoly)
-   fx:        vandermonde matrix for the derivative of the koornwinder
-              polynomials w.r.t. x (npoints,npoly)
-   fy:        vandermonde matrix for the derivative of the koornwinder
-              polynomials w.r.t. y (npoints,npoly)
-"""
 function pascalindex3d(npol::Integer)
     # triples (p, q, r) of all polynomials of total degree ≤ n, ordered by
     # degree (the 3D analog of pascalindex)
@@ -189,6 +173,16 @@ function koornwinder3d(x::AbstractMatrix{<:Real}, p::Int)
     return f, fx, fy, fz
 end
 
+"""
+    koornwinder2d(x, p) -> (f, fx, fy)
+
+Vandermonde matrices of the orthonormal PKD (Proriol–Koornwinder–Dubiner)
+basis on the master triangle `[0,0]-[1,0]-[0,1]` and of its two derivatives,
+at the points `x (npoints, 2)`. All polynomials of complete degree up to
+`p`, `npoly = (p+1)(p+2)/2`, orthonormal w.r.t. the unit-triangle measure
+(collapsed-coordinate + Jacobi-polynomial construction; Hesthaven &
+Warburton 2008, §6.1). [`koornwinder3d`](@ref) is the tetrahedral analog.
+"""
 function koornwinder2d(x::AbstractMatrix{<:Real}, p::Int)
     # Transform coordinates from [0,1] to [-1,1]
     x = 2 .* x .- 1.0

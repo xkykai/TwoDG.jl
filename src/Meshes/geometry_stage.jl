@@ -1,4 +1,4 @@
-# Roadmap A2.5: mesh generation and discretization as separate stages.
+# Mesh generation and discretization as separate stages.
 #
 # A `MeshGeometry` carries only what a mesh *generator* knows: vertices,
 # triangles, named boundary classifiers, and (for curved domains) signed
@@ -79,7 +79,7 @@ element. Curved boundaries project the boundary-face nodes onto the signed-
 distance zero set; nodes on edges shared by *two different* curved
 boundaries are projected onto the intersection curve by alternating
 projections and written back to every element that shares them (the
-edge-before-face rule, THREED_PLAN D9).
+edge-before-face rule).
 """
 function discretize(geo::MeshGeometry{3}, porder::Integer; nodetype::Integer=0)
     f, t2f, t2o = mkt2f(geo.t)

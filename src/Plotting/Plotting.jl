@@ -45,7 +45,7 @@ meshplot_curved(args...; kwargs...) = error("meshplot_curved ", _MAKIE_HINT)
     save_vtk(sol, filename)
 
 Write a solution as high-order Lagrange VTK cells for ParaView (the 3D
-visualization path, THREED_PLAN D10; works for 2D meshes too). `u` is a
+visualization path; works for 2D meshes too). `u` is a
 `(npl, nc, nt)` (or `(npl, nt)` scalar) field; `names` optionally labels the
 components. The solution-object form names components by
 `varnames(sol.prob.equation)`. Curved (isoparametric) elements are written

@@ -241,7 +241,7 @@ function ReferenceElement(plocal::AbstractMatrix{<:Real}, porder::Integer,
     face = ReferenceElement(face_plocal, porder; pgauss)
 
     # face-node orderings for all 6 relative orientations, built
-    # constructively from the face-simplex symmetries (D7) — requires the
+    # constructively from the face-simplex symmetries — requires the
     # node set to be invariant under them (true for the symmetric localpnts3d
     # distributions; checked inside)
     perm = build_face_perm(Val(3), plocal, face.plocal)

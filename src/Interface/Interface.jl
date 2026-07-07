@@ -32,7 +32,8 @@ using ..DiscontinuousGalerkin: DGContext, DGPhysics, rinvexpl!, rldgexpl!, rk4_k
 using ..HybridizableDiscontinuousGalerkin: hdg_direct_batched, hdg_parsolve,
                                            hdg_parsolve_batched
 using ..ContinuousGalerkin: cg_solve, cg_parsolve
-using ..Callbacks: SolveState, initialize!, finish!, load_checkpoint
+using ..Callbacks
+using ..Callbacks: initialize!, finish!, load_checkpoint
 import ..ContinuousGalerkin: l2error
 
 export solve, semidiscretize, compute_dt,
@@ -121,7 +122,7 @@ function DGProblem(equation::AbstractEquation, mesh; bc, u0, source=nothing,
     end
 
 # equations and meshes carry their space dimension as a type parameter; a
-# mismatch is a user error caught at problem construction (D8: the user never
+# mismatch is a user error caught at problem construction (the user never
 # spells Dim, so the mesh is the source of truth)
 function _check_dims(equation::AbstractEquation, mesh)
     ndims(equation) == ndims(mesh) ||
@@ -297,8 +298,10 @@ function _dg_physics(prob::DGProblem)
         throw(ArgumentError("mesh has $nbnd boundaries, got $(length(bcs)) boundary conditions"))
     return DGPhysics(eq;
                      boundary_conditions=Tuple(bcs),
-                     numerical_flux=something(prob.numerical_flux,
-                                              default_numerical_flux(eq)),
+                     # not `something(...)`: a user equation need not define
+                     # default_numerical_flux when the problem specifies one
+                     numerical_flux=prob.numerical_flux === nothing ?
+                                    default_numerical_flux(eq) : prob.numerical_flux,
                      source=prob.source,
                      stabilization=prob.stabilization === nothing ?
                                    default_stabilization(eq) : prob.stabilization)
@@ -442,8 +445,9 @@ CFL-limited explicit time step: over all elements,
 
 with `h` the smallest inscribed-circle (2D) / inscribed-sphere (3D) diameter
 (`min_inscribed_diameter`), `p` the polynomial order, `λ` the maximum
-characteristic speed of the equation (evaluated from the initial state for
-[`EulerEquations`](@ref)), and `κ` its [`diffusivity`](@ref) (LDG diffusion
+characteristic speed of the equation — for state-dependent equations
+(Euler, user equations) the maximum of [`wavespeed`](@ref)`(eq, u)` over
+the initial state — and `κ` its [`diffusivity`](@ref) (LDG diffusion
 limits the step quadratically). `cfl = 0.3` is a conservative default for
 the internal [`RK4`](@ref) stepper. [`StepsizeCallback`](@ref) applies the
 same formula to the *running* solution.
@@ -464,14 +468,16 @@ _max_wavespeed(eq::ConvectionDiffusionEquation, prob) = _max_velocity(eq.velocit
 _max_wavespeed(eq::WaveEquation, prob) = abs(eq.c)
 _max_wavespeed(::PoissonEquation, prob) = 0.0
 
-function _max_wavespeed(eq::EulerEquations, prob)
+# state-dependent equations (Euler, user-defined): maximize the pointwise
+# wavespeed bound over the initial state
+function _max_wavespeed(eq::AbstractEquation, prob)
     u0 = prob.u0
     u = u0 isa AbstractArray{<:Any, 3} ? u0 : interpolate(prob.mesh, u0)
     NC = Val(nvariables(eq))
     smax = 0.0
     for it in axes(u, 3), i in axes(u, 1)
         state = SVector(ntuple(c -> u[i, c, it], NC))
-        smax = max(smax, norm(velocity(eq, state)) + soundspeed(eq, state))
+        smax = max(smax, Float64(wavespeed(eq, state)))
     end
     return smax
 end
