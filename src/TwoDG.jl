@@ -55,6 +55,7 @@ export
     EveryStep, IterationInterval, TimeInterval, SpecifiedTimes, WallTimeInterval,
     ProgressCallback, AnalysisCallback, SteadyStateCallback,
     SaveSolutionCallback, CheckpointCallback, StepsizeCallback,
+    NaNCheckCallback,
     integrate, l2norm,
     # high-level problem/solve API (Interface module)
     solve, semidiscretize, compute_dt,

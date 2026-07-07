@@ -1,5 +1,5 @@
-# Batched CG element system + matrix-free Krylov solver on any KA backend
-# (Phase 4 of GPU_PLAN.md; dimension-generic since THREED_PLAN Phase F). The
+# Batched CG element system + matrix-free Krylov solver on any KA backend,
+# dimension-generic across 2D triangles and 3D tetrahedra. The
 # element integrals of `elemmat_cg` restated as per-element dense algebra over
 # the Geometry module's tables:
 #

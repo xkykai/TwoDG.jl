@@ -1,5 +1,5 @@
 # Package extension: solution output as high-order Lagrange VTK cells for
-# ParaView (THREED_PLAN D10). Loaded automatically when both TwoDG and
+# ParaView. Loaded automatically when both TwoDG and
 # WriteVTK are in the environment (`using TwoDG, WriteVTK`).
 module TwoDGWriteVTKExt
 

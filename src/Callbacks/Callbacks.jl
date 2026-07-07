@@ -1,7 +1,7 @@
 """
 Composable run-time layer for the internal time-stepping loop, following
-Trixi.jl's callback catalog and Oceananigans.jl's schedule/callback split
-(CALLBACKS_PLAN.md): *schedules* decide when to fire, *callbacks* decide
+Trixi.jl's callback catalog and Oceananigans.jl's schedule/callback split:
+*schedules* decide when to fire, *callbacks* decide
 what to do, and a [`SolveState`](@ref) is the documented view of the running
 solve they act on.
 
@@ -32,6 +32,7 @@ export SolveState, CallbackSet,
        SpecifiedTimes, WallTimeInterval,
        ProgressCallback, AnalysisCallback, SteadyStateCallback,
        SaveSolutionCallback, CheckpointCallback, StepsizeCallback,
+       NaNCheckCallback,
        integrate, l2norm
 
 include("solve_state.jl")

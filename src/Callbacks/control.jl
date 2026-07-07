@@ -53,3 +53,49 @@ function _cfl_dt(cb::StepsizeCallback, state)
         throw(ArgumentError("equation has neither a propagation speed nor a diffusivity"))
     return cb.cfl / denom
 end
+
+"""
+    NaNCheckCallback(; schedule=EveryStep(), interval=nothing, io=stdout)
+
+Early-abort guard for diverging runs (in the spirit of Oceananigans'
+`NaNChecker`): at each firing checks the live solution for non-finite
+values (`NaN`/`Inf`) with a single device reduction and, if any are found,
+reports the step, the time, and the offending solution component(s) to
+`io`, then returns `true` to stop the solve. The partial solution is still
+returned, so the incipient blow-up can be inspected (`sol.u`, plotting,
+`save_vtk`) instead of burning the rest of the wall-clock budget on a field
+of NaNs.
+
+The healthy-path cost is one `isfinite` reduction over the field per
+firing; on a GPU each firing synchronizes the device, so pass
+`interval = n` to check every `n` steps if that matters.
+"""
+struct NaNCheckCallback{S <: AbstractSchedule, IOT <: IO}
+    schedule :: S
+    io       :: IOT
+end
+
+NaNCheckCallback(; schedule::AbstractSchedule = EveryStep(),
+                 interval = nothing, io::IO = stdout) =
+    NaNCheckCallback(_schedule(schedule, interval), io)
+
+function initialize!(cb::NaNCheckCallback, state)
+    initialize!(cb.schedule, state)
+    return nothing
+end
+
+function (cb::NaNCheckCallback)(state)
+    cb.schedule(state) || return false
+    u = state.u
+    all(isfinite, u) && return false
+    # failure path only: name the components that went bad (host work and
+    # per-component reductions are fine here — the run is being aborted)
+    vars = state.prob === nothing ?
+           [string("u", c) for c in axes(u, 2)] :
+           [string(v) for v in varnames(_equation(state))]
+    bad = [vars[c] for c in axes(u, 2)
+           if !all(isfinite, @view u[:, c, :])]
+    @printf(cb.io, "NaN/Inf at step %d, t = %g in component(s) %s — stopping the solve\n",
+            state.step, state.t, join(bad, ", "))
+    return true
+end
