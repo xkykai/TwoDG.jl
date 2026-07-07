@@ -4,7 +4,7 @@
 # `SideGeometry`). Every method (CG/DG/HDG) consumes these — no solver may
 # re-derive Jacobians, normals, or mass matrices on its own.
 #
-# All of it is dimension-generic (THREED_PLAN Phase A): direction is an array
+# All of it is dimension-generic: direction is an array
 # axis (`shapd (npl, ng, Dim, …)`), the normal comes from `face_normal`
 # dispatch (tangent rotation in 2D, cross product in 3D), and Jacobians are
 # `Dim × Dim`. There are no `_2d`/`_3d` forks.

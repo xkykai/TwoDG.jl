@@ -9,9 +9,8 @@ include("dg_physics.jl")
 include("rinvexpl_ka.jl")
 include("rldgexpl_ka.jl")
 
-# Readable primary names (REFACTOR_PLAN §6 naming migration). The terse
-# MATLAB-derived names remain as aliases for one release; new code and docs
-# use these.
+# Readable primary names. The terse MATLAB-derived names remain as aliases
+# for one release; new code and docs use these.
 "Inviscid DG residual — primary name for [`rinvexpl!`](@ref)."
 const inviscid_residual! = rinvexpl!
 "LDG viscous DG residual — primary name for [`rldgexpl!`](@ref)."

@@ -1,7 +1,6 @@
 # The compiled physics bundle the DG kernels consume: an equation, a
 # numerical flux, one boundary condition per boundary tag, and optional
-# source/stabilization — all small immutable objects selected by dispatch
-# (REFACTOR_PLAN Phase 4; replaces the `App` callback-slot struct).
+# source/stabilization — all small immutable objects selected by dispatch.
 
 using Adapt
 using ..Equations

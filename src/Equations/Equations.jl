@@ -1,4 +1,4 @@
-# The single physics representation (REFACTOR_PLAN Phase 4): equations,
+# The single physics representation: equations,
 # numerical fluxes, and boundary conditions are small immutable structs, and
 # all behavior is selected by multiple dispatch on them. The same objects are
 # the *user extension surface* — a downstream script defines

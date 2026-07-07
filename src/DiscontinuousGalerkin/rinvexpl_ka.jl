@@ -3,7 +3,7 @@
 # DGContext, workspace, state, and physics have been moved over with
 # `Adapt.adapt` (e.g. `adapt(CuArray, ctx)`).
 #
-# Dimension-generic (THREED_PLAN Phase A): the same kernel bodies serve 2D
+# Dimension-generic: the same kernel bodies serve 2D
 # triangles and 3D tetrahedra through the `Val(DIM)` parameter — positions and
 # normals are `SVector{DIM}`, the volume flux is staged in one
 # `fdg (ng, nc, Dim, nt)` array, and direction loops run `1:DIM`.
