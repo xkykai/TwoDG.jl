@@ -8,6 +8,7 @@ export
     gaussquad1d, gaussquad2d, gaussquad3d,
     koornwinder1d, koornwinder2d, koornwinder3d
 
+include("witherden_vincent.jl")
 include("gauss_quadratures.jl")
 include("koornwinders.jl")
 include("master_element.jl")

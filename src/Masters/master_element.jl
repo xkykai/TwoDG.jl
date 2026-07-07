@@ -17,9 +17,10 @@ constructor just reads `mesh.porder`/`mesh.plocal` so the element's nodes
 match the mesh's `dgnodes`.
 
 `pgauss` is the polynomial degree integrated exactly by the quadrature rules;
-`nodetype` selects the node distribution (`0` uniform, `1`/`2` extended
-Chebyshev, see [`localpnts`](@ref)); `plocal` may be passed directly to use a
-custom node set.
+`nodetype` selects the node distribution (`0` uniform; `1` extended Chebyshev
+in 2D, warp-and-blend in 3D; `2` extended Chebyshev of the second kind, 2D
+only — see [`localpnts`](@ref) and [`localpnts3d`](@ref)); `plocal` may be
+passed directly to use a custom node set.
 
 # Fields and conventions (`nv = Dim + 1` vertices/faces, `npf` nodes per face,
 `norient` face orientations: 1 in 1D, 2 in 2D, 6 in 3D)
@@ -290,16 +291,23 @@ end
     localpnts3d(porder, nodetype=0) -> plocal (npl, 4)
 
 Node positions on the master tetrahedron in barycentric coordinates,
-`npl = (porder+1)(porder+2)(porder+3)/6`. `nodetype = 0` places nodes on the
-uniform barycentric lattice — which is invariant under the tetrahedron's
-symmetry group and restricts to the uniform triangle nodes on every face,
-the two properties `perm`/`t2o` depend on (asserted in the constructor).
-Warp-and-blend nodes (Warburton 2006) are a planned optimization for high
-`porder`.
+`npl = (porder+1)(porder+2)(porder+3)/6`.
+
+- `nodetype = 0`: uniform barycentric lattice (adequate conditioning for
+  `porder ≤ 4`).
+- `nodetype = 1`: warp-and-blend nodes (Warburton, J. Eng. Math. 56, 2006;
+  Hesthaven & Warburton 2008 §10.5) — much better Vandermonde conditioning
+  at high order.
+
+Both distributions are invariant under the tetrahedron's symmetry group and
+restrict to a symmetric triangle node set on every face — the two properties
+`perm`/`t2o` depend on (asserted in the constructor). The warp-and-blend set
+is symmetrized exactly by averaging over the 24 barycentric-coordinate
+permutations (the 3D analog of `localpnts`' rotate-and-average).
 """
 function localpnts3d(porder::Integer, nodetype::Integer=0)
-    nodetype == 0 ||
-        throw(ArgumentError("localpnts3d currently supports only the uniform node distribution (nodetype = 0)"))
+    nodetype in (0, 1) ||
+        throw(ArgumentError("localpnts3d supports nodetype 0 (uniform) or 1 (warp-and-blend)"))
     npl = (porder + 1) * (porder + 2) * (porder + 3) ÷ 6
     plocal = zeros(npl, 4)
     if porder == 0
@@ -314,7 +322,116 @@ function localpnts3d(porder::Integer, nodetype::Integer=0)
         plocal[m, 4] = k / porder
         plocal[m, 1] = 1 - (i + j + k) / porder
     end
+    nodetype == 1 && porder > 1 && return _warpblend3d(porder, plocal)
     return plocal
+end
+
+# --- warp-and-blend tetrahedron nodes (Warburton 2006; H&W 2008 Nodes3D) ------
+
+# interpolated displacement from the equidistant to the Gauss-Lobatto 1D node
+# distribution, evaluated at the (extended) coordinates `xout`
+function _evalwarp(p, xnodes, xout)
+    warp = zeros(length(xout))
+    xeq = [-1 + 2 * (p + 1 - i) / p for i in 1:(p + 1)]     # decreasing
+    for i in 1:(p + 1)
+        d = fill(xnodes[i] - xeq[i], length(xout))
+        for j in 2:p
+            j == i && continue
+            d .*= (xout .- xeq[j]) ./ (xeq[i] - xeq[j])
+        end
+        i != 1 && (d .= -d ./ (xeq[i] - xeq[1]))
+        i != p + 1 && (d .= d ./ (xeq[i] - xeq[p + 1]))
+        warp .+= d
+    end
+    return warp
+end
+
+# two-dimensional warp of one triangular face, in the face's own orthogonal
+# frame (H&W `evalshift`)
+function _evalshift(p, pval, L1, L2, L3)
+    # Gauss-Lobatto nodes, decreasing to match the xeq ordering in _evalwarp
+    gl = p == 1 ? [-1.0, 1.0] : vcat(-1.0, jacobi_zeros(p - 1, 1.0, 1.0), 1.0)
+    gaussX = -gl
+    blend1 = L2 .* L3
+    blend2 = L1 .* L3
+    blend3 = L1 .* L2
+    warpfactor1 = 4 .* _evalwarp(p, gaussX, L3 .- L2)
+    warpfactor2 = 4 .* _evalwarp(p, gaussX, L1 .- L3)
+    warpfactor3 = 4 .* _evalwarp(p, gaussX, L2 .- L1)
+    warp1 = blend1 .* warpfactor1 .* (1 .+ (pval .* L1) .^ 2)
+    warp2 = blend2 .* warpfactor2 .* (1 .+ (pval .* L2) .^ 2)
+    warp3 = blend3 .* warpfactor3 .* (1 .+ (pval .* L3) .^ 2)
+    dx = warp1 .+ cos(2π / 3) .* warp2 .+ cos(4π / 3) .* warp3
+    dy = sin(2π / 3) .* warp2 .+ sin(4π / 3) .* warp3
+    return dx, dy
+end
+
+# optimal blending parameter (Warburton 2006, table for the tetrahedron)
+const _WB_ALPHA3D = [0.0, 0.0, 0.0, 0.1002, 1.1332, 1.5608, 1.3413, 1.2577,
+                     1.1603, 1.10153, 0.6080, 0.4523, 0.8856, 0.8717, 0.9655]
+
+function _warpblend3d(p, plocal_eq)
+    α = p <= length(_WB_ALPHA3D) ? _WB_ALPHA3D[p] : 1.0
+    tol = 1e-10
+    npl = size(plocal_eq, 1)
+
+    # equilateral-tetrahedron embedding: barycentric weights on the vertices
+    L1, L2, L3, L4 = (plocal_eq[:, c] for c in (4, 3, 1, 2))
+    v1 = [-1.0, -1 / sqrt(3.0), -1 / sqrt(6.0)]
+    v2 = [1.0, -1 / sqrt(3.0), -1 / sqrt(6.0)]
+    v3 = [0.0, 2 / sqrt(3.0), -1 / sqrt(6.0)]
+    v4 = [0.0, 0.0, 3 / sqrt(6.0)]
+    XYZ = L3 * v1' .+ L4 * v2' .+ L2 * v3' .+ L1 * v4'
+
+    # orthonormal tangent frames of the four faces
+    t1 = [v2 - v1, v2 - v1, v3 - v2, v3 - v1]
+    t2 = [v3 - (v1 + v2) / 2, v4 - (v1 + v2) / 2, v4 - (v2 + v3) / 2, v4 - (v1 + v3) / 2]
+    t1 = [t / norm(t) for t in t1]
+    t2 = [t / norm(t) for t in t2]
+
+    shift = zeros(npl, 3)
+    for face in 1:4
+        La, Lb, Lc, Ld = face == 1 ? (L1, L2, L3, L4) :
+                         face == 2 ? (L2, L1, L3, L4) :
+                         face == 3 ? (L3, L1, L4, L2) : (L4, L1, L3, L2)
+
+        warp1, warp2 = _evalshift(p, α, Lb, Lc, Ld)
+        blend = Lb .* Lc .* Ld
+        denom = (Lb .+ La ./ 2) .* (Lc .+ La ./ 2) .* (Ld .+ La ./ 2)
+        ok = denom .> tol
+        blend[ok] .= (1 .+ (α .* La[ok]) .^ 2) .* blend[ok] ./ denom[ok]
+
+        shift .+= (blend .* warp1) * t1[face]' .+ (blend .* warp2) * t2[face]'
+
+        # points on the face itself take the pure face warp (blend degenerates)
+        onface = (La .< tol) .& ((Lb .> tol) .+ (Lc .> tol) .+ (Ld .> tol) .< 3)
+        shift[onface, :] .= warp1[onface] * t1[face]' .+ warp2[onface] * t2[face]'
+    end
+    XYZ .+= shift
+
+    # back to barycentric coordinates and exact symmetrization over the 24
+    # coordinate permutations (the tetrahedron's symmetry group acts on
+    # barycentrics by permutation)
+    A = vcat(hcat(v1, v2, v3, v4), ones(1, 4))
+    lam = (A \ vcat(XYZ', ones(1, npl)))'          # (npl, 4), columns = v1..v4
+    lam = _symmetrize_bary(Matrix(lam))
+    lam[abs.(lam) .< 10 * eps()] .= 0.0
+    return lam
+end
+
+function _symmetrize_bary(lam)
+    npl = size(lam, 1)
+    perms = [(a, b, c, d) for a in 1:4 for b in 1:4 for c in 1:4 for d in 1:4
+             if allunique((a, b, c, d))]
+    acc = zeros(npl, 4)
+    for σ in perms
+        lamσ = lam[:, collect(σ)]
+        for i in 1:npl
+            j = argmin(vec(sum(abs2, lam .- lamσ[i:i, :]; dims=2)))
+            acc[j, :] .+= lamσ[i, :]
+        end
+    end
+    return acc ./ length(perms)
 end
 
 """

@@ -75,18 +75,29 @@ end
     gaussquad3d(pgauss::Integer)
 
 Gauss integration points and weights on the unit tetrahedron
-`{ξ ≥ 0, ξ₁+ξ₂+ξ₃ ≤ 1}` via collapsed-coordinate Gauss–Jacobi product rules
-(degree-exact for any requested `pgauss`; Hesthaven & Warburton 2008, §10.2).
-The cube [-1,1]³ maps to the tetrahedron with Jacobian
-`(1-η₂)(1-η₃)²/64`, absorbed into Gauss–Jacobi weights with `α = 1` and
-`α = 2` — no quadrature point lies on the collapsed edge. Tabulated symmetric
-rules (Witherden–Vincent) can later replace these as a pure optimization.
+`{ξ ≥ 0, ξ₁+ξ₂+ξ₃ ≤ 1}`, exact for total polynomial degree `pgauss`.
+
+For `pgauss ≤ 10` this returns the tabulated **symmetric rules** of
+Witherden & Vincent (Comput. Math. Appl. 69, 2015) — interior points,
+positive weights, and 2–3× fewer points than a product rule of the same
+degree (e.g. 46 vs 125 at degree 8). Above degree 10 it falls back to
+collapsed-coordinate Gauss–Jacobi product rules (degree-exact for any
+`pgauss`; Hesthaven & Warburton 2008, §10.2): the cube [-1,1]³ maps to the
+tetrahedron with Jacobian `(1-η₂)(1-η₃)²/64`, absorbed into Gauss–Jacobi
+weights with `α = 1` and `α = 2` — no quadrature point lies on the collapsed
+edge.
 
 # Returns
 - `x::Matrix{Float64}`: integration points `(ng, 3)`
 - `w::Vector{Float64}`: integration weights (summing to the volume 1/6)
 """
 function gaussquad3d(pgauss::Integer)
+    deg = max(Int(pgauss), 1)
+    if deg <= 10
+        # no degree-4 rule is tabulated; the degree-5 rule covers it
+        tab = haskey(WV_TET, deg) ? WV_TET[deg] : WV_TET[deg + 1]
+        return copy(tab[1]), copy(tab[2])
+    end
     n = ceil(Int, (pgauss + 1) / 2)
 
     x1, w1 = gaussjacobi(n, 0)   # η₁ direction, weight 1
