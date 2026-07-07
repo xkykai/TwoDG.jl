@@ -16,7 +16,7 @@ using Adapt
 import KernelAbstractions
 
 export RefTables, face_geometry!, element_geometry!, face_normal,
-       GeometricFactors, SideGeometry
+       GeometricFactors, SideGeometry, VolumeTables, quad_coords, quad_weight
 
 """
     face_normal(τ) -> SVector{2}
@@ -137,6 +137,24 @@ function face_geometry!(nlg, dws, pfg, rt::RefTables{Dim}, coords;
 end
 
 """
+    affine_jacobian(verts, ::Val{Dim}) -> (J, detJ, C)
+
+Constant Jacobian data of the affine map from the reference simplex to the
+element with vertex coordinates `verts (Dim+1, Dim)`: `J[d, k] = ∂x_d/∂ξ_k`,
+its determinant, and its adjugate `C = detJ * inv(J)`. The one definition
+shared by the curved-element evaluator and the compact affine storage, so
+both produce bit-identical values.
+"""
+@inline function affine_jacobian(verts, ::Val{Dim}) where {Dim}
+    J = SMatrix{Dim, Dim}(ntuple(Val(Dim * Dim)) do i
+        d = (i - 1) % Dim + 1
+        k = (i - 1) ÷ Dim + 1
+        verts[1 + k, d] - verts[1, d]
+    end)
+    return J, det(J), adjugate(J)
+end
+
+"""
     element_geometry!(shapd, wjac, pg, rt, coords; verts=nothing) -> M
 
 Fill, for one element with high-order node coordinates `coords (npl, Dim)`:
@@ -159,13 +177,7 @@ function element_geometry!(shapd, wjac, pg, rt::RefTables{Dim}, coords;
         # affine map: constant Jacobian J[d, k] = ∂x_d/∂ξ_k from the vertices;
         # physical derivatives contract the weighted reference tables with the
         # adjugate (so detJ divides out of ∫ ∂φ/∂x ⋅ detJ)
-        J = SMatrix{Dim, Dim}(ntuple(Val(Dim * Dim)) do i
-            d = (i - 1) % Dim + 1
-            k = (i - 1) ÷ Dim + 1
-            verts[1 + k, d] - verts[1, d]
-        end)
-        detJ = det(J)
-        C = adjugate(J)
+        _, detJ, C = affine_jacobian(verts, Val(Dim))
         for d in 1:Dim
             sd = @view shapd[:, :, d]
             sd .= @view(rt.shapdg[:, :, 1]) .* C[1, d]
@@ -194,16 +206,144 @@ function element_geometry!(shapd, wjac, pg, rt::RefTables{Dim}, coords;
 end
 
 """
+    VolumeTables
+
+Volume geometry at quadrature points in the memory-compact split layout:
+dense per-element tables are stored **only for curved elements**; straight
+(affine) elements — the bulk of any real mesh — store just their constant
+Jacobian data and share one set of reference tables. This is what keeps 3D
+meshes affordable: the dense `shapd` table alone is `O(npl·ng·Dim)` ≈ 165 KB
+per element at p = 3 on tets, while the affine representation is `O(Dim²)`.
+
+- `curved_ix (nt,)`: `0` for affine elements, else the element's column in
+  the dense tables below.
+- `cshapd (npl, ng, Dim, ntc)`, `cwjac (ng, ntc)`, `cpg (ng, Dim, ntc)`:
+  dense quadrature-/Jacobian-weighted derivative tables, weighted Jacobians,
+  and quadrature-point coordinates of the `ntc` curved elements.
+- `aC, aJ (Dim, Dim, nt)`, `av0 (Dim, nt)`, `adetJ (nt,)`: per-element
+  adjugate, Jacobian, map origin (first vertex), and `det J` of the affine
+  map `x(ξ) = av0 + aJ ξ` (zero for curved elements).
+- `rshapdg (npl, ng, Dim)`, `rgpts (ng, Dim)`, `rgwgh (ng,)`: shared
+  reference tables (quadrature-weighted reference derivatives, quadrature
+  points and weights).
+
+Kernels branch per element on `curved_ix` (see the accessors
+[`quad_coords`](@ref), [`quad_weight`](@ref) and the flux-rotation pattern in
+the DG kernels); the trade of a few extra FLOPs for `O(npl·ng)` less memory
+traffic per affine element is a win on both backends.
+"""
+struct VolumeTables{T, Dim, A2 <: AbstractMatrix{T}, A3 <: AbstractArray{T, 3},
+                    A4 <: AbstractArray{T, 4}, V <: AbstractVector{T},
+                    IV <: AbstractVector{Int32}}
+    curved_ix  :: IV
+    curved_els :: IV
+    cshapd     :: A4
+    cwjac      :: A2
+    cpg        :: A3
+    aC         :: A3
+    aJ         :: A3
+    av0        :: A2
+    adetJ      :: V
+    rshapdg    :: A3
+    rgpts      :: A2
+    rgwgh      :: V
+end
+
+function VolumeTables(curved_ix::IV, curved_els::IV, cshapd::A4, cwjac::A2,
+                      cpg::A3, aC::A3, aJ::A3, av0::A2, adetJ::V,
+                      rshapdg::A3, rgpts::A2, rgwgh::V) where
+                     {A2 <: AbstractMatrix, A3 <: AbstractArray{<:Any, 3},
+                      A4 <: AbstractArray{<:Any, 4}, V <: AbstractVector,
+                      IV <: AbstractVector{Int32}}
+    Dim = size(aC, 1)
+    return VolumeTables{eltype(cwjac), Dim, A2, A3, A4, V, IV}(
+        curved_ix, curved_els, cshapd, cwjac, cpg, aC, aJ, av0, adetJ,
+        rshapdg, rgpts, rgwgh)
+end
+
+Adapt.@adapt_structure VolumeTables
+
+Base.eltype(::VolumeTables{T}) where {T} = T
+Base.ndims(::VolumeTables{T, Dim}) where {T, Dim} = Dim
+
+"""
+    quad_coords(vol, g, e, ::Val{Dim}) -> SVector{Dim}
+
+Physical coordinates of volume quadrature point `g` of element `e`:
+`av0 + aJ ξ_g` for affine elements, a dense-table read for curved ones.
+Device-inlineable.
+"""
+@inline function quad_coords(vol::VolumeTables, g, e, ::Val{Dim}) where {Dim}
+    T = eltype(vol)
+    ic = vol.curved_ix[e]
+    if ic == 0
+        return SVector{Dim, T}(ntuple(Val(Dim)) do d
+            x = @inbounds vol.av0[d, e]
+            @inbounds for k in 1:Dim
+                x += vol.aJ[d, k, e] * vol.rgpts[g, k]
+            end
+            x
+        end)
+    else
+        return SVector{Dim, T}(ntuple(d -> @inbounds(vol.cpg[g, d, ic]), Val(Dim)))
+    end
+end
+
+"""
+    quad_weight(vol, g, e) -> T
+
+Quadrature-weighted Jacobian `gwgh[g] * detJ` at volume quadrature point `g`
+of element `e`. Device-inlineable.
+"""
+@inline function quad_weight(vol::VolumeTables, g, e)
+    ic = vol.curved_ix[e]
+    return ic == 0 ? vol.rgwgh[g] * vol.adetJ[e] : @inbounds(vol.cwjac[g, ic])
+end
+
+# dense materializations of the compact layout (property-alias compatibility
+# and CPU-side consumers that want whole arrays; backend-generic broadcasts)
+function _dense_shapd(vol::VolumeTables{T, Dim}) where {T, Dim}
+    npl, ng = size(vol.rshapdg, 1), size(vol.rshapdg, 2)
+    nt = length(vol.curved_ix)
+    full = similar(vol.cshapd, npl, ng, Dim, nt)
+    fill!(full, zero(T))
+    for d in 1:Dim, k in 1:Dim
+        @views full[:, :, d, :] .+= reshape(vol.rshapdg[:, :, k], npl, ng, 1) .*
+                                    reshape(vol.aC[k, d, :], 1, 1, nt)
+    end
+    isempty(vol.curved_els) || (full[:, :, :, vol.curved_els] .= vol.cshapd)
+    return full
+end
+
+function _dense_wjac(vol::VolumeTables)
+    full = vol.rgwgh .* reshape(vol.adetJ, 1, :)
+    isempty(vol.curved_els) || (full[:, vol.curved_els] .= vol.cwjac)
+    return full
+end
+
+function _dense_pg(vol::VolumeTables{T, Dim}) where {T, Dim}
+    ng = length(vol.rgwgh)
+    nt = length(vol.curved_ix)
+    full = similar(vol.cpg, ng, Dim, nt)
+    full .= reshape(vol.av0, 1, Dim, nt)
+    for k in 1:Dim
+        @views full .+= reshape(vol.rgpts[:, k], ng, 1, 1) .*
+                        reshape(vol.aJ[:, k, :], 1, Dim, nt)
+    end
+    isempty(vol.curved_els) || (full[:, :, vol.curved_els] .= vol.cpg)
+    return full
+end
+
+"""
     GeometricFactors(master, mesh; T=Float64)
 
 One-time precomputation of all mesh geometry at quadrature points, shared by
 every discretization (the DG residual kernels consume it directly as
 `DGContext`; the HDG/CG caches compose it): face/element connectivity
 resolved to plain index arrays (no runtime `findfirst`), face and element
-geometry evaluated at quadrature points (straight and curved elements handled
-uniformly), and explicit inverse mass matrices. All fields are plain arrays of
-eltype `T` (`Int32` for indices), so the whole cache moves to a GPU with
-`Adapt.adapt(CuArray, gf)`.
+geometry evaluated at quadrature points, and explicit inverse mass matrices.
+All fields are plain arrays of eltype `T` (`Int32` for indices), so the whole
+cache moves to a GPU with `Adapt.adapt(CuArray, gf)`.
 
 Faces `1:ni` are interior, `ni+1:nf` are boundary (the ordering of `mesh.f`).
 
@@ -216,17 +356,23 @@ Field shapes (npl volume nodes, npf face nodes, ng/ngf quadrature points):
 - `nlg (ngf, Dim, nf)`, `dws (ngf, nf)`, `pfg (ngf, Dim, nf)`: outward unit
   normal (w.r.t. left element), weighted measure, and physical coordinates at
   face quadrature points.
-- `shapd (npl, ng, Dim, nt)`: quadrature- and Jacobian-weighted physical
-  derivative tables; `wjac (ng, nt)`: `gwgh .* detJ`; `pg (ng, Dim, nt)`:
-  physical coordinates of volume quadrature points.
-- `Minv (npl, npl, nt)`: inverse element mass matrices.
+- `vol :: `[`VolumeTables`](@ref): volume geometry in the compact
+  affine/curved split layout (dense per-element tables only for curved
+  elements).
+- `Minv (npl, npl, nt)`: inverse element mass matrices (dense for every
+  element — same cost class as the solution itself).
 - `shapf (npf, ngf)`, `shap (npl, ng)`: shape-function values (shared).
 
-Deprecated property aliases (one release, 2D): `shapx`/`shapy` view
+The pre-split dense tables remain available as *materializing* properties:
+`gf.shapd (npl, ng, Dim, nt)`, `gf.wjac (ng, nt)`, `gf.pg (ng, Dim, nt)`
+allocate and fill the full array on access — convenient for diagnostics
+(`sum(ctx.wjac)`) and one-time CPU consumers, wasteful inside loops.
+
+Deprecated property aliases (one release, 2D): `shapx`/`shapy` materialize
 `shapd[:, :, 1/2, :]`; `sh1d`, `np1d`, `ng1d` read `shapf`, `npf`, `ngf`.
 """
 struct GeometricFactors{T, Dim, A2 <: AbstractMatrix{T}, A3 <: AbstractArray{T, 3},
-                        A4 <: AbstractArray{T, 4},
+                        VT <: VolumeTables{T, Dim},
                         I2 <: AbstractMatrix{Int32}, I3 <: AbstractArray{Int32, 3}}
     ni      :: Int
     nf      :: Int
@@ -240,9 +386,7 @@ struct GeometricFactors{T, Dim, A2 <: AbstractMatrix{T}, A3 <: AbstractArray{T, 
     nlg     :: A3
     dws     :: A2
     pfg     :: A3
-    shapd   :: A4
-    wjac    :: A2
-    pg      :: A3
+    vol     :: VT
     Minv    :: A3
     shapf   :: A2
     shap    :: A2
@@ -254,15 +398,14 @@ end
 function GeometricFactors(ni::Integer, nf::Integer, nt::Integer, npl::Integer,
                           npf::Integer, ng::Integer, ngf::Integer,
                           facecon::I3, f_el::I2, nlg::A3, dws::A2, pfg::A3,
-                          shapd::A4, wjac::A2, pg::A3, Minv::A3,
+                          vol::VolumeTables, Minv::A3,
                           shapf::A2, shap::A2) where
                          {A2 <: AbstractMatrix, A3 <: AbstractArray{<:Any, 3},
-                          A4 <: AbstractArray{<:Any, 4},
                           I2 <: AbstractMatrix{Int32}, I3 <: AbstractArray{Int32, 3}}
     Dim = size(nlg, 2)
-    return GeometricFactors{eltype(dws), Dim, A2, A3, A4, I2, I3}(
+    return GeometricFactors{eltype(dws), Dim, A2, A3, typeof(vol), I2, I3}(
         ni, nf, nt, npl, npf, ng, ngf, facecon, f_el, nlg, dws, pfg,
-        shapd, wjac, pg, Minv, shapf, shap)
+        vol, Minv, shapf, shap)
 end
 
 Adapt.@adapt_structure GeometricFactors
@@ -272,10 +415,14 @@ KernelAbstractions.get_backend(gf::GeometricFactors) = KernelAbstractions.get_ba
 Base.eltype(::GeometricFactors{T}) where {T} = T
 Base.ndims(::GeometricFactors{T, Dim}) where {T, Dim} = Dim
 
-# pre-Dim field names, kept as property aliases for one release (NEWS.md)
+# materializing properties for the pre-split dense tables, plus the pre-Dim
+# field names kept as property aliases for one release (NEWS.md)
 @inline function Base.getproperty(gf::GeometricFactors, s::Symbol)
-    s === :shapx && return view(getfield(gf, :shapd), :, :, 1, :)
-    s === :shapy && return view(getfield(gf, :shapd), :, :, 2, :)
+    s === :shapd && return _dense_shapd(getfield(gf, :vol))
+    s === :wjac  && return _dense_wjac(getfield(gf, :vol))
+    s === :pg    && return _dense_pg(getfield(gf, :vol))
+    s === :shapx && return _dense_shapd(getfield(gf, :vol))[:, :, 1, :]
+    s === :shapy && return _dense_shapd(getfield(gf, :vol))[:, :, 2, :]
     s === :sh1d  && return getfield(gf, :shapf)
     s === :np1d  && return getfield(gf, :npf)
     s === :ng1d  && return getfield(gf, :ngf)
@@ -337,24 +484,49 @@ function GeometricFactors(master, mesh; T::Type{<:AbstractFloat}=Float64)
                        rt, coords; tangent)
     end
 
-    # --- elements: geometry at volume quadrature points + inverse mass ---
-    shapd = zeros(npl, ng, Dim, nt)
-    wjac = zeros(ng, nt)
-    pg = zeros(ng, Dim, nt)
+    # --- elements: compact volume geometry (dense tables only for curved
+    # elements, constant Jacobian data for affine ones) + inverse mass ---
+    curved_els32 = Int32.(findall(i -> mesh.tcurved[i], 1:nt))
+    ntc = length(curved_els32)
+    curved_ix = zeros(Int32, nt)
+    curved_ix[curved_els32] .= Int32.(1:ntc)
+
+    cshapd = zeros(npl, ng, Dim, ntc)
+    cwjac = zeros(ng, ntc)
+    cpg = zeros(ng, Dim, ntc)
+    aC = zeros(Dim, Dim, nt)
+    aJ = zeros(Dim, Dim, nt)
+    av0 = zeros(Dim, nt)
+    adetJ = zeros(nt)
     Minv = zeros(npl, npl, nt)
 
     for i in 1:nt
-        verts = mesh.tcurved[i] ? nothing : p[t[i, :], :]
-        M = element_geometry!(@view(shapd[:, :, :, i]),
-                              @view(wjac[:, i]), @view(pg[:, :, i]),
-                              rt, mesh.dgnodes[:, :, i]; verts)
-        Minv[:, :, i] .= inv(M)
+        if mesh.tcurved[i]
+            ic = curved_ix[i]
+            M = element_geometry!(@view(cshapd[:, :, :, ic]),
+                                  @view(cwjac[:, ic]), @view(cpg[:, :, ic]),
+                                  rt, mesh.dgnodes[:, :, i])
+            Minv[:, :, i] .= inv(M)
+        else
+            verts = p[t[i, :], :]
+            J, detJ, C = affine_jacobian(verts, Val(Dim))
+            aJ[:, :, i] .= J
+            aC[:, :, i] .= C
+            av0[:, i] .= @view verts[1, :]
+            adetJ[i] = detJ
+            Minv[:, :, i] .= inv(rt.mass .* detJ)
+        end
     end
+
+    vol = VolumeTables(curved_ix, curved_els32,
+                       T.(cshapd), T.(cwjac), T.(cpg),
+                       T.(aC), T.(aJ), T.(av0), T.(adetJ),
+                       T.(rt.shapdg), Matrix{T}(master.gpts), T.(rt.gwgh))
 
     return GeometricFactors(ni, nf, nt, npl, npf, ng, ngf,
                             facecon, f_el,
                             T.(nlg), T.(dws), T.(pfg),
-                            T.(shapd), T.(wjac), T.(pg), T.(Minv),
+                            vol, T.(Minv),
                             T.(rt.fshap), T.(rt.shap))
 end
 

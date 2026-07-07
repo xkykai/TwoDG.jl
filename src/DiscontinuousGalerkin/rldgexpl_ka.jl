@@ -14,6 +14,7 @@ using KernelAbstractions: @kernel, @index, @Const
 using Atomix
 using StaticArrays
 using Adapt
+using ..Geometry: VolumeTables, quad_coords, quad_weight
 
 # acc + s .* v, elementwise on NTuples, without closure capture of a
 # reassigned local (which would box it inside a kernel — a silent 100×
@@ -125,23 +126,50 @@ end
     end
 end
 
-# LDG gradient, volume term: qtmp -= ∫ u ∇φ (element-local, no atomics)
-@kernel function _grad_volume!(qtmp, @Const(ug), @Const(shapd),
+# LDG gradient, volume term: qtmp -= ∫ u ∇φ (element-local, no atomics).
+# Affine elements accumulate against the shared reference table and rotate
+# with the adjugate once per node; curved elements use their dense table.
+@kernel function _grad_volume!(qtmp, @Const(ug), vol,
                                ::Val{NC}, ::Val{DIM}) where {NC, DIM}
     i, e = @index(Global, NTuple)
     T = eltype(qtmp)
     ng = size(ug, 1)
 
-    @inbounds for c in 1:NC
-        # one fused g-loop: ug[g, c, e] is read once for all directions
-        acc = ntuple(_ -> zero(T), Val(DIM))
-        for g in 1:ng
-            u = ug[g, c, e]
-            v = ntuple(d -> @inbounds(shapd[i, g, d, e]), Val(DIM))
-            acc = _axpy_tuple(acc, u, v)
+    # hoist the table references out of the hot loops: repeated struct-field
+    # loads inside an ntuple closure defeat LICM on the device
+    ic = vol.curved_ix[e]
+    if ic == 0
+        rshapdg = vol.rshapdg
+        aC = vol.aC
+        @inbounds for c in 1:NC
+            # reference-frame accumulation, one fused g-loop
+            acc = ntuple(_ -> zero(T), Val(DIM))
+            for g in 1:ng
+                u = ug[g, c, e]
+                v = ntuple(k -> @inbounds(rshapdg[i, g, k]), Val(DIM))
+                acc = _axpy_tuple(acc, u, v)
+            end
+            for d in 1:DIM
+                s = zero(T)
+                for k in 1:DIM
+                    s += aC[k, d, e] * acc[k]
+                end
+                qtmp[i, d, c, e] -= s
+            end
         end
-        for d in 1:DIM
-            qtmp[i, d, c, e] -= acc[d]
+    else
+        cshapd = vol.cshapd
+        @inbounds for c in 1:NC
+            # one fused g-loop: ug[g, c, e] is read once for all directions
+            acc = ntuple(_ -> zero(T), Val(DIM))
+            for g in 1:ng
+                u = ug[g, c, e]
+                v = ntuple(d -> @inbounds(cshapd[i, g, d, ic]), Val(DIM))
+                acc = _axpy_tuple(acc, u, v)
+            end
+            for d in 1:DIM
+                qtmp[i, d, c, e] -= acc[d]
+            end
         end
     end
 end
@@ -198,9 +226,10 @@ end
     end
 end
 
-# volume flux with viscous contribution (reads the staged ug)
+# volume flux with viscous contribution (reads the staged ug). Same
+# affine-element flux rotation as _volume_flux! (see rinvexpl_ka.jl).
 @kernel function _volume_flux_visc!(fdg, @Const(ug), @Const(q), @Const(shap),
-                                    @Const(pg), eq, time,
+                                    vol, eq, time,
                                     ::Val{NC}, ::Val{DIM}) where {NC, DIM}
     g, e = @index(Global, NTuple)
     T = eltype(fdg)
@@ -216,12 +245,23 @@ end
         end
         s
     end)
-    x = SVector{DIM, T}(ntuple(d -> @inbounds(pg[g, d, e]), Val(DIM)))
+    x = quad_coords(vol, g, e, Val(DIM))
 
     fdi = flux(eq, u, x, time)
     fdv = viscous_flux(eq, u, qg, x, time)
-    @inbounds for d in 1:DIM, c in 1:NC
-        fdg[g, c, d, e] = fdi[d][c] + fdv[d][c]
+    ic = vol.curved_ix[e]
+    if ic == 0
+        @inbounds for k in 1:DIM, c in 1:NC
+            s = zero(T)
+            for d in 1:DIM
+                s += vol.aC[k, d, e] * (fdi[d][c] + fdv[d][c])
+            end
+            fdg[g, c, k, e] = s
+        end
+    else
+        @inbounds for d in 1:DIM, c in 1:NC
+            fdg[g, c, d, e] = fdi[d][c] + fdv[d][c]
+        end
     end
 end
 
@@ -284,7 +324,7 @@ function getq!(q, ctx::DGContext, phys::DGPhysics, u, time;
     _grad_face_scatter!(backend)(ws.qtmp, ws.qfd, ctx.facecon, ctx.f_el,
                                  ctx.shapf, ctx.ni, ncv, dimv;
                                  ndrange=(ctx.npf, ctx.nf))
-    _grad_volume!(backend)(ws.qtmp, ws.ug, ctx.shapd, ncv, dimv;
+    _grad_volume!(backend)(ws.qtmp, ws.ug, ctx.vol, ncv, dimv;
                            ndrange=(ctx.npl, ctx.nt))
     _grad_minv!(backend)(q, ws.qtmp, ctx.Minv, ncv, dimv; ndrange=(ctx.npl, ctx.nt))
     KernelAbstractions.synchronize(backend)
@@ -329,14 +369,14 @@ function rldgexpl!(r, ctx::DGContext, phys::DGPhysics, u, time;
                               ctx.dws, ctx.pfg, ctx.shapf, eq, phys.numerical_flux,
                               phys.stabilization, phys.boundary_conditions,
                               time, ctx.ni, ncv, dimv; ndrange=(ctx.ngf, ctx.nf))
-    _volume_flux_visc!(backend)(ws.fdg, ws.ug, ws.q, ctx.shap, ctx.pg,
+    _volume_flux_visc!(backend)(ws.fdg, ws.ug, ws.q, ctx.shap, ctx.vol,
                                 eq, time, ncv, dimv; ndrange=(ctx.ng, ctx.nt))
     _face_scatter!(backend)(ws.rtmp, ws.fng, ctx.facecon, ctx.f_el, ctx.shapf,
                             ctx.ni, ncv; ndrange=(ctx.npf, ctx.nf))
-    _volume_lift!(backend)(ws.rtmp, ws.fdg, ctx.shapd, ncv, dimv;
+    _volume_lift!(backend)(ws.rtmp, ws.fdg, ctx.vol, ncv, dimv;
                            ndrange=(ctx.npl, ctx.nt))
     if phys.source !== nothing
-        _volume_source!(backend)(ws.srcg, u, ctx.shap, ctx.pg, ctx.wjac,
+        _volume_source!(backend)(ws.srcg, u, ctx.shap, ctx.vol,
                                  phys.source, time, ncv, dimv;
                                  ndrange=(ctx.ng, ctx.nt))
         _source_lift!(backend)(ws.rtmp, ws.srcg, ctx.shap, ncv;

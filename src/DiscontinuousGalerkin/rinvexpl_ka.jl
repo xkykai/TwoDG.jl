@@ -28,6 +28,7 @@ using KernelAbstractions: @kernel, @index, @Const
 using Atomix
 using StaticArrays
 using Adapt
+using ..Geometry: VolumeTables, quad_coords, quad_weight
 
 @kernel function _face_flux!(fng, @Const(u), @Const(facecon), @Const(f_el),
                              @Const(nlg), @Const(dws), @Const(pfg), @Const(shapf),
@@ -94,7 +95,13 @@ end
     end
 end
 
-@kernel function _volume_flux!(fdg, @Const(u), @Const(shap), @Const(pg),
+# Volume flux at quadrature points. For affine elements the flux is rotated
+# into the *reference* frame on store (F̃_k = Σ_d C[k,d] f_d with C the
+# adjugate), so the lift kernel contracts the shared reference derivative
+# table instead of a dense per-element one — the memory-compact layout costs
+# one Dim×Dim rotation per quadrature point here and nothing in the lift.
+# Curved elements store the physical flux and lift with their dense table.
+@kernel function _volume_flux!(fdg, @Const(u), @Const(shap), vol,
                                eq, time, ::Val{NC}, ::Val{DIM}) where {NC, DIM}
     g, e = @index(Global, NTuple)
     T = eltype(fdg)
@@ -107,35 +114,65 @@ end
         end
         s
     end)
-    x = SVector{DIM, T}(ntuple(d -> @inbounds(pg[g, d, e]), Val(DIM)))
+    x = quad_coords(vol, g, e, Val(DIM))
 
     fd = flux(eq, ug, x, time)
-    @inbounds for d in 1:DIM, c in 1:NC
-        fdg[g, c, d, e] = fd[d][c]
+    ic = vol.curved_ix[e]
+    if ic == 0
+        @inbounds for k in 1:DIM, c in 1:NC
+            s = zero(T)
+            for d in 1:DIM
+                s += vol.aC[k, d, e] * fd[d][c]
+            end
+            fdg[g, c, k, e] = s
+        end
+    else
+        @inbounds for d in 1:DIM, c in 1:NC
+            fdg[g, c, d, e] = fd[d][c]
+        end
     end
 end
 
-@kernel function _volume_lift!(rtmp, @Const(fdg), @Const(shapd),
+@kernel function _volume_lift!(rtmp, @Const(fdg), vol,
                                ::Val{NC}, ::Val{DIM}) where {NC, DIM}
     i, e = @index(Global, NTuple)
     T = eltype(rtmp)
     ng = size(fdg, 1)
 
-    @inbounds for c in 1:NC
-        acc = zero(T)
-        for g in 1:ng
-            s = zero(T)
-            for d in 1:DIM
-                s += shapd[i, g, d, e] * fdg[g, c, d, e]
+    # hoist the table references out of the hot loops: repeated struct-field
+    # loads in the inner loop defeat LICM on the device
+    ic = vol.curved_ix[e]
+    if ic == 0
+        rshapdg = vol.rshapdg
+        @inbounds for c in 1:NC
+            acc = zero(T)
+            for g in 1:ng
+                s = zero(T)
+                for d in 1:DIM
+                    s += rshapdg[i, g, d] * fdg[g, c, d, e]
+                end
+                acc += s
             end
-            acc += s
+            rtmp[i, c, e] += acc
         end
-        rtmp[i, c, e] += acc
+    else
+        cshapd = vol.cshapd
+        @inbounds for c in 1:NC
+            acc = zero(T)
+            for g in 1:ng
+                s = zero(T)
+                for d in 1:DIM
+                    s += cshapd[i, g, d, ic] * fdg[g, c, d, e]
+                end
+                acc += s
+            end
+            rtmp[i, c, e] += acc
+        end
     end
 end
 
-@kernel function _volume_source!(srcg, @Const(u), @Const(shap), @Const(pg),
-                                 @Const(wjac), src, time,
+@kernel function _volume_source!(srcg, @Const(u), @Const(shap), vol,
+                                 src, time,
                                  ::Val{NC}, ::Val{DIM}) where {NC, DIM}
     g, e = @index(Global, NTuple)
     T = eltype(srcg)
@@ -148,10 +185,10 @@ end
         end
         s
     end)
-    x = SVector{DIM, T}(ntuple(d -> @inbounds(pg[g, d, e]), Val(DIM)))
+    x = quad_coords(vol, g, e, Val(DIM))
 
     sv = src(ug, x, time)
-    w = wjac[g, e]
+    w = quad_weight(vol, g, e)
     @inbounds for c in 1:NC
         srcg[g, c, e] = sv[c] * w
     end
@@ -234,14 +271,14 @@ function rinvexpl!(r, ctx::DGContext, phys::DGPhysics, u, time;
                          ctx.pfg, ctx.shapf, eq, phys.numerical_flux,
                          phys.boundary_conditions, time, ctx.ni, ncv, dimv;
                          ndrange=(ctx.ngf, ctx.nf))
-    _volume_flux!(backend)(ws.fdg, u, ctx.shap, ctx.pg, eq, time, ncv, dimv;
+    _volume_flux!(backend)(ws.fdg, u, ctx.shap, ctx.vol, eq, time, ncv, dimv;
                            ndrange=(ctx.ng, ctx.nt))
     _face_scatter!(backend)(ws.rtmp, ws.fng, ctx.facecon, ctx.f_el, ctx.shapf,
                             ctx.ni, ncv; ndrange=(ctx.npf, ctx.nf))
-    _volume_lift!(backend)(ws.rtmp, ws.fdg, ctx.shapd, ncv, dimv;
+    _volume_lift!(backend)(ws.rtmp, ws.fdg, ctx.vol, ncv, dimv;
                            ndrange=(ctx.npl, ctx.nt))
     if phys.source !== nothing
-        _volume_source!(backend)(ws.srcg, u, ctx.shap, ctx.pg, ctx.wjac,
+        _volume_source!(backend)(ws.srcg, u, ctx.shap, ctx.vol,
                                  phys.source, time, ncv, dimv;
                                  ndrange=(ctx.ng, ctx.nt))
         _source_lift!(backend)(ws.rtmp, ws.srcg, ctx.shap, ncv;

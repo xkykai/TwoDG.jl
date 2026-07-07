@@ -28,7 +28,7 @@ using KernelAbstractions: @kernel, @index, @Const
 using Adapt
 using LinearAlgebra
 using SparseArrays
-using TwoDG.Geometry: GeometricFactors, SideGeometry
+using TwoDG.Geometry: RefTables, SideGeometry, element_geometry!
 using TwoDG.Meshes: mkelcon
 
 """
@@ -108,11 +108,12 @@ function HDGBatch(master, mesh, source, param; T::Type{<:AbstractFloat}=Float64)
     npl = size(mesh.dgnodes, 1)
     nt = size(mesh.t, 1)
 
-    ctx = GeometricFactors(master, mesh)   # canonical volume geometry (Float64)
+    rt = RefTables(master)                 # shared reference tables (Float64)
     side = SideGeometry(master, mesh)      # face metrics in element orientation
-    shap = ctx.shap                        # (npl, ng)
+    shap = rt.shap                         # (npl, ng)
     fshap = master.face.shap[:, 1, :]      # (nps, ngf) face trace basis
     perm = master.perm[:, :, 1]
+    ng = length(rt.gwgh)
 
     MinvM = zeros(npl, npl, nt)
     C = zeros(npl, npl, Dim, nt)
@@ -123,42 +124,54 @@ function HDGBatch(master, mesh, source, param; T::Type{<:AbstractFloat}=Float64)
     R = zeros(ndf, npl, Dim, nt)
     Ru = zeros(ndf, npl, nt)
 
-    @views Threads.@threads for e in 1:nt
-        MinvM[:, :, e] .= kappa .* ctx.Minv[:, :, e]
-        for d in 1:Dim
-            C[:, :, d, e] .= shap * ctx.shapd[:, :, d, e]'
-            D[:, :, e] .-= c[d] .* C[:, :, d, e]'
-        end
+    # volume geometry is evaluated per element into chunk-local scratch — the
+    # all-elements dense tables would cost O(npl·ng·Dim·nt) memory in 3D
+    @sync for chunk in Iterators.partition(1:nt, cld(nt, Threads.nthreads()))
+        Threads.@spawn begin
+            shapd_e = Array{Float64}(undef, npl, ng, Dim)
+            wjac_e = Vector{Float64}(undef, ng)
+            pg_e = Matrix{Float64}(undef, ng, Dim)
+            @views for e in chunk
+                verts = mesh.tcurved[e] ? nothing : mesh.p[mesh.t[e, :], :]
+                M = element_geometry!(shapd_e, wjac_e, pg_e, rt,
+                                      mesh.dgnodes[:, :, e]; verts)
+                MinvM[:, :, e] .= kappa .* inv(M)
+                for d in 1:Dim
+                    C[:, :, d, e] .= shap * shapd_e[:, :, d]'
+                    D[:, :, e] .-= c[d] .* C[:, :, d, e]'
+                end
 
-        if source isa Function
-            src = source(ctx.pg[:, :, e])
-            B0[:, nc1, e] .= shap * (ctx.wjac[:, e] .* vec(src))
-        end
+                if source isa Function
+                    src = source(pg_e)
+                    B0[:, nc1, e] .= shap * (wjac_e .* vec(src))
+                end
 
-        for s in 1:nfe
-            ps = perm[:, s]
-            sw = side.sw[:, s, e]
-            cnl = c[1] .* side.nl[:, 1, s, e]
-            for d in 2:Dim
-                cnl .+= c[d] .* side.nl[:, d, s, e]
+                for s in 1:nfe
+                    ps = perm[:, s]
+                    sw = side.sw[:, s, e]
+                    cnl = c[1] .* side.nl[:, 1, s, e]
+                    for d in 2:Dim
+                        cnl .+= c[d] .* side.nl[:, d, s, e]
+                    end
+                    tau_loc = kappa .+ abs.(cnl)      # localprob's tau (taud = kappa)
+                    tau_ae = taud_ae .+ abs.(cnl)     # elemmat_hdg's tau
+
+                    cols = (s-1)*nps+1 : s*nps
+                    for d in 1:Dim
+                        Ed = fshap * Diagonal(sw .* side.nl[:, d, s, e]) * fshap'
+                        Le[ps, cols, d, e] .+= Ed
+                        R[cols, ps, d, e] .+= Ed
+                    end
+                    Eu = fshap * Diagonal(sw .* (cnl .- tau_loc)) * fshap'
+                    Wu = fshap * Diagonal(sw .* tau_ae) * fshap'
+                    Aλ = fshap * Diagonal(sw .* (cnl .- tau_ae)) * fshap'
+
+                    D[ps, ps, e] .+= fshap * Diagonal(sw .* tau_loc) * fshap'
+                    B0[ps, cols, e] .-= Eu
+                    Ru[cols, ps, e] .+= Wu
+                    Alam[cols, cols, e] .+= Aλ
+                end
             end
-            tau_loc = kappa .+ abs.(cnl)      # localprob's tau (taud = kappa)
-            tau_ae = taud_ae .+ abs.(cnl)     # elemmat_hdg's tau
-
-            cols = (s-1)*nps+1 : s*nps
-            for d in 1:Dim
-                Ed = fshap * Diagonal(sw .* side.nl[:, d, s, e]) * fshap'
-                Le[ps, cols, d, e] .+= Ed
-                R[cols, ps, d, e] .+= Ed
-            end
-            Eu = fshap * Diagonal(sw .* (cnl .- tau_loc)) * fshap'
-            Wu = fshap * Diagonal(sw .* tau_ae) * fshap'
-            Aλ = fshap * Diagonal(sw .* (cnl .- tau_ae)) * fshap'
-
-            D[ps, ps, e] .+= fshap * Diagonal(sw .* tau_loc) * fshap'
-            B0[ps, cols, e] .-= Eu
-            Ru[cols, ps, e] .+= Wu
-            Alam[cols, cols, e] .+= Aλ
         end
     end
 
