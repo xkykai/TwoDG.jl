@@ -5,13 +5,14 @@
 [![codecov](https://codecov.io/gh/xkykai/TwoDG.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/xkykai/TwoDG.jl)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A high-performance Julia framework for solving 2D partial differential equations with high-order Galerkin methods — continuous, discontinuous, and hybridizable discontinuous — behind a single `solve` entry point, running on CPU or GPU from the same code.
+A high-performance Julia framework for solving 2D and 3D partial differential equations with high-order Galerkin methods on simplex meshes — continuous, discontinuous, and hybridizable discontinuous — behind a single `solve` entry point, running on CPU or GPU from the same code.
 
 ## Why TwoDG?
 
 - **Hybridizable DG (HDG) as a first-class solver.** Implicit high-order solves where the globally coupled unknowns live only on element faces: static condensation shrinks the system dramatically, the trace system is solved directly or with preconditioned Krylov iterations, and a cheap local postprocessing step recovers a solution that converges one order *faster* than the polynomial degree suggests (k+2 superconvergence). This extends all the way to steady and unsteady incompressible Navier–Stokes with an exactly divergence-free postprocessed velocity — capabilities usually confined to research codes.
 - **GPU-resident implicit and explicit solvers.** Not just the explicit DG time loop: the batched HDG assembly and recovery and the matrix-free CG iteration also run through KernelAbstractions, so the same code executes on CPU threads or a CUDA GPU (`ArrayT = CuArray`), with no per-backend forks. The batched assembly path is orders of magnitude faster than element-by-element assembly even on the CPU.
-- **High-order curved triangles.** Simplex elements with isoparametric curved boundaries at arbitrary polynomial order, so p-refinement on circles, airfoils, and mapped geometries keeps its design accuracy — no accuracy cliff at curved walls.
+- **2D and 3D from one dimension-generic code.** Triangles and tetrahedra share the same kernels, equations, and API — the dimension flows from the mesh and is never spelled twice. The 3D storage is engineered for real meshes: dense geometry tables only where elements are curved (20× smaller caches on straight meshes), symmetric Witherden–Vincent tet quadrature, and warp-and-blend high-order nodes.
+- **High-order curved simplices.** Isoparametric curved boundaries at arbitrary polynomial order, so p-refinement on circles, airfoils, spheres, and mapped geometries keeps its design accuracy — no accuracy cliff at curved walls.
 - **Three methods, one API.** CG, explicit (L)DG, and implicit HDG share the same meshes, equations, and boundary conditions, which makes head-to-head method comparison on the *same* problem a few lines of code — and makes the package a natural companion for a finite element methods course.
 - **Numerics you can hand a precision or a stepper.** Element type is parametric (`T = Float32` runs the whole loop in single precision, on GPU too), and `semidiscretize` hands the semidiscrete system to the SciML ecosystem when you want adaptive or specialized time integrators instead of the built-in RK4.
 
@@ -24,9 +25,15 @@ julia> ]  # enter Pkg mode
 pkg> add https://github.com/xkykai/TwoDG.jl
 ```
 
-Julia 1.10 or newer is required. Plotting (`scaplot`, `meshplot`) activates when a Makie backend is loaded (`using CairoMakie`); GPU runs activate with `using CUDA` (or another KernelAbstractions backend); `semidiscretize` activates with SciMLBase/OrdinaryDiffEq; NACA meshes with `using Gmsh`.
+Julia 1.10 or newer is required. Plotting (`scaplot`, `meshplot`) activates when a Makie backend is loaded (`using CairoMakie`); GPU runs activate with `using CUDA` (or another KernelAbstractions backend); `semidiscretize` activates with SciMLBase/OrdinaryDiffEq; NACA meshes with `using Gmsh`. The unstructured circle generator (`make_circle_mesh`) shells out to Python's distmesh (`pyscripts/`), so it needs a working `python` on the PATH — everything else is pure Julia.
 
 ## Cool Visuals
+
+<p align="center">
+  <img src="figures/hdg_ns_boussinesq3d_ra1e5.gif" height="420" />
+  <br>
+  <em>Natural convection in a differentially heated <strong>cubic</strong> cavity at Ra = 10⁵: temperature isosurfaces of the transient from the conductive state, solved with the <strong>3D HDG incompressible Navier-Stokes solver on the GPU</strong> (tetrahedra, k = 2, batched element assembly / local solves / recovery on the device through KernelAbstractions, trace factorization reused across time steps). The final hot-wall Nusselt number agrees with the 3D cavity benchmark to within 3% on this showcase-sized mesh.</em>
+</p>
 
 <p align="center">
   <img src="figures/eulerchannel_machnumber.gif" height="300" />
@@ -65,9 +72,11 @@ Julia 1.10 or newer is required. Plotting (`scaplot`, `meshplot`) activates when
 
 GPU execution goes through KernelAbstractions: pass `ArrayT = CuArray` (with CUDA.jl loaded) and the DG time loop, the HDG batched local solves, condensed trace system (Krylov iterations included) and solution recovery, or the matrix-free CG iteration all run on the device. The sparse direct `Direct()` paths factorize on the CPU — that's inherent to sparse direct methods, not a limitation of the wrappers.
 
-Meshes: structured square/L-shape, unstructured circle (distmesh), cos²-bump duct, Trefftz airfoil (conformal map), NACA 4-digit via Gmsh (package extension). All support curved isoparametric elements at arbitrary polynomial order (Koornwinder orthogonal basis); generators attach named boundary tags (`boundary_names(mesh)`). A `MeshGeometry` + `discretize(geo, porder)` two-stage API separates geometry from discretization.
+**All of the above runs in 3D on tetrahedra** through the same dimension-generic code: 3D convection/convection-diffusion, compressible Euler, Poisson/CD and incompressible Navier-Stokes with HDG (including `p+2` superconvergent postprocessing of scalars), and CG — each with its own convergence test. The 3D-specific machinery: Kuhn-split box meshes, Bey red refinement, Gmsh tetrahedral import, curved boundaries by signed-distance projection (validated on sphere octants), symmetric Witherden–Vincent quadrature, warp-and-blend nodes, and a memory-compact geometry layout that stores dense per-element tables only for curved elements. See the ["3D in TwoDG" manual page](https://xkykai.github.io/TwoDG.jl/dev/manual/threed/).
 
-Element type is parametric (`T = Float32` runs the whole DG loop in single precision, on GPU too). Postprocessing: `l2error`, HDG local postprocessing (`p+2` superconvergence), Makie plotting via extension.
+Meshes: structured square/L-shape/box, unstructured circle (distmesh), cos²-bump duct, Trefftz airfoil (conformal map), NACA 4-digit and tetrahedral `.msh` import via Gmsh (package extension). All support curved isoparametric elements at arbitrary polynomial order (Koornwinder orthogonal basis); generators attach named boundary tags (`boundary_names(mesh)`). A `MeshGeometry` + `discretize(geo, porder)` two-stage API separates geometry from discretization.
+
+Element type is parametric (`T = Float32` runs the whole DG loop in single precision, on GPU too). Postprocessing: `l2error`, HDG local postprocessing (`p+2` superconvergence), Makie plotting via extension (2D), ParaView output via the WriteVTK extension (`save_vtk`, high-order Lagrange cells — the 3D visualization path).
 
 ## What Can You Do With It?
 
@@ -126,5 +135,9 @@ Explore the example scripts in `examples/` to see the solvers in action:
 - `runhdg_ns_kovasznay.jl` - Steady incompressible Navier-Stokes verification (Kovasznay flow, optimal k+1 convergence)
 - `runhdg_ns_boussinesq.jl` - Natural convection in a heated cavity (incompressible nonhydrostatic Navier-Stokes with the Boussinesq approximation, validated against the de Vahl Davis benchmark)
 - `runhdg_ns_boussinesq_animation.jl` - The Ra = 10⁷ cavity animation from the gallery above, run with the GPU-accelerated batched HDG solvers (`hdg_ns_step_batched`/`hdg_cd_step_batched`)
+- `dg3d/` - 3D DG: convection on a box, the Euler isentropic vortex, heat conduction in a curved sphere octant, and an acoustic-pulse VTK time series
+- `hdg3d/runhdg3d_poisson.jl` - 3D HDG Poisson with `p+2` superconvergent postprocessing
+- `hdg3d/runhdg3d_ns_beltrami.jl` - 3D incompressible Navier-Stokes verification against the exact Beltrami (Ethier-Steinman) flow
+- `hdg3d/runhdg3d_boussinesq_animation.jl` - The 3D heated-cavity GIF from the gallery above (batched HDG NS + transport on the GPU)
 
 Perfect for researchers in numerical analysis, students learning finite element methods, or anyone needing a flexible high-order PDE solver in Julia.
