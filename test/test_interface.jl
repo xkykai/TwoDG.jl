@@ -10,6 +10,16 @@ using StaticArrays
 using SciMLBase: ODEProblem
 using OrdinaryDiffEqTsit5: Tsit5
 
+# user-defined equation exercising the extension contract through the
+# high-level API (top level: structs cannot be defined inside a @testset)
+struct InterfaceBurgers <: TwoDG.AbstractEquation{2} end
+TwoDG.nvariables(::InterfaceBurgers) = 1
+TwoDG.varnames(::InterfaceBurgers) = (:u,)
+TwoDG.flux(::InterfaceBurgers, u::SVector{1}, x, t) = (u .* u ./ 2, u .* u ./ 2)
+TwoDG.max_abs_speed(::InterfaceBurgers, u::SVector{1}, n, x, t) =
+    abs(u[1] * (n[1] + n[2]))
+TwoDG.wavespeed(::InterfaceBurgers, u::SVector{1}) = sqrt(2 * one(u[1])) * abs(u[1])
+
 @testset "Interface (problems + solve)" begin
     @testset "boundary-condition objects" begin
         # ghost states by dispatch
@@ -157,9 +167,22 @@ using OrdinaryDiffEqTsit5: Tsit5
         # the computed step is actually stable for the internal RK4 stepper
         sol = solve(conv, RK4(); dt=compute_dt(conv), tfinal=50 * compute_dt(conv))
         @test all(isfinite, sol.u)
+
+        # user equations reach compute_dt through the generic wavespeed
+        # fallback: same mesh and cfl as `conv`, so the steps differ exactly
+        # by the speed ratio (u0 peaks at 1 on a mesh node, λ = √2·1)
+        ub = DGProblem(InterfaceBurgers(), mesh;
+                       bc=fill(FarField([0.0]), 4), u0,
+                       numerical_flux=LaxFriedrichs())
+        @test compute_dt(ub) ≈ dt * norm([1.0, 0.5]) / sqrt(2) rtol = 1e-12
+
+        # an explicit numerical_flux means default_numerical_flux (which this
+        # equation deliberately does not define) is never called
+        solb = solve(ub, RK4(); dt=compute_dt(ub), nstep=5)
+        @test all(isfinite, solb.u)
     end
 
-    @testset "semidiscretize -> ODEProblem (A1.5)" begin
+    @testset "semidiscretize -> ODEProblem" begin
         mesh = mkmesh_square(9, 9, 3, 0, 1)
         eq = ConvectionEquation([1.0, 0.5])
         u0 = [(x, y) -> exp(-16 * ((x - 0.5)^2 + (y - 0.5)^2))]

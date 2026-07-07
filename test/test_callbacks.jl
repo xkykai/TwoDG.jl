@@ -1,4 +1,4 @@
-# The run-time callback layer (CALLBACKS_PLAN.md): schedules are pure logic,
+# The run-time callback layer: schedules are pure logic,
 # diagnostics are quadrature-exact, and callbacks are observers — a run with
 # callbacks attached must produce a bit-identical solution to a run without.
 
@@ -168,6 +168,29 @@ _dummy_state(; t=0.0, step=0, dt=0.1) =
         sol = solve(prob, RK4(); dt=1e-3, nstep=100,
                     callback=SteadyStateCallback(interval=2, abstol=1e-8))
         @test sol.t ≈ 2e-3
+    end
+
+    @testset "NaNCheckCallback aborts a diverging run" begin
+        mesh = mkmesh_square(7, 7, 2, 0, 1)
+        eq = ConvectionEquation([1.0, 0.5])
+        u0 = [(x, y) -> exp(-16 * ((x - 0.5)^2 + (y - 0.5)^2))]
+        prob = DGProblem(eq, mesh; bc=fill(FarField([0.0]), 4), u0)
+
+        # healthy run: silent, never stops
+        io = IOBuffer()
+        sol = solve(prob, RK4(); dt=1e-3, nstep=5,
+                    callback=NaNCheckCallback(io=io))
+        @test sol.t ≈ 5e-3
+        @test isempty(String(take!(io)))
+
+        # poison the live state at step 3: the check stops the run there
+        io = IOBuffer()
+        cbs = CallbackSet(st -> (st.step == 3 && (st.u[1] = NaN); nothing),
+                          NaNCheckCallback(io=io))
+        sol = solve(prob, RK4(); dt=1e-3, nstep=10, callback=cbs)
+        @test sol.t ≈ 3e-3
+        msg = String(take!(io))
+        @test occursin("step 3", msg) && occursin("component(s) u", msg)
     end
 
     @testset "SaveSolutionCallback round-trips snapshots" begin

@@ -46,7 +46,7 @@ else
         end
     end
 
-    @testset "gmsh_geometry: tetrahedral import (THREED_PLAN C5)" begin
+    @testset "gmsh_geometry: tetrahedral import" begin
         mktempdir() do dir
             path = joinpath(dir, "box3d.msh")
             gmsh.initialize()

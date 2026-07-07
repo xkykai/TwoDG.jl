@@ -1,4 +1,4 @@
-# TwoDGWriteVTKExt: high-order Lagrange VTK output (THREED_PLAN C6/D10).
+# TwoDGWriteVTKExt: high-order Lagrange VTK output.
 # Self-skips unless WriteVTK.jl is available (it is a test dependency, so
 # `Pkg.test()` always runs it; direct `include` runs skip gracefully).
 

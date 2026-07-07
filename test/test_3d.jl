@@ -1,7 +1,7 @@
-# 3D mesh, connectivity, and orientation (THREED_PLAN Phase C).
+# 3D mesh, connectivity, and orientation.
 #
-# The two-tet orientation battery is the single most important test of the 3D
-# plan: a shared triangular face can be seen in 6 relative orientations, and a
+# The two-tet orientation battery is the single most important 3D test:
+# a shared triangular face can be seen in 6 relative orientations, and a
 # subtly wrong permutation table corrupts fluxes/traces *silently* (the
 # residual stays finite, the rates quietly degrade). Every assertion here runs
 # over all vertex orderings of the two-tet mesh.
@@ -223,11 +223,11 @@ end
         @test rates[end] > porder + 0.6   # design rate p+1 (h halves 5 -> 9; measured 2.84)
     end
 
-    @testset "curved 3D boundary: sphere octant (C4 projection, D2 free stream)" begin
+    @testset "curved 3D boundary: sphere octant (projection + free stream)" begin
         # Unit corner tet refined twice; the hypotenuse-plane vertices are
         # projected radially so the linear mesh respects the unit sphere, and
-        # discretize projects the high-order boundary-face nodes (THREED_PLAN
-        # C4). Run twice: the sphere as one curved boundary, and split into
+        # discretize projects the high-order boundary-face nodes.
+        # Run twice: the sphere as one curved boundary, and split into
         # two curved boundaries sharing rim edges — the shared nodes then
         # carry two curved tags and go through the alternating-projection
         # (edge-before-face) path, which must stay conforming.
@@ -430,7 +430,7 @@ end
     end
 end
 
-@testset "HDG 3D Poisson (THREED_PLAN Phase E1)" begin
+@testset "HDG 3D Poisson" begin
     # -Δu = 3π² sin(πx)sin(πy)sin(πz) with homogeneous Dirichlet data: the
     # source is evaluated at quadrature points and the boundary data is exact
     # under nodal interpolation, the two data rules p+2 superconvergence
@@ -488,7 +488,7 @@ end
     end
 end
 
-@testset "HDG 3D convection-diffusion (THREED_PLAN Phase E2)" begin
+@testset "HDG 3D convection-diffusion" begin
     # c·∇u - κΔu = f with a manufactured solution and homogeneous Dirichlet
     # data; the nonzero velocity exercises the convective trace terms and the
     # tau = taud + |c·n| stabilization on all 6 face orientations.
@@ -527,7 +527,7 @@ end
     @test l2error(sol, u_ex) < 0.01
 end
 
-@testset "HDG 3D curved: sphere-octant Poisson rates (THREED_PLAN E4)" begin
+@testset "HDG 3D curved: sphere-octant Poisson rates" begin
     # Curved isoparametric HDG end-to-end: -Δu = 18xyz on the octant of the
     # unit ball with u = xyz (1 - x² - y² - z²), which vanishes on the sphere
     # and on all three symmetry planes — the Dirichlet data is exactly zero and
@@ -592,7 +592,7 @@ end
     @test errs_ustar[end] < errs_u[end] / 5  # u* strictly better (measured 14×)
 end
 
-@testset "HDG 3D incompressible Navier-Stokes (THREED_PLAN E3)" begin
+@testset "HDG 3D incompressible Navier-Stokes" begin
     relerr(a, b) = norm(a .- b) / max(norm(b), eps())
     porder = 2
 
@@ -706,7 +706,7 @@ end
     end
 end
 
-@testset "CG 3D Poisson/convection-diffusion (THREED_PLAN Phase F)" begin
+@testset "CG 3D Poisson/convection-diffusion" begin
     # -Δu = 3π² sin(πx)sin(πy)sin(πz) with homogeneous Dirichlet boundaries;
     # the CG numbering (pcg/tcg) comes from discretize's cgmesh call.
     exact(x, y, z) = sin(π * x) * sin(π * y) * sin(π * z)

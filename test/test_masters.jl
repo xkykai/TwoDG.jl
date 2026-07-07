@@ -117,7 +117,7 @@ import NodesAndModes
         @test isposdef(Symmetric(master.mass))
         @test abs(sum(master.mass) - 1 / 6) < 1e-12
 
-        # node-set symmetry (D7): every perm column is a permutation of the
+        # node-set symmetry: every perm column is a permutation of the
         # face's node set, and lies on its face
         @test all(all(master.plocal[master.perm[:, k, 1], k] .< 1e-6) for k in 1:4)
         @test all(allunique(master.perm[:, s, o]) &&

@@ -69,7 +69,7 @@ end
         check_mesh_invariants(mesh)
     end
 
-    @testset "geometry/discretization stages (A2.5)" begin
+    @testset "geometry/discretization stages" begin
         geo = square_geometry(5, 4; parity=0)
         @test geo isa MeshGeometry
         @test geo.boundary_names == [:bottom, :right, :top, :left]

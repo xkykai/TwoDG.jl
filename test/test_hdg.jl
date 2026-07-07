@@ -121,7 +121,7 @@ end
     @test errs_ustar[end] < errs_u[end] / 5  # u* strictly better (measured 12×)
 end
 
-@testset "HDG KA/Krylov trace solver (Phase 3)" begin
+@testset "HDG KA/Krylov trace solver" begin
     # convection-diffusion so the trace system is nonsymmetric
     source(p) = reshape(2π^2 .* sin.(π .* p[:, 1]) .* sin.(π .* p[:, 2]), :, 1)
     dbc(p) = zeros(size(p, 1), 1)
@@ -163,7 +163,7 @@ end
     @test norm(Float64.(x32) .- xp) / norm(xp) < 1e-3
 end
 
-@testset "HDG batched assembly + recovery (Phase 3b)" begin
+@testset "HDG batched assembly + recovery" begin
     source(p) = reshape(sin.(π .* p[:, 1]) .* p[:, 2], :, 1)
     dbc(p) = 0.1 .* p[:, 1:1] .- 0.2 .* p[:, 2:2]
     # taud ≠ kappa exercises the localprob (tau = κ + |c·n|) vs elemmat_hdg
@@ -260,7 +260,7 @@ end
     @test maxdiv < 1e-7
 end
 
-@testset "HDG NS/CD batched assembly + drivers (Phase 5)" begin
+@testset "HDG NS/CD batched assembly + drivers" begin
     relerr(a, b) = norm(a .- b) / max(norm(b), eps())
 
     # Kovasznay boundary data (nontrivial Dirichlet trace)

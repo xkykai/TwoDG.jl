@@ -1,5 +1,5 @@
 # Continuous Galerkin: Poisson with a manufactured solution, p-convergence,
-# and the Phase 4 batched/matrix-free path (parity with elemmat_cg, direct
+# and the batched/matrix-free path (parity with elemmat_cg, direct
 # vs iterative agreement, Float32).
 
 using TwoDG
@@ -23,7 +23,7 @@ using LinearAlgebra
     @test all(errs[i + 1] < errs[i] / 4 for i in 1:2)  # rapid p-convergence
 end
 
-@testset "CG batched path (Phase 4)" begin
+@testset "CG batched path" begin
     source(x, y) = exp(-2 * ((x - 0.3)^2 + (y - 0.6)^2))
     param = (; κ=0.7, c=[1.5, -0.4], s=0.3)
 
