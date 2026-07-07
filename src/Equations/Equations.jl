@@ -25,7 +25,9 @@ export AbstractEquation,
        boundary_flux, boundary_state, boundary_trace,
        RoeFlux, LaxFriedrichs, default_numerical_flux,
        LDGStabilization, default_stabilization,
-       density, velocity, pressure, soundspeed, mach, entropy, derived_field,
+       density, velocity, pressure, soundspeed, mach, entropy,
+       energy_kinetic, energy_internal, energy_total, derived_field,
+       wavespeed, diffusivity,
        eulereval, riemann_to_canonical, canonical_to_riemann
 
 include("interface.jl")

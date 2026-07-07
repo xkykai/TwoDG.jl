@@ -41,6 +41,10 @@ end
     return abs(normal_velocity(v, n, T))
 end
 
+@inline wavespeed(eq::ConvectionDiffusionEquation, u::SVector) =
+    _speed_bound(eq.velocity)
+diffusivity(eq::ConvectionDiffusionEquation) = eq.κ
+
 """
     PoissonEquation(κ=1.0)
     PoissonEquation{Dim}(κ=1.0)
@@ -58,6 +62,8 @@ PoissonEquation{Dim}(κ=1.0) where {Dim} = PoissonEquation{Dim, typeof(κ)}(κ)
 nvariables(::PoissonEquation) = 1
 varnames(::PoissonEquation) = (:u,)
 has_diffusion(::PoissonEquation) = true
+@inline wavespeed(::PoissonEquation, u::SVector) = 0.0
+diffusivity(eq::PoissonEquation) = eq.κ
 
 # ------------------------------------------------------- LDG viscous terms
 

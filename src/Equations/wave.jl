@@ -35,6 +35,8 @@ end
 @inline max_abs_speed(eq::WaveEquation, u::SVector{3, T}, n, x, t) where {T} =
     abs(convert(T, eq.c))
 
+@inline wavespeed(eq::WaveEquation, u::SVector) = abs(eq.c)
+
 # Exact upwind flux of the linear system: the characteristic variables along n
 # are p ± q·n with speeds ±c (and a stationary transverse mode), so
 # |Â|(uR − uL) works out to |c| times the projections below.

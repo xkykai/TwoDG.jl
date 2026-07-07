@@ -118,3 +118,24 @@ The viscous (LDG) stabilization `solve` uses when the problem does not
 specify one; `nothing` for purely hyperbolic equations.
 """
 default_stabilization(::AbstractEquation) = nothing
+
+"""
+    wavespeed(eq, u) -> Real
+
+Direction-independent bound on the characteristic speed at state
+`u::SVector` — `|v| + c` for Euler, `|v|` for constant-velocity convection,
+`|c|` for the wave system, `0` for pure diffusion. CFL estimates
+(`compute_dt`, `StepsizeCallback`) take its maximum over the solution nodes.
+Equations whose speed depends on position (a velocity given as a function
+of `x`) cannot provide a state-only bound and throw.
+"""
+function wavespeed end
+
+"""
+    diffusivity(eq) -> Real
+
+Scalar diffusivity `κ` of the equation's second-order term; `0` for purely
+hyperbolic equations (the default). CFL estimates charge it against the
+quadratic `(2p+1)²/h²` limit.
+"""
+diffusivity(::AbstractEquation) = 0.0

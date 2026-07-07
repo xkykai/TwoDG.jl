@@ -16,7 +16,8 @@ using Adapt
 import KernelAbstractions
 
 export RefTables, face_geometry!, element_geometry!, face_normal,
-       GeometricFactors, SideGeometry, VolumeTables, quad_coords, quad_weight
+       GeometricFactors, SideGeometry, VolumeTables, quad_coords, quad_weight,
+       inscribed_diameter, min_inscribed_diameter
 
 """
     face_normal(τ) -> SVector{2}
@@ -29,6 +30,47 @@ place where 2D and 3D geometry genuinely differ.
 """
 @inline face_normal(τ::SVector{2}) = SVector(τ[2], -τ[1])
 @inline face_normal(τ₁::SVector{3}, τ₂::SVector{3}) = cross(τ₁, τ₂)
+
+"""
+    inscribed_diameter(p, t, it, ::Val{Dim}) -> h
+
+Inscribed-circle (2D) / inscribed-sphere (3D) diameter `2r = 2·Dim·|K|/|∂K|`
+of the vertex simplex of element `it` — the `h` that controls explicit CFL
+limits. `p`/`t` are the mesh vertex coordinates and element connectivity.
+"""
+function inscribed_diameter(p, t, it, ::Val{2})
+    a = hypot(p[t[it, 2], 1] - p[t[it, 1], 1], p[t[it, 2], 2] - p[t[it, 1], 2])
+    b = hypot(p[t[it, 3], 1] - p[t[it, 2], 1], p[t[it, 3], 2] - p[t[it, 2], 2])
+    c = hypot(p[t[it, 1], 1] - p[t[it, 3], 1], p[t[it, 1], 2] - p[t[it, 3], 2])
+    s = (a + b + c) / 2
+    area = sqrt(max(s * (s - a) * (s - b) * (s - c), 0.0))
+    return 4 * area / (a + b + c)
+end
+
+function inscribed_diameter(p, t, it, ::Val{3})
+    v = ntuple(k -> SVector(p[t[it, k], 1], p[t[it, k], 2], p[t[it, k], 3]), Val(4))
+    e2, e3, e4 = v[2] - v[1], v[3] - v[1], v[4] - v[1]
+    vol = abs(dot(e2, cross(e3, e4))) / 6
+    area = (norm(cross(v[3] - v[2], v[4] - v[2])) + norm(cross(e3, e4)) +
+            norm(cross(e4, e2)) + norm(cross(e2, e3))) / 2
+    return 6 * vol / area
+end
+
+"""
+    min_inscribed_diameter(mesh) -> h_min
+
+Smallest [`inscribed_diameter`](@ref) over all elements of the mesh — the
+mesh-quality scale of CFL estimates (`compute_dt`, `StepsizeCallback`).
+"""
+function min_inscribed_diameter(mesh)
+    p, t = mesh.p, mesh.t
+    Dim = Val(size(p, 2))
+    hmin = Inf
+    for it in axes(t, 1)
+        hmin = min(hmin, inscribed_diameter(p, t, it, Dim))
+    end
+    return hmin
+end
 
 """
     adjugate(J) -> SMatrix

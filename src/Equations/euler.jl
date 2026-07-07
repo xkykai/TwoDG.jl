@@ -85,6 +85,25 @@ end
 @inline entropy(eq::EulerEquations, u::SVector{NC, T}) where {NC, T} =
     pressure(eq, u) / u[1]^convert(T, eq.γ)
 
+"Kinetic energy density `ρ|v|²/2` of a conserved Euler state."
+@inline function energy_kinetic(eq::EulerEquations{Dim}, u::SVector) where {Dim}
+    ρv² = u[2]^2
+    for d in 2:Dim
+        ρv² += u[d + 1]^2
+    end
+    return ρv² / (2 * u[1])
+end
+
+"Total energy density `ρE` of a conserved Euler state."
+@inline energy_total(eq::EulerEquations, u::SVector{NC}) where {NC} = u[NC]
+
+"Internal energy density `ρe = ρE - ρ|v|²/2` of a conserved Euler state."
+@inline energy_internal(eq::EulerEquations, u::SVector{NC}) where {NC} =
+    u[NC] - energy_kinetic(eq, u)
+
+@inline wavespeed(eq::EulerEquations, u::SVector) =
+    norm(velocity(eq, u)) + soundspeed(eq, u)
+
 # ------------------------------------------------------------------ fluxes
 
 # f_d = (ρ v_d, ρv v_d + p e_d, v_d (ρE + p)) — one definition for every Dim

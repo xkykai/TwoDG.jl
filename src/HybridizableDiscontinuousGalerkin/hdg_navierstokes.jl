@@ -586,15 +586,22 @@ end
 
 """
     hdg_ns_solve(master, mesh, ν, dbc; τ=1.0, source=nothing, maxiter=20,
-                 tol=1e-10, verbose=true, u0=nothing, Λ0=nothing)
+                 tol=1e-10, verbose=true, u0=nothing, Λ0=nothing, callback=nothing)
 
 Solves the steady incompressible Navier-Stokes equations (2D or 3D) with the
 HDG method by Newton iteration (the first iteration, started from rest, is a
 Stokes solve). See [`hdg_ns_step`](@ref) for the arguments and the returned
 fields.
+
+`callback`, if given, is called after every Newton iteration as
+`callback((; iter, residual, u, p))` — the iteration count, the relative
+trace update `‖ΔΛ‖/‖Λ‖` (`Inf` on the first iteration), and the current
+velocity/pressure fields. Return `true` to stop the iteration early. This is
+the Newton-granularity analog of the time-loop callback convention.
 """
 function hdg_ns_solve(master, mesh, ν, dbc; τ=1.0, source=nothing, maxiter=20,
-                      tol=1e-10, verbose=true, u0=nothing, Λ0=nothing)
+                      tol=1e-10, verbose=true, u0=nothing, Λ0=nothing,
+                      callback=nothing)
     u, Λ = u0, Λ0
     result = nothing
     for iter in 1:maxiter
@@ -602,7 +609,9 @@ function hdg_ns_solve(master, mesh, ν, dbc; τ=1.0, source=nothing, maxiter=20,
         Δ = Λ === nothing ? Inf : norm(result.Λ .- Λ) / max(norm(result.Λ), eps())
         verbose && @info "hdg_ns_solve: Newton iteration $iter, Δλ = $Δ"
         u, Λ = result.u, result.Λ
-        Δ < tol && break
+        stop = callback !== nothing &&
+               callback((; iter, residual=Δ, u=result.u, p=result.p)) === true
+        (stop || Δ < tol) && break
     end
     return result
 end

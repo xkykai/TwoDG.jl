@@ -21,16 +21,18 @@ import CommonSolve
 using CommonSolve: solve
 using StaticArrays
 using Adapt: adapt
-using LinearAlgebra: norm, cross, dot
+using LinearAlgebra: norm
 using ..Equations
 using ..Masters: Master
 using ..Meshes: Mesh
 using ..Utils: initu, interpolate
+using ..Geometry: min_inscribed_diameter
 using ..DiscontinuousGalerkin: DGContext, DGPhysics, rinvexpl!, rldgexpl!, rk4_ka!,
                                RinvWorkspace, RldgWorkspace, _default_ka_ws
 using ..HybridizableDiscontinuousGalerkin: hdg_direct_batched, hdg_parsolve,
                                            hdg_parsolve_batched
 using ..ContinuousGalerkin: cg_solve, cg_parsolve
+using ..Callbacks: SolveState, initialize!, finish!, load_checkpoint
 import ..ContinuousGalerkin: l2error
 
 export solve, semidiscretize, compute_dt,
@@ -186,13 +188,18 @@ cg_param(eq::ConvectionDiffusionEquation, s) =
 # ------------------------------------------------------------------ solutions
 
 """
-Solution of a [`DGProblem`](@ref): `u (npl, nc, nt)` at time `t`.
+Solution of a [`DGProblem`](@ref): `u (npl, nc, nt)` at time `t`. The
+`callbacks` field carries whatever was passed as `callback` to `solve`
+(`nothing` by default), so callback histories — e.g. an
+[`AnalysisCallback`](@ref)'s `time`/`data` — ride along on the solution.
 """
-struct DGSolution{U, T, P}
-    u    :: U
-    t    :: T
-    prob :: P
+struct DGSolution{U, T, P, C}
+    u         :: U
+    t         :: T
+    prob      :: P
+    callbacks :: C
 end
+DGSolution(u, t, prob) = DGSolution(u, t, prob, nothing)
 
 """
 Solution of an [`HDGProblem`](@ref): `u (npl, 1, nt)`, flux `q (npl, Dim, nt)`,
@@ -317,44 +324,89 @@ CommonSolve.solve(prob::DGProblem; kwargs...) = solve(prob, RK4(); kwargs...)
 
 """
     solve(prob::DGProblem, RK4(); dt, tfinal (or nstep), t0=0.0,
-          ArrayT=Array, ngauss=nothing, callback=nothing)
+          ArrayT=Array, ngauss=nothing, callback=nothing, restart=nothing)
 
-Run the internal RK4 time loop. `callback`, if given, is called after every
-step as `callback((; u, t, step, prob))` — `u` is the *live* solution array
-(device-resident under `ArrayT=CuArray`; copy or `Array(u)` it if you keep
-it). Return `false` from the callback to keep going, `true` to stop early.
-This is the minimal diagnostics hook; the composable callback system is
-designed in CALLBACKS_PLAN.md.
+Run the internal RK4 time loop.
+
+`callback` — any callable `cb(state::SolveState) -> Union{Nothing, Bool}`:
+a plain closure, a built-in callback ([`ProgressCallback`](@ref),
+[`AnalysisCallback`](@ref), [`SaveSolutionCallback`](@ref),
+[`SteadyStateCallback`](@ref), [`CheckpointCallback`](@ref),
+[`StepsizeCallback`](@ref)), or a [`CallbackSet`](@ref) composing several.
+It is called after every step; `state.u` is the *live* solution array
+(device-resident under `ArrayT=CuArray`; copy or `Array(state.u)` it if you
+keep it). Return `true` to stop early. Callbacks are observers: with a
+fixed `dt` the computed solution is bit-identical with and without them. A
+[`StepsizeCallback`](@ref) may write `state.dt`; the loop then advances at
+the new step size and, when `tfinal` is given, clamps the last step to land
+on `tfinal` exactly. The callback rides back on the solution as
+`sol.callbacks`.
+
+`restart` — path to a [`CheckpointCallback`](@ref) file; the solve resumes
+from its `u`/`t`/`step` (the problem's `u0` and the `t0` keyword are
+ignored, and `nstep` counts the *additional* steps to take).
 """
 function CommonSolve.solve(prob::DGProblem, ::RK4;
                            dt, tfinal=nothing, nstep=nothing, t0=0.0,
-                           ArrayT=Array, ngauss=nothing, callback=nothing)
+                           ArrayT=Array, ngauss=nothing, callback=nothing,
+                           restart=nothing)
     (tfinal === nothing) == (nstep === nothing) &&
         throw(ArgumentError("give exactly one of `tfinal` or `nstep`"))
-    if nstep === nothing
-        nstep = round(Int, (tfinal - t0) / dt)
-    end
 
     T = eltype(prob)
     ctx, phys, u, residual! = _dg_setup(prob; ArrayT, ngauss)
 
+    step0 = 0
+    if restart !== nothing
+        chk = load_checkpoint(restart)
+        size(chk.u) == size(u) ||
+            throw(ArgumentError("checkpoint state is $(size(chk.u)) but the " *
+                                "problem needs $(size(u))"))
+        copyto!(u, chk.u)
+        t0, step0 = chk.t, chk.step
+    end
+    nsteps = nstep === nothing ? max(round(Int, (tfinal - t0) / dt), 0) : nstep
+
     if callback === nothing
-        rk4_ka!(residual!, ctx, phys, u, T(t0), T(dt), nstep)
-        return DGSolution(Array(u), t0 + nstep * dt, prob)
+        rk4_ka!(residual!, ctx, phys, u, T(t0), T(dt), nsteps)
+        return DGSolution(Array(u), t0 + nsteps * dt, prob)
     end
 
+    state = SolveState(u, Float64(t0), step0, Float64(dt),
+                       tfinal === nothing ? step0 + nsteps : typemax(Int),
+                       tfinal === nothing ? NaN : Float64(tfinal),
+                       prob, ctx, phys)
+    initialize!(callback, state)
     ws = _default_ka_ws(residual!, ctx, phys)
-    t = t0
-    laststep = nstep
-    for step in 1:nstep
-        rk4_ka!(residual!, ctx, phys, u, T(t), T(dt), 1; ws)
-        t = t0 + step * dt
-        if callback((; u, t, step, prob)) === true
-            laststep = step
-            break
+    stages = ntuple(_ -> similar(u), 5)
+
+    # Working-precision time accumulator reproducing the fused rk4_ka! path's
+    # `t += dt` arithmetic, so an attached observer changes no bits of u.
+    tT = T(t0)
+    dt0 = Float64(dt)
+    laststep = step0 + nsteps
+    dynamic = state.dt != dt0   # a callback owns state.dt: switch to time-based
+                                # termination and clamp the last step onto tfinal
+    finished() = dynamic && !isnan(state.tfinal) ?
+                 state.t ≥ state.tfinal - 1e-12 * max(abs(state.tfinal), 1.0) :
+                 state.step ≥ laststep
+
+    while !finished()
+        dtstep = state.dt
+        dynamic |= dtstep != dt0
+        if dynamic && !isnan(state.tfinal)
+            dtstep = min(dtstep, state.tfinal - state.t)
         end
+        dtstep > 0 ||
+            throw(ArgumentError("callback set a non-positive dt = $dtstep"))
+        rk4_ka!(residual!, ctx, phys, u, tT, T(dtstep), 1; ws, stages)
+        state.step += 1
+        state.t += dtstep
+        tT += T(dtstep)
+        callback(state) === true && break
     end
-    return DGSolution(Array(u), t0 + laststep * dt, prob)
+    finish!(callback, state)
+    return DGSolution(Array(u), state.t, prob, callback)
 end
 
 """
@@ -388,51 +440,24 @@ CFL-limited explicit time step: over all elements,
 
     dt = cfl * min 1 / ( λ (2p+1)/h + κ ((2p+1)/h)² )
 
-with `h` the inscribed-circle (2D) / inscribed-sphere (3D) diameter, `p` the
-polynomial order, `λ` the maximum characteristic speed of the equation
-(evaluated from the initial state for [`EulerEquations`](@ref)), and `κ` the
-diffusivity (LDG diffusion limits the step quadratically). `cfl = 0.3` is a
-conservative default for the internal [`RK4`](@ref) stepper.
+with `h` the smallest inscribed-circle (2D) / inscribed-sphere (3D) diameter
+(`min_inscribed_diameter`), `p` the polynomial order, `λ` the maximum
+characteristic speed of the equation (evaluated from the initial state for
+[`EulerEquations`](@ref)), and `κ` its [`diffusivity`](@ref) (LDG diffusion
+limits the step quadratically). `cfl = 0.3` is a conservative default for
+the internal [`RK4`](@ref) stepper. [`StepsizeCallback`](@ref) applies the
+same formula to the *running* solution.
 """
 function compute_dt(prob::DGProblem; cfl=0.3)
     mesh = prob.mesh
     pfac = 2 * mesh.porder + 1
     λ = _max_wavespeed(prob.equation, prob)
-    κ = _diffusivity(prob.equation)
+    κ = diffusivity(prob.equation)
     (λ > 0 || κ > 0) ||
         throw(ArgumentError("equation has neither a propagation speed nor a diffusivity"))
-
-    dtmin = Inf
-    p, t = mesh.p, mesh.t
-    for it in axes(t, 1)
-        h = _inscribed_diameter(p, t, it, Val(ndims(mesh)))
-        dtmin = min(dtmin, 1 / (λ * pfac / h + κ * (pfac / h)^2))
-    end
-    return cfl * dtmin
+    h = min_inscribed_diameter(mesh)
+    return cfl / (λ * pfac / h + κ * (pfac / h)^2)
 end
-
-# inscribed-simplex diameter 2r = 2·Dim·|K|/|∂K| — the h that controls the CFL
-function _inscribed_diameter(p, t, it, ::Val{2})
-    a = hypot(p[t[it, 2], 1] - p[t[it, 1], 1], p[t[it, 2], 2] - p[t[it, 1], 2])
-    b = hypot(p[t[it, 3], 1] - p[t[it, 2], 1], p[t[it, 3], 2] - p[t[it, 2], 2])
-    c = hypot(p[t[it, 1], 1] - p[t[it, 3], 1], p[t[it, 1], 2] - p[t[it, 3], 2])
-    s = (a + b + c) / 2
-    area = sqrt(max(s * (s - a) * (s - b) * (s - c), 0.0))
-    return 4 * area / (a + b + c)
-end
-
-function _inscribed_diameter(p, t, it, ::Val{3})
-    v = ntuple(k -> SVector(p[t[it, k], 1], p[t[it, k], 2], p[t[it, k], 3]), Val(4))
-    e2, e3, e4 = v[2] - v[1], v[3] - v[1], v[4] - v[1]
-    vol = abs(dot(e2, cross(e3, e4))) / 6
-    area = (norm(cross(v[3] - v[2], v[4] - v[2])) + norm(cross(e3, e4)) +
-            norm(cross(e4, e2)) + norm(cross(e2, e3))) / 2
-    return 6 * vol / area
-end
-
-_diffusivity(::AbstractEquation) = 0.0
-_diffusivity(eq::ConvectionDiffusionEquation) = eq.κ
-_diffusivity(eq::PoissonEquation) = eq.κ
 
 _max_wavespeed(eq::ConvectionEquation, prob) = _max_velocity(eq.velocity, prob.mesh)
 _max_wavespeed(eq::ConvectionDiffusionEquation, prob) = _max_velocity(eq.velocity, prob.mesh)

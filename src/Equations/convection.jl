@@ -45,3 +45,11 @@ end
     v = velocity_at(eq.velocity, x)
     return abs(normal_velocity(v, n, T))
 end
+
+# state-only speed bound for CFL estimates: available for a constant velocity,
+# impossible for a spatially varying one (no x at hand)
+@inline wavespeed(eq::ConvectionEquation, u::SVector) = _speed_bound(eq.velocity)
+@inline _speed_bound(v::SVector) = norm(v)
+_speed_bound(v) =
+    throw(ArgumentError("wavespeed needs a constant convective velocity; " *
+                        "got a spatially varying field"))

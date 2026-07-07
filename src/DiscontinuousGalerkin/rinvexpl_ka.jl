@@ -299,18 +299,23 @@ rinvexpl_ka(ctx::DGContext, phys::DGPhysics, u, time) =
     rinvexpl!(similar(u), ctx, phys, u, time)
 
 """
-    rk4_ka!([residual!,] ctx, phys, u, time, dt, nstep; ws)
+    rk4_ka!([residual!,] ctx, phys, u, time, dt, nstep; ws, stages)
 
 In-place RK4 time integrator driving a KA residual (`rinvexpl!` by default;
 pass `rldgexpl!` for the LDG viscous path). All stage buffers are allocated
 once up front; the stage updates are plain broadcasts, so the stepper runs
 unchanged on CPU and GPU arrays. Returns `u` after `nstep` steps.
+
+`stages` — the five stage buffers (each `similar(u)`); pass a preallocated
+tuple to make repeated single-step calls (the callback-driven solve loop)
+allocation-free.
 """
 function rk4_ka!(residual!::F, ctx::DGContext, phys::DGPhysics, u, time::Real,
                  dt::Real, nstep::Integer;
-                 ws=_default_ka_ws(residual!, ctx, phys)) where {F}
+                 ws=_default_ka_ws(residual!, ctx, phys),
+                 stages=ntuple(_ -> similar(u), 5)) where {F}
     T = eltype(u)
-    k1, k2, k3, k4, tmp = (similar(u) for _ in 1:5)
+    k1, k2, k3, k4, tmp = stages
     h = T(dt)
     t = time
 
