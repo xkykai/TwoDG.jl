@@ -17,7 +17,7 @@ export
     koornwinder1d, koornwinder2d, koornwinder3d,
     areacircle, trefftz_points, potential_trefftz, trefftz,
     # geometry cache
-    GeometricFactors, SideGeometry,
+    GeometricFactors, SideGeometry, min_inscribed_diameter,
     # physics: equations, numerical fluxes, boundary conditions (the
     # extension contract — implement these methods on your own types)
     AbstractEquation,
@@ -29,7 +29,9 @@ export
     boundary_flux, boundary_state, boundary_trace,
     RoeFlux, LaxFriedrichs, default_numerical_flux,
     LDGStabilization, default_stabilization,
-    density, velocity, pressure, soundspeed, mach, entropy, derived_field,
+    density, velocity, pressure, soundspeed, mach, entropy,
+    energy_kinetic, energy_internal, energy_total, derived_field,
+    wavespeed, diffusivity,
     eulereval, riemann_to_canonical, canonical_to_riemann,
     # CG
     elemmat_cg, cg_solve, cg_parsolve,
@@ -48,6 +50,12 @@ export
     hdg_ns_step, hdg_ns_solve, hdg_cd_step, hdg_ns_postprocess,
     HDGNSBatch, HDGCDBatch, HDGNSCache, HDGCDCache,
     hdg_ns_step_batched, hdg_cd_step_batched,
+    # callbacks & run-time diagnostics (Callbacks module)
+    SolveState, CallbackSet,
+    EveryStep, IterationInterval, TimeInterval, SpecifiedTimes, WallTimeInterval,
+    ProgressCallback, AnalysisCallback, SteadyStateCallback,
+    SaveSolutionCallback, CheckpointCallback, StepsizeCallback,
+    integrate, l2norm,
     # high-level problem/solve API (Interface module)
     solve, semidiscretize, compute_dt,
     DGProblem, HDGProblem, CGProblem,
@@ -63,6 +71,7 @@ include("Plotting/Plotting.jl")
 include("ContinuousGalerkin/ContinuousGalerkin.jl")
 include("DiscontinuousGalerkin/DiscontinuousGalerkin.jl")
 include("HybridizableDiscontinuousGalerkin/HybridizableDiscontinuousGalerkin.jl")
+include("Callbacks/Callbacks.jl")
 include("Interface/Interface.jl")
 
 using .Drivers
@@ -75,6 +84,7 @@ using .Plotting
 using .ContinuousGalerkin
 using .DiscontinuousGalerkin
 using .HybridizableDiscontinuousGalerkin
+using .Callbacks
 using .Interface
 
 end
