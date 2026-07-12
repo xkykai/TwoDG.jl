@@ -16,6 +16,12 @@ jobs:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    # Prerelease runs test against unreleased Julia and its still-adapting
+    # upstream stack. Breakage there — whether in a dependency that has not yet
+    # caught up or in numerics sensitive to compiler/stdlib changes — is an
+    # early-warning signal, not a release blocker, so it must not gate the
+    # workflow. The '1.10' floor and latest stable stay required.
+    continue-on-error: ${{ matrix.version == 'pre' }}
     permissions: # needed to allow julia-actions/cache to proactively delete old caches that it has created
       actions: write
       contents: read
